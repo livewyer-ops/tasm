@@ -22,7 +22,7 @@ for (const app of ['demo', 'playpen']) {
     assert(ready, log);
     const home = await fetch(base + '/', { redirect: 'manual' });
     assert.equal(home.status, 200); assert((await home.text()).includes(`data-app="${app}"`));
-    for (const [path, type] of [['service-worker.js', 'javascript'], [`${app}.js`, 'javascript'], [`${app}.css`, 'text/css'], ['tasm_bg.wasm', 'application/wasm'], ['samples/voice-a.ts', 'video/mp2t'], ['branding/tams-favicon.svg', 'image/svg+xml']]) {
+    for (const [path, type] of [['service-worker.js', 'javascript'], [`${app}.js`, 'javascript'], [`${app}.css`, 'text/css'], ['tasm_bg.wasm', 'application/wasm'], ['samples/black.ts', 'video/mp2t'], ['branding/tams-favicon.svg', 'image/svg+xml']]) {
       const response = await fetch(base + '/' + path);
       assert.equal(response.status, 200, path);
       assert(response.headers.get('content-type').includes(type), `${path}: ${response.headers.get('content-type')}`);

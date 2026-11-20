@@ -329,7 +329,7 @@ test('flow timerange searches include the segments of collection members', async
     assert.equal(response.status, 200, response.body);
     return (JSON.parse(response.body) as { id: string }[]).map(f => f.id);
   };
-  const names = new Map([[a, 'a'], [b, 'b'], [own, 'own'], [hollow, 'hollow'], [collection, 'collection'], [empty, 'empty']]);
+  const names = new Map<string, string>([[a, 'a'], [b, 'b'], [own, 'own'], [hollow, 'hollow'], [collection, 'collection'], [empty, 'empty']]);
   const named = (list: string[]) => list.map(id => names.get(id)).filter(Boolean).sort();
   assert.deepEqual(named(await ids('timerange=[10:0_11:0)')), ['a', 'collection', 'own']);
   assert.deepEqual(named(await ids('timerange=[21:0_23:0)')), ['b', 'collection']);
