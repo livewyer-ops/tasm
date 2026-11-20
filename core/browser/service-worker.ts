@@ -4,7 +4,9 @@ const base = new URL('./', sw.location.href).href;
 const assetCache = `tasm-assets:${base}:__TASM_BUILD__`;
 const assets = __TASM_ASSETS__;
 sw.addEventListener('install', event => {
-  event.waitUntil(caches.open(assetCache).then(cache => cache.addAll(assets.map(path => new URL(path, base).href))));
+  // Bypass the HTTP cache: asset names are not hashed, and a stale file would
+  // mix builds under this release's cache.
+  event.waitUntil(caches.open(assetCache).then(cache => cache.addAll(assets.map(path => new Request(new URL(path, base).href, { cache: 'reload' })))));
 });
 sw.addEventListener('activate', event => {
   event.waitUntil((async () => {

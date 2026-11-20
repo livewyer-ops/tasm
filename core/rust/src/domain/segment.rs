@@ -69,9 +69,7 @@ pub fn effective_object_timerange(
     let Some(offset) = ts_offset else {
         return Ok(timerange_value.to_owned());
     };
-    let offset = timerange::parse(&format!("[{offset}]"))?
-        .start
-        .ok_or(ValidationError)?;
+    let offset = timerange::timestamp(offset)?;
     let parsed = timerange::parse(timerange_value)?;
     let start = parsed
         .start
@@ -184,9 +182,7 @@ pub fn validate_post(value: &Value) -> Result<(&str, &str, SegmentBounds), Valid
         effective_object_timerange(timerange_value, Some(offset), None)?;
     }
     if let Some(last_duration) = object.get("last_duration").and_then(Value::as_str) {
-        let duration = timerange::parse(&format!("[{last_duration}]"))?
-            .start
-            .ok_or(ValidationError)?;
+        let duration = timerange::timestamp(last_duration)?;
         if duration < 0 || timerange_value.ends_with(']') {
             return Err(ValidationError);
         }
@@ -224,4 +220,93 @@ pub fn validate_post(value: &Value) -> Result<(&str, &str, SegmentBounds), Valid
         }
     }
     Ok((object_id, timerange_value, parsed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(timerange: &str) -> SegmentRecord {
+        let bounds = bounds(timerange).unwrap();
+        SegmentRecord {
+            flow_id: uuid::Uuid::nil(),
+            object_id: timerange.into(),
+            init_object_id: None,
+            timerange: timerange.into(),
+            timerange_start: bounds.start,
+            timerange_end: bounds.end,
+            record: json!({}),
+            created: time::OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn point_and_inclusive_segments_use_exclusive_ends() {
+        assert_eq!(bounds("[1:0]").unwrap().end, 1_000_000_001);
+        assert_eq!(bounds("[1:0_2:0]").unwrap().end, 2_000_000_001);
+        assert!(overlaps(
+            bounds("[1:0_2:0)").unwrap(),
+            bounds("[1:500_3:0)").unwrap()
+        ));
+        assert!(!overlaps(
+            bounds("[1:0_2:0)").unwrap(),
+            bounds("[2:0]").unwrap()
+        ));
+        assert!(bounds("()").is_err());
+    }
+
+    #[test]
+    fn reports_coverage_gaps_once() {
+        let gaps = coverage_gaps(&[
+            record("[3:0_4:0)"),
+            record("[0:0_1:0)"),
+            record("[0:500_2:0)"),
+            record("[5:0]"),
+        ])
+        .unwrap();
+        assert_eq!(gaps, vec!["[2:0_3:0)".to_owned(), "[4:0_5:0)".to_owned()]);
+        assert!(coverage_gaps(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn applies_ts_offset_to_object_timerange() {
+        assert_eq!(
+            effective_object_timerange("[10:0_12:0)", Some("10:0"), None).unwrap(),
+            "[0:0_2:0)"
+        );
+        assert_eq!(
+            effective_object_timerange("[10:0_12:0]", Some("1:0"), None).unwrap(),
+            "[9:0_11:0]"
+        );
+        assert_eq!(
+            effective_object_timerange("[10:0]", Some("-1:0"), None).unwrap(),
+            "[11:0]"
+        );
+        assert_eq!(
+            effective_object_timerange("[1:0_2:0)", Some("1:0"), Some("[5:0_6:0)")).unwrap(),
+            "[5:0_6:0)"
+        );
+        assert!(effective_object_timerange("[10:0_12:0)", Some("1:0_"), None).is_err());
+    }
+
+    #[test]
+    fn validates_segment_offsets_as_timestamps() {
+        let post = |extra: Value| {
+            let mut value = json!({"object_id":"a","timerange":"[0:0_1:0)"});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            validate_post(&value).is_ok()
+        };
+        assert!(post(
+            json!({"ts_offset":"0:500","last_duration":"0:40000000"})
+        ));
+        assert!(!post(json!({"ts_offset":"1:0_"})));
+        assert!(!post(json!({"last_duration":"0:0_1:0"})));
+        assert!(!post(json!({"last_duration":"-1:0"})));
+        assert!(!post(json!({"sample_count":-1})));
+        let missing_start = json!({"object_id":"a","timerange":"0:0_1:0"});
+        assert!(validate_post(&missing_start).is_err());
+    }
 }

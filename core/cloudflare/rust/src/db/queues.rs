@@ -11,6 +11,25 @@ use super::{
     },
 };
 
+/// SQLite does not order `UPDATE ... RETURNING` rows, so restore queue order.
+fn claimed_in_order<T: Queued>(mut rows: Vec<T>) -> Vec<T> {
+    rows.sort_by_key(|row| row.queue_key());
+    rows
+}
+trait Queued {
+    fn queue_key(&self) -> (time::OffsetDateTime, Uuid);
+}
+macro_rules! queued {
+    ($($record:ty),*) => {$(
+        impl Queued for $record {
+            fn queue_key(&self) -> (time::OffsetDateTime, Uuid) {
+                (self.created_at, self.id)
+            }
+        }
+    )*};
+}
+queued!(DeleteRequest, ObjectCleanup, ObjectCopy, WebhookDelivery);
+
 fn claim_bounds(limit: i64, lease_seconds: i64) -> Result<(i64, i64), DbError> {
     if !(1..=1000).contains(&limit) || lease_seconds < 1 {
         return Err(DbError::Record(
@@ -34,7 +53,7 @@ pub async fn claim_delete_requests(
     lease: i64,
 ) -> Result<Vec<DeleteRequest>, DbError> {
     let (limit, lease) = claim_bounds(limit, lease)?;
-    sqlx::query("UPDATE tamoss_delete_requests SET status='started',claimed_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),claimed_by=?2,claim_expires_at=(strftime('%Y-%m-%dT%H:%M:%f','now',printf('%+d seconds',?3)) || '000000Z'),updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id IN (SELECT id FROM tamoss_delete_requests WHERE status IN ('created','started','error') AND(claim_expires_at IS NULL OR claim_expires_at<=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'))ORDER BY created_at,id LIMIT ?1) RETURNING id,flow_id,status,record,updated,created_at,claimed_at,claimed_by,claim_expires_at").bind(limit).bind(worker).bind(lease).fetch_all(pool).await?.into_iter().map(map_delete).collect()
+    sqlx::query("UPDATE tamoss_delete_requests SET status='started',claimed_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),claimed_by=?2,claim_expires_at=(strftime('%Y-%m-%dT%H:%M:%f','now',printf('%+d seconds',?3)) || '000000Z'),updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id IN (SELECT id FROM tamoss_delete_requests WHERE status IN ('created','started','error') AND(claim_expires_at IS NULL OR claim_expires_at<=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'))ORDER BY created_at,id LIMIT ?1) RETURNING id,flow_id,status,record,updated,created_at,claimed_at,claimed_by,claim_expires_at").bind(limit).bind(worker).bind(lease).fetch_all(pool).await?.into_iter().map(map_delete).collect::<Result<Vec<_>, _>>().map(claimed_in_order)
 }
 pub async fn fail_delete_request(
     pool: &Pool,
@@ -42,7 +61,7 @@ pub async fn fail_delete_request(
     worker: &str,
     error: Value,
 ) -> Result<bool, DbError> {
-    Ok(sqlx::query("UPDATE tamoss_delete_requests SET status='error',claimed_at=NULL,claimed_by=NULL,record=json_set(json_set(json_set(record,'$.status',json('\"error\"')),'$.error',json(?3)),'$.updated',(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')),updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id=?1 AND status='started' AND claimed_by=?2").bind(id).bind(worker).bind(sqlx::types::Json(error)).execute(pool).await?.rows_affected()==1)
+    Ok(sqlx::query("UPDATE tamoss_delete_requests SET status='error',claimed_at=NULL,claimed_by=NULL,claim_expires_at=(strftime('%Y-%m-%dT%H:%M:%f','now',printf('%+d seconds',MIN(3600,60*(1<<MIN(MAX(COALESCE(record->>'attempt_count',0)+1,1)-1,6))))) || '000000Z'),record=json_set(json_set(json_set(json_set(record,'$.status',json('\"error\"')),'$.error',json(?3)),'$.updated',(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')),'$.attempt_count',COALESCE(record->>'attempt_count',0)+1),updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id=?1 AND status='started' AND claimed_by=?2").bind(id).bind(worker).bind(sqlx::types::Json(error)).execute(pool).await?.rows_affected()==1)
 }
 pub async fn release_delete_request(pool: &Pool, id: Uuid, worker: &str) -> Result<bool, DbError> {
     Ok(sqlx::query("UPDATE tamoss_delete_requests SET status='started',claimed_at=NULL,claimed_by=NULL,claim_expires_at=NULL,record=json_set(json_set(record,'$.status',json('\"started\"')),'$.updated',(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')),updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id=?1 AND status='started' AND claimed_by=?2").bind(id).bind(worker).execute(pool).await?.rows_affected()==1)
@@ -65,7 +84,7 @@ pub async fn claim_cleanups(
     lease: i64,
 ) -> Result<Vec<ObjectCleanup>, DbError> {
     let (limit, lease) = claim_bounds(limit, lease)?;
-    sqlx::query("UPDATE tamoss_object_cleanups SET status='started',claimed_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),claimed_by=?2,claim_expires_at=(strftime('%Y-%m-%dT%H:%M:%f','now',printf('%+d seconds',?3)) || '000000Z'),updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id IN (SELECT id FROM tamoss_object_cleanups WHERE delete_request_id IS NULL AND status IN ('pending','started','error') AND(claim_expires_at IS NULL OR claim_expires_at<=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'))ORDER BY created_at,id LIMIT ?1) RETURNING id,delete_request_id,object_id,storage_backend_id,status,record,updated,created_at,claimed_at,claimed_by,claim_expires_at").bind(limit).bind(worker).bind(lease).fetch_all(pool).await?.into_iter().map(map_cleanup).collect()
+    sqlx::query("UPDATE tamoss_object_cleanups SET status='started',claimed_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),claimed_by=?2,claim_expires_at=(strftime('%Y-%m-%dT%H:%M:%f','now',printf('%+d seconds',?3)) || '000000Z'),updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id IN (SELECT id FROM tamoss_object_cleanups WHERE delete_request_id IS NULL AND status IN ('pending','started','error') AND(claim_expires_at IS NULL OR claim_expires_at<=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'))ORDER BY created_at,id LIMIT ?1) RETURNING id,delete_request_id,object_id,storage_backend_id,status,record,updated,created_at,claimed_at,claimed_by,claim_expires_at").bind(limit).bind(worker).bind(lease).fetch_all(pool).await?.into_iter().map(map_cleanup).collect::<Result<Vec<_>, _>>().map(claimed_in_order)
 }
 pub async fn list_parent_cleanups(
     pool: &Pool,
@@ -120,7 +139,7 @@ pub async fn claim_copies(
     lease: i64,
 ) -> Result<Vec<ObjectCopy>, DbError> {
     let (limit, lease) = claim_bounds(limit, lease)?;
-    sqlx::query("UPDATE tamoss_object_copies SET status='started',claimed_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),claimed_by=?2,claim_expires_at=(strftime('%Y-%m-%dT%H:%M:%f','now',printf('%+d seconds',?3)) || '000000Z'),updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id IN (SELECT id FROM tamoss_object_copies WHERE status IN ('pending','started','error') AND(claim_expires_at IS NULL OR claim_expires_at<=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'))ORDER BY created_at,id LIMIT ?1) RETURNING id,object_id,source_storage_backend_id,destination_storage_backend_id,status,record,updated,created_at,claimed_at,claimed_by,claim_expires_at").bind(limit).bind(worker).bind(lease).fetch_all(pool).await?.into_iter().map(map_copy).collect()
+    sqlx::query("UPDATE tamoss_object_copies SET status='started',claimed_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),claimed_by=?2,claim_expires_at=(strftime('%Y-%m-%dT%H:%M:%f','now',printf('%+d seconds',?3)) || '000000Z'),updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id IN (SELECT id FROM tamoss_object_copies WHERE status IN ('pending','started','error') AND(claim_expires_at IS NULL OR claim_expires_at<=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'))ORDER BY created_at,id LIMIT ?1) RETURNING id,object_id,source_storage_backend_id,destination_storage_backend_id,status,record,updated,created_at,claimed_at,claimed_by,claim_expires_at").bind(limit).bind(worker).bind(lease).fetch_all(pool).await?.into_iter().map(map_copy).collect::<Result<Vec<_>, _>>().map(claimed_in_order)
 }
 pub async fn begin_copy_attempt(pool: &Pool, id: Uuid, worker: &str) -> Result<bool, DbError> {
     begin_attempt(pool, "tamoss_object_copies", id, worker).await
@@ -155,7 +174,7 @@ pub async fn claim_webhooks(
     lease: i64,
 ) -> Result<Vec<WebhookDelivery>, DbError> {
     let (limit, lease) = claim_bounds(limit, lease)?;
-    sqlx::query("UPDATE tamoss_webhook_deliveries SET status='started',claimed_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),claimed_by=?2,claim_expires_at=(strftime('%Y-%m-%dT%H:%M:%f','now',printf('%+d seconds',?3)) || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id IN (SELECT id FROM tamoss_webhook_deliveries WHERE status IN ('pending','started') AND(next_attempt_at IS NULL OR next_attempt_at<=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'))AND(claim_expires_at IS NULL OR claim_expires_at<=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'))ORDER BY created_at,id LIMIT ?1) RETURNING id,webhook_id,status,next_attempt_at,record,created_at,updated_at,claimed_at,claimed_by,claim_expires_at").bind(limit).bind(worker).bind(lease).fetch_all(pool).await?.into_iter().map(map_webhook).collect()
+    sqlx::query("UPDATE tamoss_webhook_deliveries SET status='started',claimed_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),claimed_by=?2,claim_expires_at=(strftime('%Y-%m-%dT%H:%M:%f','now',printf('%+d seconds',?3)) || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id IN (SELECT id FROM tamoss_webhook_deliveries WHERE status IN ('pending','started') AND(next_attempt_at IS NULL OR next_attempt_at<=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'))AND(claim_expires_at IS NULL OR claim_expires_at<=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'))ORDER BY created_at,id LIMIT ?1) RETURNING id,webhook_id,status,next_attempt_at,record,created_at,updated_at,claimed_at,claimed_by,claim_expires_at").bind(limit).bind(worker).bind(lease).fetch_all(pool).await?.into_iter().map(map_webhook).collect::<Result<Vec<_>, _>>().map(claimed_in_order)
 }
 pub async fn begin_webhook_attempt(pool: &Pool, id: Uuid, worker: &str) -> Result<bool, DbError> {
     Ok(sqlx::query("UPDATE tamoss_webhook_deliveries SET record=json_set(json_set(record,'$.attempt_count',COALESCE((record->>'attempt_count'),0)+1),'$.updated',(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id=?1 AND status='started' AND claimed_by=?2 AND claim_expires_at>(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')").bind(id).bind(worker).execute(pool).await?.rows_affected()==1)
@@ -223,13 +242,13 @@ async fn finish_simple(
             "UPDATE tamoss_object_cleanups SET status=?3,claimed_at=NULL,claimed_by=NULL,claim_expires_at=NULL,record=json_set(json_set(json_set(record,'$.status',?3),'$.error',json(COALESCE(?4,'null'))),'$.updated',(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')),updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id=?1 AND status='started' AND claimed_by=?2"
         }
         ("tamoss_object_cleanups", false) => {
-            "UPDATE tamoss_object_cleanups SET status=?3,claimed_at=NULL,claimed_by=NULL,record=json_set(json_set(json_set(record,'$.status',?3),'$.error',json(COALESCE(?4,'null'))),'$.updated',(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')),updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id=?1 AND status='started' AND claimed_by=?2"
+            "UPDATE tamoss_object_cleanups SET status=?3,claimed_at=NULL,claimed_by=NULL,claim_expires_at=(strftime('%Y-%m-%dT%H:%M:%f','now',printf('%+d seconds',MIN(3600,60*(1<<MIN(MAX(COALESCE(record->>'attempt_count',1),1)-1,6))))) || '000000Z'),record=json_set(json_set(json_set(record,'$.status',?3),'$.error',json(COALESCE(?4,'null'))),'$.updated',(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')),updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id=?1 AND status='started' AND claimed_by=?2"
         }
         ("tamoss_object_copies", true) => {
             "UPDATE tamoss_object_copies SET status=?3,claimed_at=NULL,claimed_by=NULL,claim_expires_at=NULL,record=json_set(json_set(json_set(record,'$.status',?3),'$.error',json(COALESCE(?4,'null'))),'$.updated',(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')),updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id=?1 AND status='started' AND claimed_by=?2"
         }
         ("tamoss_object_copies", false) => {
-            "UPDATE tamoss_object_copies SET status=?3,claimed_at=NULL,claimed_by=NULL,record=json_set(json_set(json_set(record,'$.status',?3),'$.error',json(COALESCE(?4,'null'))),'$.updated',(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')),updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id=?1 AND status='started' AND claimed_by=?2"
+            "UPDATE tamoss_object_copies SET status=?3,claimed_at=NULL,claimed_by=NULL,claim_expires_at=(strftime('%Y-%m-%dT%H:%M:%f','now',printf('%+d seconds',MIN(3600,60*(1<<MIN(MAX(COALESCE(record->>'attempt_count',1),1)-1,6))))) || '000000Z'),record=json_set(json_set(json_set(record,'$.status',?3),'$.error',json(COALESCE(?4,'null'))),'$.updated',(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')),updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE id=?1 AND status='started' AND claimed_by=?2"
         }
         _ => return Err(DbError::Record("unknown queue".into())),
     };

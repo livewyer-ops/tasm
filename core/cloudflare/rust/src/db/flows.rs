@@ -40,6 +40,13 @@ pub struct FlowFilters {
     pub tags: TagFilters,
 }
 #[derive(Debug, Clone, Default)]
+pub struct SegmentSummary {
+    pub count: i64,
+    pub start: Option<i128>,
+    pub end: Option<i128>,
+    pub timerange: Option<String>,
+}
+#[derive(Debug, Clone, Default)]
 pub struct SegmentFilters {
     pub object_id: Option<String>,
     pub timerange_start: Option<i128>,
@@ -135,24 +142,28 @@ pub async fn list_flows_page(
     if f.timerange_is_empty {
         clause!("NOT EXISTS(SELECT 1 FROM tamoss_segments segment WHERE segment.flow_id=flow.id)");
     } else if f.timerange_start.is_some() || f.timerange_end.is_some() {
-        clause!(
-            "EXISTS(SELECT 1 FROM tamoss_segments segment WHERE segment.flow_id=flow.id GROUP BY segment.flow_id HAVING "
-        );
-        let mut h = false;
+        // MIN(start)<end AND MAX(end)>start, written as two EXISTS checks so
+        // each can use a segment index instead of aggregating the flow.
+        let mut first = true;
         if let Some(mut end) = f.timerange_end {
             if f.timerange_is_point && f.timerange_start == Some(end) {
                 end += 1
             }
-            q.push("MIN(segment.timerange_start)<").push_bind(end);
-            h = true
+            clause!("EXISTS(SELECT 1 FROM tamoss_segments segment WHERE segment.flow_id=flow.id AND segment.timerange_start<")
+                .push_bind(end)
+                .push(")");
+            first = false;
         }
         if let Some(start) = f.timerange_start {
-            if h {
-                q.push(" AND ");
+            if first {
+                clause!(
+                    "EXISTS(SELECT 1 FROM tamoss_segments segment WHERE segment.flow_id=flow.id AND segment.timerange_end>"
+                );
+            } else {
+                q.push(" AND EXISTS(SELECT 1 FROM tamoss_segments segment WHERE segment.flow_id=flow.id AND segment.timerange_end>");
             }
-            q.push("MAX(segment.timerange_end)>").push_bind(start);
+            q.push_bind(start).push(")");
         }
-        q.push(")");
     }
     if f.top_level_only || f.collected_by_ids.is_some() {
         clause!(if f.top_level_only {
@@ -414,8 +425,20 @@ pub async fn list_sources_page(
         page,
     ))
 }
-pub async fn list_segments(pool: &Pool, flow_id: Uuid) -> Result<Vec<SegmentRecord>, DbError> {
-    sqlx::query("SELECT flow_id,object_id,init_object_id,timerange,timerange_start,timerange_end,record,created FROM tamoss_segments WHERE flow_id=?1 ORDER BY timerange_start,object_id,timerange").bind(flow_id).fetch_all(pool).await?.into_iter().map(map_segment).collect()
+fn push_segment_filters(q: &mut QueryBuilder<'_, Sqlite>, flow_id: Uuid, f: &SegmentFilters) {
+    q.push_bind(flow_id);
+    if let Some(id) = &f.object_id {
+        q.push(" AND object_id=").push_bind(id.clone());
+    }
+    if let Some(start) = f.timerange_start {
+        q.push(" AND timerange_end>").push_bind(start);
+    }
+    if let Some(mut end) = f.timerange_end {
+        if f.timerange_is_point && f.timerange_start == Some(end) {
+            end += 1
+        }
+        q.push(" AND timerange_start<").push_bind(end);
+    }
 }
 pub async fn list_segments_page(
     pool: &Pool,
@@ -427,19 +450,7 @@ pub async fn list_segments_page(
     let mut q = QueryBuilder::<Sqlite>::new(
         "SELECT flow_id,object_id,init_object_id,timerange,timerange_start,timerange_end,record,created FROM tamoss_segments WHERE flow_id=",
     );
-    q.push_bind(flow_id);
-    if let Some(id) = &f.object_id {
-        q.push(" AND object_id=").push_bind(id);
-    }
-    if let Some(start) = f.timerange_start {
-        q.push(" AND timerange_end>").push_bind(start);
-    }
-    if let Some(mut end) = f.timerange_end {
-        if f.timerange_is_point && f.timerange_start == Some(end) {
-            end += 1
-        }
-        q.push(" AND timerange_start<").push_bind(end);
-    }
+    push_segment_filters(&mut q, flow_id, f);
     q.push(if reverse {
         " ORDER BY timerange_start DESC,object_id DESC,timerange DESC"
     } else {
@@ -458,6 +469,24 @@ pub async fn list_segments_page(
             .collect::<Result<_, _>>()?,
         page,
     ))
+}
+/// Count and outer bounds of the segments matching a segment list query.
+pub async fn segment_summary(
+    pool: &Pool,
+    flow_id: Uuid,
+    f: &SegmentFilters,
+) -> Result<SegmentSummary, DbError> {
+    let mut q = QueryBuilder::<Sqlite>::new(
+        "SELECT COUNT(*),MIN(timerange_start),MAX(timerange_end),MIN(timerange) FROM tamoss_segments WHERE flow_id=",
+    );
+    push_segment_filters(&mut q, flow_id, f);
+    let row = q.build().fetch_one(pool).await?;
+    Ok(SegmentSummary {
+        count: row.try_get(0)?,
+        start: row.try_get(1)?,
+        end: row.try_get(2)?,
+        timerange: row.try_get(3)?,
+    })
 }
 pub async fn append_segment<'e, E>(e: E, v: &SegmentRecord) -> Result<(), DbError>
 where

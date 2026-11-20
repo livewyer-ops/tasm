@@ -1,4 +1,4 @@
-import { open, readFile } from "node:fs/promises";
+import { open, readFile, rm } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { dirname, resolve } from "node:path";
 import { getPlatformProxy } from "wrangler";
@@ -37,6 +37,8 @@ const platform = await getPlatformProxy<Env>({
   persist: { path: resolve(dirname(values.config), ".wrangler/state/v3") },
 });
 let output: Awaited<ReturnType<typeof open>> | undefined;
+// Remove the output file unless the command completes, so a retry can reuse the path.
+let completed = false;
 try {
   if (values.output) output = await open(values.output, "wx", 0o600);
   const auth = createAuth(platform.env);
@@ -67,9 +69,15 @@ try {
             client_credentials_scopes: requested,
           },
         });
+        try {
+          await auth.api.adminLinkClientResource({ headers, params: { identifier: platform.env.TAMS_AUDIENCE, client_id: client.client_id } });
+        } catch (error) {
+          // A client that cannot reach the TAMS resource is unusable; do not leave it behind.
+          await auth.api.deleteOAuthClient({ headers, body: { client_id: client.client_id } }).catch(() => {});
+          throw error;
+        }
         await output!.writeFile(JSON.stringify({ ...client, token_url: `${platform.env.AUTH_ISSUER}/api/auth/oauth2/token`, api_url: platform.env.TAMS_AUDIENCE }, null, 2) + "\n");
         await output!.sync();
-        await auth.api.adminLinkClientResource({ headers, params: { identifier: platform.env.TAMS_AUDIENCE, client_id: client.client_id } });
         console.log("Client created; credentials written to", values.output);
       } else if (command === "list") {
         const clients = await auth.api.getOAuthClients({ headers });
@@ -88,7 +96,9 @@ try {
       }
     } finally { await auth.api.signOut({ headers }); }
   }
+  completed = true;
 } finally {
   await output?.close();
+  if (output && !completed) await rm(values.output!, { force: true });
   await platform.dispose();
 }

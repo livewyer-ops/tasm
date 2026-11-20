@@ -204,14 +204,20 @@ async fn get_object(
 
     let flow_tag_values = params.dynamic_csv("flow_tag.")?;
     let flow_tag_exists = params.dynamic_bool("flow_tag_exists.")?;
+    // Referencing flows come from stored segments, so a flow lookup is only
+    // needed to apply flow tag filters.
     let mut flows = Vec::new();
-    for flow_id in &media.referenced_by_flows {
-        if let Some(flow) = db::flows::get_flow(&pool, *flow_id)
-            .await
-            .map_err(internal)?
-            && tags_match(&flow.tags, &flow_tag_values, &flow_tag_exists)
-        {
-            flows.push(*flow_id);
+    if flow_tag_values.is_empty() && flow_tag_exists.is_empty() {
+        flows.extend(media.referenced_by_flows.iter().copied());
+    } else {
+        for flow_id in &media.referenced_by_flows {
+            if let Some(flow) = db::flows::get_flow(&pool, *flow_id)
+                .await
+                .map_err(internal)?
+                && tags_match(&flow.tags, &flow_tag_values, &flow_tag_exists)
+            {
+                flows.push(*flow_id);
+            }
         }
     }
     flows.sort_unstable();

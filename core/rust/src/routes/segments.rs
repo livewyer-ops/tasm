@@ -1,5 +1,6 @@
 // Cloudflare adaptation of TASM and rust-tams-api (Apache-2.0); see NOTICE.
 use crate::sql as sqlx;
+use futures_util::StreamExt;
 use std::collections::{BTreeMap, BTreeSet};
 
 use axum::{
@@ -17,7 +18,9 @@ use uuid::Uuid;
 
 use super::{
     objects::object_urls,
-    service::{MetadataState, enqueue_event, internal, page, paged_response, query},
+    service::{
+        MetadataState, enqueue_flow_event, flow_audience, internal, page, paged_response, query,
+    },
 };
 use crate::{
     Actor,
@@ -89,9 +92,7 @@ fn valid_post_shape(value: &Value) -> bool {
             object
                 .get(*field)
                 .and_then(Value::as_str)
-                .is_some_and(|value| {
-                    crate::domain::timerange::parse(&format!("[{value}]")).is_err()
-                })
+                .is_some_and(|value| crate::domain::timerange::timestamp(value).is_err())
         })
     {
         return false;
@@ -150,45 +151,37 @@ async fn list(
         .unwrap_or_default();
     let page_request = page(&params)?;
     let pool = state.pool().await?;
-    let mut filtered = db::flows::list_segments(&pool, flow_id)
-        .await
-        .map_err(internal)?
-        .into_iter()
-        .filter(|item| {
-            params
-                .last("object_id")
-                .is_none_or(|id| item.object_id == id)
-                && !requested.empty
-                && segment::bounds(&item.timerange).is_ok_and(|value| {
-                    let query_end = if requested.point {
-                        requested.start.map(|start| start.saturating_add(1))
-                    } else {
-                        requested.end
-                    };
-                    requested.start.is_none_or(|start| value.end > start)
-                        && query_end.is_none_or(|end| value.start < end)
-                })
-        })
-        .collect::<Vec<_>>();
-    filtered.sort_by(|left, right| {
-        left.timerange_end
-            .cmp(&right.timerange_end)
-            .then_with(|| left.timerange_start.cmp(&right.timerange_start))
-            .then_with(|| left.object_id.cmp(&right.object_id))
-            .then_with(|| left.timerange.cmp(&right.timerange))
-    });
-    if reverse {
-        filtered.reverse();
-    }
-    let all_timerange = timerange_union(&filtered);
-    let start = usize::try_from(page_request.offset)
-        .unwrap_or(usize::MAX)
-        .min(filtered.len());
-    let limit = usize::try_from(page_request.limit).unwrap_or(usize::MAX);
-    let end = start.saturating_add(limit).min(filtered.len());
-    let items = &filtered[start..end];
-    let next_page =
-        (end < filtered.len()).then(|| (page_request.offset + page_request.limit).to_string());
+    // Filter, order and page in SQL so a request costs one page, not the
+    // whole flow. Segments in a flow never overlap, so ordering by start is
+    // the same as ordering by end.
+    let filters = db::flows::SegmentFilters {
+        object_id: params.last("object_id").map(str::to_owned),
+        timerange_start: requested.start,
+        timerange_end: requested.end,
+        timerange_is_point: requested.point,
+    };
+    let (page_items, summary) = if requested.empty {
+        (Vec::new(), db::flows::SegmentSummary::default())
+    } else {
+        let summary = db::flows::segment_summary(&pool, flow_id, &filters)
+            .await
+            .map_err(internal)?;
+        let page = db::flows::list_segments_page(&pool, flow_id, &filters, reverse, &page_request)
+            .await
+            .map_err(|error| match error {
+                db::DbError::Page => invalid_query(),
+                error => internal(error),
+            })?;
+        (page.items, summary)
+    };
+    let all_timerange = match summary.count {
+        0 => "()".into(),
+        1 => summary.timerange.unwrap_or_else(|| "()".into()),
+        _ => crate::domain::timerange::from_bounds(summary.start, summary.end),
+    };
+    let items = page_items.as_slice();
+    let shown = page_request.offset.saturating_add(items.len() as i64);
+    let next_page = (shown < summary.count).then(|| shown.to_string());
     let mut responses = Vec::new();
     if request.method() != Method::HEAD {
         let ids = items
@@ -285,6 +278,23 @@ fn timerange_union(values: &[SegmentRecord]) -> String {
     )
 }
 
+/// Disjoint segment ranges keyed by start, for O(log n) overlap checks.
+#[derive(Default)]
+struct Occupied(BTreeMap<i128, i128>);
+impl Occupied {
+    fn overlaps(&self, bounds: segment::SegmentBounds) -> bool {
+        // Ranges are disjoint, so the one starting latest before `bounds.end`
+        // also ends latest; it is the only candidate.
+        self.0
+            .range(..bounds.end)
+            .next_back()
+            .is_some_and(|(_, end)| *end > bounds.start)
+    }
+    fn insert(&mut self, bounds: segment::SegmentBounds) {
+        self.0.insert(bounds.start, bounds.end);
+    }
+}
+
 enum RegisterError {
     Validation(String),
     Infrastructure(ApiError),
@@ -347,28 +357,36 @@ async fn post(
     let pre = db::objects::get_many(&pool, &ids.iter().cloned().collect::<Vec<_>>())
         .await
         .map_err(internal)?;
-    let mut uploads = BTreeMap::new();
-    for record in &pre {
-        if !record.referenced_by_flows.is_empty() {
-            continue;
+    // Check newly uploaded objects a few at a time rather than one by one.
+    let pending = pre
+        .iter()
+        .filter(|record| record.referenced_by_flows.is_empty())
+        .filter_map(|record| {
+            let media = MediaObject::from_record(record, &backends);
+            let backend = media
+                .instances
+                .iter()
+                .find(|instance| instance.controlled)
+                .and_then(|instance| instance.storage_backend.clone())?;
+            Some((media.id, backend, record.id.clone()))
+        })
+        .collect::<Vec<_>>();
+    let uploads = futures_util::stream::iter(pending.into_iter().map(|(id, backend, object)| {
+        let storage = &storage;
+        async move {
+            let size = storage
+                .head_optional(&backend, &object)
+                .await
+                .map_err(internal)?
+                .map(|metadata| metadata.content_length.unwrap_or(0));
+            Ok::<_, ApiError>((id, size))
         }
-        let media = MediaObject::from_record(record, &backends);
-        if let Some(backend) = media
-            .instances
-            .iter()
-            .find(|instance| instance.controlled)
-            .and_then(|instance| instance.storage_backend.as_ref())
-        {
-            uploads.insert(
-                media.id,
-                storage
-                    .head_optional(backend, &record.id)
-                    .await
-                    .map_err(internal)?
-                    .map(|metadata| metadata.content_length.unwrap_or(0)),
-            );
-        }
-    }
+    }))
+    .buffer_unordered(8)
+    .collect::<Vec<_>>()
+    .await
+    .into_iter()
+    .collect::<Result<BTreeMap<_, _>, _>>()?;
     let mut transaction = pool.begin().await.map_err(internal)?;
     db::flows::lock_flow_segments(&mut *transaction, flow_id)
         .await
@@ -387,12 +405,36 @@ async fn post(
         .clone()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ApiError::bad_request("Bad request. The Flow 'container' is not set."))?;
-    let known = segments_in(&mut transaction, flow_id).await?;
-    let mut ranges = known
+    // Only stored segments within the batch's extent can overlap it.
+    let mut ranges = Occupied::default();
+    let extent = values
         .iter()
-        .map(|value| segment::bounds(&value.timerange))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| invalid_json())?;
+        .filter_map(|value| {
+            segment::validate_post(value)
+                .ok()
+                .map(|(_, _, bounds)| bounds)
+        })
+        .fold(None, |extent: Option<(i128, i128)>, bounds| {
+            Some(extent.map_or((bounds.start, bounds.end), |(start, end)| {
+                (start.min(bounds.start), end.max(bounds.end))
+            }))
+        });
+    if let Some((start, end)) = extent {
+        for row in sqlx::query(crate::db::statements::FLOW_SEGMENT_BOUNDS)
+            .bind(flow_id)
+            .bind(start)
+            .bind(end)
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(internal)?
+        {
+            ranges.insert(segment::SegmentBounds {
+                start: row.try_get(0).map_err(internal)?,
+                end: row.try_get(1).map_err(internal)?,
+                point: false,
+            });
+        }
+    }
     db::objects::lock_sorted(&mut transaction, ids.clone())
         .await
         .map_err(internal)?;
@@ -448,13 +490,13 @@ async fn register_one(
     container: &str,
     transaction: &mut Transaction<'_, Engine>,
     objects: &mut BTreeMap<String, MediaObjectRecord>,
-    ranges: &mut Vec<segment::SegmentBounds>,
+    ranges: &mut Occupied,
     uploads: &BTreeMap<String, Option<i64>>,
     value: &Value,
 ) -> Result<SegmentRecord, RegisterError> {
     let bad = || "Bad request. Invalid Flow Segment JSON.".to_owned();
     let (object_id, timerange, bounds) = segment::validate_post(value).map_err(|_| bad())?;
-    if ranges.iter().any(|known| segment::overlaps(*known, bounds)) {
+    if ranges.overlaps(bounds) {
         return Err("Segment timerange overlaps with an existing segment".into());
     }
     let data = value.as_object().expect("validated segment");
@@ -634,7 +676,7 @@ async fn register_one(
     db::flows::append_segment(&mut **transaction, &record)
         .await
         .map_err(internal)?;
-    ranges.push(bounds);
+    ranges.insert(bounds);
     Ok(record)
 }
 
@@ -869,67 +911,19 @@ async fn segment_events(
     kind: &str,
     segments: &[SegmentRecord],
 ) -> Result<(), ApiError> {
-    let parents = db::flows::list_flows_collecting(&mut **transaction, &[flow.id])
-        .await
-        .map_err(internal)?;
-    let parent_ids = parents.iter().map(|value| value.id).collect::<Vec<_>>();
-    let source_ids = flow.source_id.into_iter().collect::<Vec<_>>();
-    let relationships = db::flows::source_relationships(&mut **transaction, &source_ids)
-        .await
-        .map_err(internal)?;
-    let source_parents = flow
-        .source_id
-        .and_then(|id| relationships.get(&id))
-        .map(|value| value.collected_by.clone())
-        .unwrap_or_default();
+    let audience = flow_audience(transaction, flow).await?;
     let event = if kind == "flows/segments_deleted" {
         json!({"flow_id":flow.id,"timerange":timerange_union(segments)})
     } else {
         json!({"flow_id":flow.id,"segments":segments.iter().map(|value| segment::response(value,Vec::new(),value.init_object_id.as_deref().map(|id| (id,Vec::new())),true)).collect::<Vec<_>>()})
     };
-    let updated = json!({"flow":model::flow(flow,&parent_ids,None)});
+    let updated = json!({"flow":model::flow(flow,&audience.parent_ids,None)});
     if kind == "flows/segments_deleted" {
-        enqueue_event(
-            transaction,
-            kind,
-            event,
-            &[flow.id],
-            &source_ids,
-            &parent_ids,
-            &source_parents,
-        )
-        .await?;
-        enqueue_event(
-            transaction,
-            "flows/updated",
-            updated,
-            &[flow.id],
-            &source_ids,
-            &parent_ids,
-            &source_parents,
-        )
-        .await
+        enqueue_flow_event(transaction, kind, event, flow, &audience).await?;
+        enqueue_flow_event(transaction, "flows/updated", updated, flow, &audience).await
     } else {
-        enqueue_event(
-            transaction,
-            "flows/updated",
-            updated,
-            &[flow.id],
-            &source_ids,
-            &parent_ids,
-            &source_parents,
-        )
-        .await?;
-        enqueue_event(
-            transaction,
-            kind,
-            event,
-            &[flow.id],
-            &source_ids,
-            &parent_ids,
-            &source_parents,
-        )
-        .await
+        enqueue_flow_event(transaction, "flows/updated", updated, flow, &audience).await?;
+        enqueue_flow_event(transaction, kind, event, flow, &audience).await
     }
 }
 pub(crate) async fn webhook_event(
@@ -1132,4 +1126,30 @@ async fn object_ranges(
             .map_err(|_| ApiError::bad_request("Bad request. Invalid stored Segment timerange."))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Occupied;
+    use crate::domain::segment::bounds;
+
+    #[test]
+    fn occupied_ranges_detect_overlaps() {
+        let mut ranges = Occupied::default();
+        for value in ["[0:0_1:0)", "[2:0_3:0)", "[5:0]"] {
+            ranges.insert(bounds(value).unwrap());
+        }
+        for (value, expected) in [
+            ("[1:0_2:0)", false),
+            ("[0:500_0:600)", true),
+            ("[2:999999999_4:0)", true),
+            ("[3:0_5:0)", false),
+            ("[4:0_6:0)", true),
+            ("[5:0]", true),
+            ("[-1:0_0:0]", true),
+            ("[-1:0_0:0)", false),
+        ] {
+            assert_eq!(ranges.overlaps(bounds(value).unwrap()), expected, "{value}");
+        }
+    }
 }

@@ -6,7 +6,6 @@ use std::{
 };
 use web_time::Instant;
 
-use futures_util::{StreamExt, stream};
 use serde_json::{Value, json};
 use sqlx::Row;
 use time::OffsetDateTime;
@@ -59,23 +58,41 @@ impl Worker {
             i64::try_from(self.settings.worker_max_requests).map_err(|_| WorkerError::Bounds)?;
         let lease =
             i64::try_from(self.settings.worker_lease_seconds).map_err(|_| WorkerError::Bounds)?;
-        let mut delete = 0;
-        if self.settings.worker_enable_delete {
-            delete += self.process_delete_requests(limit, lease).await?;
-            delete += self.process_copies(limit, lease).await?;
-            delete += self.queue_stale_allocations(limit).await?;
-            delete += self.process_cleanups(limit, lease).await?;
-        }
-        let webhook = if self.settings.worker_enable_webhook {
-            self.process_webhooks(limit, lease).await?
-        } else {
-            0
-        };
         let retention = i64::try_from(self.settings.worker_queue_retention_seconds)
             .map_err(|_| WorkerError::Bounds)?;
-        let pool = self.database.pool().await?;
-        let _ = db::queues::purge(&pool, retention, 1000).await?;
-        Ok(delete + webhook)
+        // Run every stage even when an earlier one fails, so one broken queue
+        // cannot stop the others. The first error is returned afterwards.
+        let mut processed = 0;
+        let mut first_error = None;
+        let mut stage = |name: &str, result: Result<u64, WorkerError>| match result {
+            Ok(count) => processed += count,
+            Err(error) => {
+                tracing::error!(stage = name, error = %redacted(&error.to_string()), "worker stage failed");
+                first_error.get_or_insert(error);
+            }
+        };
+        if self.settings.worker_enable_delete {
+            stage(
+                "delete_requests",
+                self.process_delete_requests(limit, lease).await,
+            );
+            stage("copies", self.process_copies(limit, lease).await);
+            stage(
+                "stale_allocations",
+                self.queue_stale_allocations(limit).await,
+            );
+            stage("cleanups", self.process_cleanups(limit, lease).await);
+        }
+        if self.settings.worker_enable_webhook {
+            stage("webhooks", self.process_webhooks(limit, lease).await);
+        }
+        let purged = async {
+            let pool = self.database.pool().await?;
+            db::queues::purge(&pool, retention, 1000).await?;
+            Ok(0)
+        };
+        stage("purge", purged.await);
+        first_error.map_or(Ok(processed), Err)
     }
 
     async fn process_delete_requests(&self, limit: i64, lease: i64) -> Result<u64, WorkerError> {
@@ -112,26 +129,14 @@ impl Worker {
         lease: i64,
     ) -> Result<(), WorkerError> {
         let pool = self.database.pool().await?;
-        let requested = record
-            .get("timerange_remaining")
-            .and_then(Value::as_str)
-            .or_else(|| record.get("timerange_to_delete").and_then(Value::as_str))
-            .and_then(|value| timerange::parse(value).ok());
-        let (start, end) = requested.map_or((i128::MIN, i128::MAX), |value| {
-            (
-                value.start.unwrap_or(i128::MIN),
-                if value.point {
-                    value.start.map(|start| start.saturating_add(1))
-                } else {
-                    value.end
-                }
-                .unwrap_or(i128::MAX),
-            )
-        });
         let delete_flow = record
             .get("delete_flow")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let Some((start, end)) = delete_range(record, delete_flow)? else {
+            // The segment phase committed earlier; only object cleanup is left.
+            return self.finish_delete_request(id, lease).await;
+        };
         let mut transaction = pool.begin().await.map_err(db::DbError::from)?;
         db::flows::lock_flow_segments(&mut *transaction, flow_id).await?;
         let mut flow = db::flows::get_flow_with(&mut *transaction, flow_id).await?;
@@ -251,16 +256,19 @@ impl Worker {
             remaining_bounds.try_get(0).map_err(db::DbError::from)?;
         let remaining_end: Option<i128> = remaining_bounds.try_get(1).map_err(db::DbError::from)?;
         let remaining = remaining_start.is_some() || remaining_end.is_some();
-        if remaining {
-            let value = timerange::from_bounds(remaining_start, remaining_end);
-            sqlx::query(crate::db::statements::UPDATE_REMAINING)
-                .bind(id)
-                .bind(value)
-                .bind(&self.settings.worker_id)
-                .execute(&mut *transaction)
-                .await
-                .map_err(db::DbError::from)?;
-        }
+        // Record progress in the same transaction as the deletion, so a retry
+        // never repeats a committed segment phase. "()" means nothing remains.
+        sqlx::query(crate::db::statements::UPDATE_REMAINING)
+            .bind(id)
+            .bind(if remaining {
+                timerange::from_bounds(remaining_start, remaining_end)
+            } else {
+                "()".into()
+            })
+            .bind(&self.settings.worker_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db::DbError::from)?;
         if delete_flow && !remaining && flow.is_some() {
             let flow_id_text = flow_id.to_string();
             for parent in &mut parents {
@@ -350,13 +358,15 @@ impl Worker {
         transaction.commit().await.map_err(db::DbError::from)?;
         if remaining {
             db::queues::release_delete_request(&pool, id, &self.settings.worker_id).await?;
+            Ok(())
         } else {
-            sqlx::query(crate::db::statements::CLEAR_REMAINING)
-                .bind(id)
-                .bind(&self.settings.worker_id)
-                .execute(&pool)
-                .await
-                .map_err(db::DbError::from)?;
+            self.finish_delete_request(id, lease).await
+        }
+    }
+
+    async fn finish_delete_request(&self, id: Uuid, lease: i64) -> Result<(), WorkerError> {
+        let pool = self.database.pool().await?;
+        {
             sqlx::query(crate::db::statements::CLAIM_CLEANUPS)
                 .bind(id)
                 .bind(&self.settings.worker_id)
@@ -515,11 +525,9 @@ impl Worker {
         for row in rows {
             let object_id: String = row.try_get(0).map_err(db::DbError::from)?;
             let record: sqlx::types::Json<Value> = row.try_get(1).map_err(db::DbError::from)?;
-            let backends = controlled_backend_ids(&record.0);
-            if backends.is_empty() {
-                continue;
-            }
-            for storage_backend_id in backends {
+            // An object with no controlled instance has no bytes to remove, but
+            // its row still has to go or it would block the sweep forever.
+            for storage_backend_id in controlled_backend_ids(&record.0) {
                 let id = Uuid::new_v4();
                 db::queues::save_cleanup(&mut *transaction, &ObjectCleanup { id, delete_request_id: None, object_id: object_id.clone(), storage_backend_id, status:"pending".into(), record:json!({"id":id,"object_id":object_id,"storage_backend_id":storage_backend_id,"status":"pending","created":crate::domain::model::timestamp(now),"updated":crate::domain::model::timestamp(now),"attempt_count":0}), updated:now, created_at:now, claimed_at:None, claimed_by:None, claim_expires_at:None }).await?;
             }
@@ -612,18 +620,17 @@ impl Worker {
         let deliveries =
             db::queues::claim_webhooks(&pool, &self.settings.worker_id, limit, lease).await?;
         let count = deliveries.len() as u64;
-        let concurrency = usize::try_from(self.settings.webhook_delivery_concurrency)
-            .map_err(|_| WorkerError::Bounds)?;
-        stream::iter(
-            deliveries
-                .into_iter()
-                .map(|delivery| self.process_webhook(delivery)),
-        )
-        .buffer_unordered(concurrency)
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?;
+        // One delivery at a time: the hosts release the store lock while a
+        // receiver answers, which is only safe with a single request in flight.
+        let mut first_error = None;
+        for delivery in deliveries {
+            if let Err(error) = self.process_webhook(delivery).await {
+                first_error.get_or_insert(error);
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
         Ok(count)
     }
 
@@ -638,7 +645,7 @@ impl Worker {
             .and_then(Value::as_u64)
             .unwrap_or(0)
             + 1;
-        let Some(mut live) = db::service::get_webhook(&pool, delivery.webhook_id).await? else {
+        let Some(live) = db::service::get_webhook(&pool, delivery.webhook_id).await? else {
             db::queues::terminal_webhook(
                 &pool,
                 delivery.id,
@@ -680,10 +687,7 @@ impl Worker {
             .get("payload")
             .cloned()
             .unwrap_or_else(|| json!({}));
-        let policy = WebhookPolicy {
-            allow_private_targets: self.settings.webhook_allow_private_targets,
-            allowed_hosts: self.settings.webhook_allowed_hosts.clone(),
-        };
+        let policy = WebhookPolicy::from_settings(&self.settings);
         let started = Instant::now();
         let result = webhooks::deliver(
             &self.database.0,
@@ -755,9 +759,7 @@ impl Worker {
         let _ = (outcome, elapsed);
         if let Some(status) = terminal {
             if status == "dead" {
-                live.status = "error".into();
-                live.record["status"] = json!("error");
-                live.record["data"]["error"] = error
+                let failure = error
                     .clone()
                     .unwrap_or_else(|| queue_error("RequestError", "Webhook request failed"));
                 let mut transaction = pool.begin().await.map_err(db::DbError::from)?;
@@ -771,8 +773,18 @@ impl Worker {
                     .map_err(db::DbError::from)?
                     .rows_affected()
                     == 1;
-                if finished {
-                    db::service::save_webhook(&mut *transaction, &live).await?;
+                // Re-read the webhook: it may have been deleted or replaced while
+                // the delivery was in flight, and the earlier copy must not win.
+                if finished
+                    && let Some(mut current) =
+                        db::service::get_webhook_with(&mut *transaction, delivery.webhook_id)
+                            .await?
+                    && matches!(current.status.as_str(), "created" | "started")
+                {
+                    current.status = "error".into();
+                    current.record["status"] = json!("error");
+                    current.record["data"]["error"] = failure;
+                    db::service::save_webhook(&mut *transaction, &current).await?;
                 }
                 transaction.commit().await.map_err(db::DbError::from)?;
             } else {
@@ -893,6 +905,73 @@ fn media_record(row: sqlx::RecordRow) -> Result<MediaObjectRecord, WorkerError> 
 fn queue_error(kind: &str, summary: &str) -> Value {
     json!({"type":kind,"summary":summary,"time":crate::domain::model::timestamp(crate::now())})
 }
+/// The segment range a delete request still has to process, or `None` when its
+/// segment phase has already committed. Flow deletion always covers the whole
+/// flow, so segments written after the request was made are removed too.
+fn delete_range(record: &Value, delete_flow: bool) -> Result<Option<(i128, i128)>, WorkerError> {
+    let invalid = || WorkerError::Db(db::DbError::Record("invalid delete request range".into()));
+    let value = match record.get("timerange_remaining") {
+        // Older releases cleared the field once the segment phase committed.
+        Some(Value::Null) => return Ok(None),
+        Some(Value::String(value)) => value.as_str(),
+        Some(_) => return Err(invalid()),
+        None => record
+            .get("timerange_to_delete")
+            .and_then(Value::as_str)
+            .ok_or_else(invalid)?,
+    };
+    let bounds = timerange::parse(value).map_err(|_| invalid())?;
+    if bounds.empty {
+        return Ok(None);
+    }
+    if delete_flow {
+        return Ok(Some((i128::MIN, i128::MAX)));
+    }
+    Ok(Some((
+        bounds.start.unwrap_or(i128::MIN),
+        if bounds.point {
+            bounds.start.map(|start| start.saturating_add(1))
+        } else {
+            bounds.end
+        }
+        .unwrap_or(i128::MAX),
+    )))
+}
+
 fn redacted(value: &str) -> String {
     value.to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::delete_range;
+    use serde_json::json;
+
+    #[test]
+    fn delete_ranges_resume_without_repeating_work() {
+        let request = |remaining: serde_json::Value, delete_flow: bool| json!({"timerange_to_delete":"[0:0_10:0)","timerange_remaining":remaining,"delete_flow":delete_flow});
+        let segment = delete_range(&request(json!("[2:0_10:0)"), false), false).unwrap();
+        assert_eq!(segment, Some((2_000_000_000, 10_000_000_000)));
+        // A committed segment phase is never repeated, in either record format.
+        assert_eq!(
+            delete_range(&request(json!("()"), false), false).unwrap(),
+            None
+        );
+        assert_eq!(
+            delete_range(&request(json!(null), true), true).unwrap(),
+            None
+        );
+        // Flow deletion covers segments written after the request was made.
+        assert_eq!(
+            delete_range(&request(json!("[0:0_10:0)"), true), true).unwrap(),
+            Some((i128::MIN, i128::MAX))
+        );
+        let point = json!({"timerange_to_delete":"[5:0]"});
+        assert_eq!(
+            delete_range(&point, false).unwrap(),
+            Some((5_000_000_000, 5_000_000_001))
+        );
+        assert!(delete_range(&request(json!("nonsense"), false), false).is_err());
+        assert!(delete_range(&json!({}), false).is_err());
+    }
 }

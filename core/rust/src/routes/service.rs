@@ -234,6 +234,70 @@ fn selector(
     }
 }
 
+/// Webhook recipients for a flow event: the flow's source and the flow
+/// collections that contain the flow or its source.
+pub(crate) struct FlowAudience {
+    pub parent_ids: Vec<Uuid>,
+    pub source_ids: Vec<Uuid>,
+    pub source_parents: Vec<Uuid>,
+}
+
+pub(crate) async fn flow_audience(
+    connection: &mut Connection,
+    flow: &db::FlowRecord,
+) -> Result<FlowAudience, ApiError> {
+    let parent_ids = db::flows::list_flows_collecting(&mut *connection, &[flow.id])
+        .await
+        .map_err(internal)?
+        .iter()
+        .map(|value| value.id)
+        .collect();
+    let source_ids = flow.source_id.into_iter().collect::<Vec<_>>();
+    let source_parents = match flow.source_id {
+        Some(id) => db::flows::source_relationships(&mut *connection, &[id])
+            .await
+            .map_err(internal)?
+            .remove(&id)
+            .map(|value| value.collected_by)
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    Ok(FlowAudience {
+        parent_ids,
+        source_ids,
+        source_parents,
+    })
+}
+
+pub(crate) async fn enqueue_flow_event(
+    connection: &mut Connection,
+    event_type: &str,
+    event: Value,
+    flow: &db::FlowRecord,
+    audience: &FlowAudience,
+) -> Result<(), ApiError> {
+    enqueue_event(
+        connection,
+        event_type,
+        event,
+        &[flow.id],
+        &audience.source_ids,
+        &audience.parent_ids,
+        &audience.source_parents,
+    )
+    .await
+}
+
+/// Queues `flows/updated` for a flow whose stored record just changed.
+pub(crate) async fn emit_flow_updated(
+    connection: &mut Connection,
+    flow: &db::FlowRecord,
+) -> Result<(), ApiError> {
+    let audience = flow_audience(&mut *connection, flow).await?;
+    let event = json!({"flow":crate::domain::model::flow(flow,&audience.parent_ids,None)});
+    enqueue_flow_event(connection, "flows/updated", event, flow, &audience).await
+}
+
 pub(crate) async fn enqueue_event(
     connection: &mut Connection,
     event_type: &str,

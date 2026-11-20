@@ -71,8 +71,7 @@ async fn allocate(
         .path()
         .split('/')
         .nth(2)
-        .and_then(|v| v.parse().ok())
-        .ok_or_else(|| ApiError::bad_request("Invalid request: Input should be a valid UUID"))?;
+        .map_or_else(|| crate::http::path_uuid(""), crate::http::path_uuid)?;
     let content_type_header = request
         .headers()
         .get(axum::http::header::CONTENT_TYPE)
@@ -166,17 +165,22 @@ async fn allocate(
             "Specify either limit or object_ids, not both.",
         ));
     }
-    let requested = limit.unwrap_or(1);
-    if requested.max(1) as u64 > state.settings.storage_allocation_max_objects {
+    // Zero keeps the service default of one object, as list paging does.
+    let requested = match limit {
+        None | Some(0) => 1,
+        Some(value) if value < 0 => {
+            return Err(ApiError::bad_request(
+                "Bad request. Storage allocation limit must not be negative.",
+            ));
+        }
+        Some(value) => value,
+    };
+    if requested as u64 > state.settings.storage_allocation_max_objects {
         return Err(ApiError::bad_request(
             "Bad request. Storage allocation limit is too high.",
         ));
     }
-    let target = if requested == 0 {
-        1
-    } else {
-        requested.max(0) as usize
-    };
+    let target = requested as usize;
     let mut ids = supplied
         .map(|values| {
             values

@@ -16,7 +16,7 @@ pub struct Settings {
     pub worker_enable_webhook: bool,
     pub webhook_allow_private_targets: bool,
     pub webhook_allowed_hosts: Vec<String>,
-    pub webhook_delivery_concurrency: u64,
+    pub webhook_require_https: bool,
     pub webhook_max_attempts: u64,
     pub webhook_timeout_seconds: f64,
 }
@@ -25,7 +25,7 @@ impl Settings {
         Self {
             api_version: "8.2".into(),
             service_version: env!("CARGO_PKG_VERSION").into(),
-            service_name: "CF TAMS Wasm experiment".into(),
+            service_name: "TASM".into(),
             service_description: "Time Addressable Media Store on Cloudflare".into(),
             min_object_timeout: "86400:0".into(),
             storage_allocation_max_objects: 1000,
@@ -37,14 +37,19 @@ impl Settings {
             worker_enable_delete: true,
             worker_enable_webhook: true,
             webhook_allow_private_targets: false,
+            webhook_require_https: true,
             webhook_allowed_hosts: vec![],
-            webhook_delivery_concurrency: 1,
             webhook_max_attempts: 8,
             webhook_timeout_seconds: 10.0,
         }
     }
+    /// Seconds from the advertised `min_object_timeout`, so the value the
+    /// service reports and the value garbage collection uses cannot differ.
     pub fn min_object_timeout_seconds(&self) -> u64 {
-        86400
+        tasm_core::domain::timerange::timestamp(&self.min_object_timeout)
+            .ok()
+            .and_then(|nanos| u64::try_from(nanos.div_euclid(1_000_000_000)).ok())
+            .unwrap_or(86400)
     }
 }
 

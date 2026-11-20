@@ -149,12 +149,22 @@ test("OAuth issuance, permissions, rotation and failure handling", async (t) => 
     }
     assert.equal(await freshVerifier.verify(await sign({}, "JWT")), null);
     assert.equal(await freshVerifier.verify("malformed"), null);
+    // Algorithm confusion and a token without a kid are rejections, not outages.
+    const hmac = new TextEncoder().encode("a-shared-secret-of-at-least-32-bytes");
+    const unsigned = (header: Record<string, unknown>) =>
+      [header, { ...claims, iat: now, exp: now + 900 }].map(part => Buffer.from(JSON.stringify(part)).toString("base64url")).join(".") + ".";
+    assert.equal(await freshVerifier.verify(await new SignJWT({ ...claims, iat: now, exp: now + 900 }).setProtectedHeader({ alg: "HS256", kid, typ: "at+jwt" }).sign(hmac)), null);
+    assert.equal(await freshVerifier.verify(unsigned({ alg: "none", kid, typ: "at+jwt" })), null);
+    assert.equal(await freshVerifier.verify(await new SignJWT({ ...claims, iat: now, exp: now + 900 }).setProtectedHeader({ alg: "RS256", typ: "at+jwt" }).sign(privateKey)), null);
+    const confused = await api.fetch("http://localhost/service", { headers: { Origin: headers.Origin, Authorization: `Bearer ${unsigned({ alg: "HS256", typ: "at+jwt" })}` } });
+    assert.equal(confused.status, 401);
     const forged = token.access_token.slice(0, -12) + "aaaaaaaaaaaa";
     assert.equal(await freshVerifier.verify(forged), null);
     const signing = await env.DB.prepare('SELECT "privateKey" FROM "jwks" WHERE "id" = ?').bind(decodeProtectedHeader(token.access_token).kid).first<{ privateKey: string }>();
     assert.equal(signing!.privateKey.includes('"kty"'), false);
     let limited = false;
-    for (let attempt = 0; attempt < 70; attempt++) {
+    // The limit is 60 per fixed 60 s window; allow for one window reset mid-loop.
+    for (let attempt = 0; attempt < 130; attempt++) {
       const response = await issue({ ...client, client_secret: "wrong" });
       if (response.status === 429) {
         assert.equal(response.headers.get("retry-after"), "60");

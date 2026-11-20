@@ -42,6 +42,28 @@ impl Host {
     }
 }
 
-fn js_error(_: JsValue) -> Error {
-    Error("Storage operation failed".into())
+/// Keeps the host's error name and message for the log. Callers report
+/// these as internal errors, so the text never reaches an API response.
+fn js_error(value: JsValue) -> Error {
+    let detail = value
+        .dyn_ref::<js_sys::Error>()
+        .map(|error| {
+            format!(
+                "{}: {}",
+                String::from(error.name()),
+                String::from(error.message())
+            )
+        })
+        .or_else(|| value.as_string())
+        .unwrap_or_default();
+    let detail: String = detail
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(300)
+        .collect();
+    if detail.trim().is_empty() {
+        Error("Storage operation failed".into())
+    } else {
+        Error(format!("Storage operation failed: {detail}"))
+    }
 }

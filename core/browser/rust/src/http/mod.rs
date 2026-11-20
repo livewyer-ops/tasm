@@ -8,7 +8,7 @@ pub const MAX_JSON_BODY_BYTES: usize = 16 * 1024 * 1024;
 pub fn path_uuid(value: &str) -> Result<Uuid, ApiError> {
     value
         .parse()
-        .map_err(|_| ApiError::bad_request("Invalid request: Input should be a valid UUID"))
+        .map_err(|_| ApiError::not_found("The requested resource identifier is invalid."))
 }
 
 use crate::{config::Settings, db::Database, storage::StorageFactory};

@@ -29,11 +29,14 @@ pub fn router() -> Router<MetadataState> {
 
 fn response(record: &DeleteRequest, retention: u64) -> Value {
     let get = |name: &str| record.record.get(name).cloned().unwrap_or(Value::Null);
-    let expiry = (record.status == "done" && retention > 0).then(|| {
-        model::timestamp(
-            record.updated + Duration::seconds(i64::try_from(retention).unwrap_or(i64::MAX)),
-        )
-    });
+    let expiry = (record.status == "done" && retention > 0)
+        .then(|| {
+            i64::try_from(retention)
+                .ok()
+                .and_then(|seconds| record.updated.checked_add(Duration::seconds(seconds)))
+                .map(model::timestamp)
+        })
+        .flatten();
     let mut value = json!({
         "id":record.id,
         "flow_id":record.flow_id,

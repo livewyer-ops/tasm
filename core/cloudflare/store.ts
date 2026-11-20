@@ -12,12 +12,27 @@ type Backend = { storage_id: string; bucket_name: string; label: string; default
 type Transaction = { finish(): void; rollback(): void; promise: Promise<void> };
 type HostPayload = { sql: string; params: SqlStorageValue[]; backend: string; id: string; source: string; destination: string; allocationId: string; method: string; presigned: boolean; contentType: string; allocations: { allocation_id: string; not_before: number }[]; webhook: { url: string; api_key_name?: string; api_key_value?: string }; payload_json: string; timeout: number };
 
+/** A FIFO lock whose holder can step aside while it waits on unrelated I/O. */
+class Lock {
+  #held = false;
+  readonly #waiting: (() => void)[] = [];
+  async acquire(): Promise<void> {
+    if (this.#held) await new Promise<void>(resolve => this.#waiting.push(resolve));
+    else this.#held = true;
+  }
+  release(): void {
+    const next = this.#waiting.shift();
+    if (next) next(); else this.#held = false;
+  }
+}
+
 export class WasmStore extends DurableObject<Bindings> {
   readonly #core: Tasm;
   readonly #backends: Map<string, Backend & { bucket: R2Bucket }>;
   #transaction?: Transaction;
   #closing?: Promise<void>;
-  #tail: Promise<unknown> = Promise.resolve();
+  readonly #lock = new Lock();
+  #polling = false;
 
   constructor(ctx: DurableObjectState, env: Bindings) {
     super(ctx, env);
@@ -148,9 +163,17 @@ export class WasmStore extends DurableObject<Bindings> {
     if (operation === "webhook") {
       const headers = new Headers({ "Content-Type": "application/json" });
       if (payload.webhook.api_key_name) headers.set(payload.webhook.api_key_name, payload.webhook.api_key_value ?? "");
-      const response = await fetch(payload.webhook.url, { method: "POST", headers, body: payload.payload_json, redirect: "manual", signal: AbortSignal.timeout(Math.min(10_000, payload.timeout*1000)) });
-      await response.body?.cancel();
-      return { status: response.status, reason: response.statusText };
+      const send = async () => {
+        const response = await fetch(payload.webhook.url, { method: "POST", headers, body: payload.payload_json, redirect: "manual", signal: AbortSignal.timeout(Math.min(10_000, payload.timeout*1000)) });
+        await response.body?.cancel();
+        return { status: response.status, reason: response.statusText };
+      };
+      // The Rust worker delivers one webhook at a time (process_webhooks) with no
+      // transaction open, so API requests can use the store while a slow
+      // receiver answers. Concurrent deliveries would release the lock twice.
+      if (!this.#polling || this.#transaction) return send();
+      this.#lock.release();
+      try { return await send(); } finally { await this.#lock.acquire(); }
     }
     throw new Error("Unsupported host operation");
   }
@@ -167,13 +190,12 @@ export class WasmStore extends DurableObject<Bindings> {
     } finally { this.#closing = undefined; }
   }
 
-  #serial<T>(action: () => Promise<T>): Promise<T> {
-    const result = this.#tail.then(async () => {
-      try { return await action(); }
-      finally { await this.#end(false); }
-    });
-    this.#tail = result.catch(() => {});
-    return result;
+  async #serial<T>(action: () => Promise<T>): Promise<T> {
+    await this.#lock.acquire();
+    try { return await action(); }
+    finally {
+      try { await this.#end(false); } finally { this.#lock.release(); }
+    }
   }
 
   async #schedule(): Promise<void> {
@@ -207,15 +229,23 @@ export class WasmStore extends DurableObject<Bindings> {
   }
   async alarm(): Promise<void> {
     await this.#serial(async () => {
-      await this.#core.poll();
-      const deletions = this.ctx.storage.sql.exec<{ backend: string; allocation_id: string }>("SELECT backend,allocation_id FROM wasm_r2_deletions WHERE not_before<=unixepoch() LIMIT 100").toArray();
-      for (const item of deletions) {
-        const active = this.ctx.storage.sql.exec("SELECT 1 FROM tamoss_media_objects m,json_each(m.record,'$.instances') i WHERE m.allocation_id=? AND json_extract(i.value,'$.controlled')=1 AND json_extract(i.value,'$.storage_backend_id')=? LIMIT 1", item.allocation_id, item.backend).toArray().length;
-        if (!active) await this.#backend(item.backend).bucket.delete(this.#key(item.allocation_id));
-        this.ctx.storage.sql.exec("DELETE FROM wasm_r2_deletions WHERE backend=? AND allocation_id=?", item.backend, item.allocation_id);
+      try {
+        this.#polling = true;
+        try { await this.#core.poll(); } finally { this.#polling = false; }
+        await this.#purgeDeletions();
+      } finally {
+        // A failed poll must still leave an alarm for the remaining work.
+        await this.#schedule();
       }
-      await this.#schedule();
     });
+  }
+  async #purgeDeletions(): Promise<void> {
+    const deletions = this.ctx.storage.sql.exec<{ backend: string; allocation_id: string }>("SELECT backend,allocation_id FROM wasm_r2_deletions WHERE not_before<=unixepoch() LIMIT 100").toArray();
+    for (const item of deletions) {
+      const active = this.ctx.storage.sql.exec("SELECT 1 FROM tamoss_media_objects m,json_each(m.record,'$.instances') i WHERE m.allocation_id=? AND json_extract(i.value,'$.controlled')=1 AND json_extract(i.value,'$.storage_backend_id')=? LIMIT 1", item.allocation_id, item.backend).toArray().length;
+      if (!active) await this.#backend(item.backend).bucket.delete(this.#key(item.allocation_id));
+      this.ctx.storage.sql.exec("DELETE FROM wasm_r2_deletions WHERE backend=? AND allocation_id=?", item.backend, item.allocation_id);
+    }
   }
   async fetch(): Promise<Response> { return Response.json({ type: "unauthorized", summary: "Use the authenticated Worker entrypoint.", time: new Date().toISOString() }, { status: 401 }); }
 }

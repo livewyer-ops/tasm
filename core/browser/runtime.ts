@@ -16,11 +16,27 @@ export const defaultBackend = '81d13d58-5041-4580-91f9-38ce03daef19';
 const bodyLimit = 16 * 1024 * 1024;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+/** A FIFO lock whose holder can step aside while it waits on unrelated I/O. */
+class Lock {
+  private held = false;
+  private readonly waiting: (() => void)[] = [];
+  async acquire(): Promise<void> {
+    if (this.held) await new Promise<void>(resolve => this.waiting.push(resolve));
+    else this.held = true;
+  }
+  release(): void {
+    const next = this.waiting.shift();
+    if (next) next(); else this.held = false;
+  }
+}
+
 export class Runtime {
   private db!: PGlite;
   private core!: Tasm;
   private files!: FileSystemDirectoryHandle;
-  private queue: Promise<unknown> = Promise.resolve();
+  private readonly lock = new Lock();
+  private releaseStore?: () => void;
+  private polling = false;
   private sqlQueue: Promise<unknown> = Promise.resolve();
   private timer?: ReturnType<typeof setTimeout>;
   private stopped = false;
@@ -34,6 +50,14 @@ export class Runtime {
       backends.some(b => !uuid.test(b.id) || !b.label.trim())) {
       throw new Error('Storage backends require unique UUIDs and non-empty labels.');
     }
+    // One runtime per store: a SharedWorker that is still shutting down must
+    // finish before a new one opens the same database and files.
+    await new Promise<void>((granted, failed) => {
+      navigator.locks.request(`tasm-store:${this.base}`, () => {
+        granted();
+        return new Promise<void>(release => { this.releaseStore = release; });
+      }).catch(failed);
+    });
     const [pgliteWasmModule, initdbWasmModule, fsBundle] = await Promise.all([
       WebAssembly.compileStreaming(fetch(new URL('pglite.wasm', this.base))),
       WebAssembly.compileStreaming(fetch(new URL('initdb.wasm', this.base))),
@@ -76,11 +100,10 @@ export class Runtime {
     this.schedule();
   }
 
-  private serial<T>(run: () => Promise<T>): Promise<T> {
+  private async serial<T>(run: () => Promise<T>): Promise<T> {
     // API calls and background jobs share one PostgreSQL connection.
-    const next = this.queue.then(run);
-    this.queue = next.catch(() => {});
-    return next;
+    await this.lock.acquire();
+    try { return await run(); } finally { this.lock.release(); }
   }
   private sql<T>(run: () => Promise<T>): Promise<T> {
     const next = this.sqlQueue.then(run);
@@ -121,8 +144,10 @@ export class Runtime {
         for (const { object_id: id } of p.allocations) {
           const row = await this.fileRow(p.backend, id);
           if (row) {
-            await this.files.removeEntry(row.name).catch(ignoreMissing);
+            // Remove the row first: the startup sweep deletes files without a row,
+            // but nothing repairs a row whose file has gone.
             await this.db.query('DELETE FROM tasm_files WHERE backend=$1 AND object_id=$2 AND name=$3', [p.backend, id, row.name]);
+            await this.files.removeEntry(row.name).catch(ignoreMissing);
           }
         }
         return null;
@@ -152,10 +177,18 @@ export class Runtime {
       case 'webhook': {
         const headers = new Headers({ 'Content-Type': 'application/json', 'X-Tasm-Delivery-Id': p.id });
         if (p.webhook.api_key_name && p.webhook.api_key_value) headers.set(p.webhook.api_key_name, p.webhook.api_key_value);
-        const response = await fetch(p.webhook.url, { method: 'POST', body: p.payload_json, headers,
-          credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(p.timeout * 1000) });
-        await response.body?.cancel();
-        return { status: response.status, reason: response.statusText };
+        const send = async () => {
+          const response = await fetch(p.webhook.url, { method: 'POST', body: p.payload_json, headers,
+            credentials: 'omit', redirect: 'manual', signal: AbortSignal.timeout(p.timeout * 1000) });
+          await response.body?.cancel();
+          return { status: response.status, reason: response.statusText, redirected: response.type === 'opaqueredirect' };
+        };
+        // The Rust worker delivers one webhook at a time (process_webhooks) with no
+        // transaction open, so API requests can use the store while a slow
+        // receiver answers. Concurrent deliveries would release the lock twice.
+        if (!this.polling || this.inTransaction) return send();
+        this.lock.release();
+        try { return await send(); } finally { await this.lock.acquire(); }
       }
       default: throw new Error(`Unknown host operation ${op}`);
     }
@@ -187,7 +220,11 @@ export class Runtime {
     });
   }
   async poll(): Promise<void> {
-    await this.serial(async () => { await this.core.poll(); await this.sqlQueue; });
+    await this.serial(async () => {
+      this.polling = true;
+      try { await this.core.poll(); } finally { this.polling = false; }
+      await this.sqlQueue;
+    });
   }
   private schedule(): void {
     if (this.stopped) return;
@@ -198,7 +235,8 @@ export class Runtime {
   }
   stopPolling(): void { this.stopped = true; clearTimeout(this.timer); }
   async close(): Promise<void> {
-    this.stopPolling(); await this.queue; await this.sqlQueue; await this.db.close();
+    this.stopPolling(); await this.serial(async () => {}); await this.sqlQueue; await this.db.close();
+    this.releaseStore?.();
   }
   private async fileRow(backend: string, id: string, current = false): Promise<FileRow | undefined> {
     return (await this.db.query<FileRow>(`SELECT f.* FROM tasm_files f WHERE backend=$1 AND object_id=$2

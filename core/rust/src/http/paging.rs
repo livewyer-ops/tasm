@@ -3,33 +3,6 @@ use axum::http::{HeaderMap, HeaderValue, Uri, header::HOST};
 
 use super::error::ApiError;
 
-pub const DEFAULT_LIMIT: usize = 100;
-pub const MAX_LIMIT: usize = 1000;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PageWindow {
-    pub offset: usize,
-    pub limit: usize,
-}
-
-pub fn resolve_page_window(page: Option<&str>, limit: Option<i64>) -> Result<PageWindow, ApiError> {
-    let limit = limit.unwrap_or(DEFAULT_LIMIT as i64);
-    if limit < 1 {
-        return Err(ApiError::bad_request("limit must be greater than zero."));
-    }
-    let limit = usize::try_from(limit).unwrap_or(usize::MAX).min(MAX_LIMIT);
-    let offset = match page.filter(|value| !value.is_empty()) {
-        Some(value) => {
-            let value = value.parse::<i64>().map_err(|_| {
-                ApiError::bad_request("page must be an opaque token issued by this service.")
-            })?;
-            usize::try_from(value).map_err(|_| ApiError::bad_request("page token is invalid."))?
-        }
-        None => 0,
-    };
-    Ok(PageWindow { offset, limit })
-}
-
 pub fn page_headers(
     headers: &mut HeaderMap,
     uri: &Uri,

@@ -115,6 +115,21 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     assert.equal((await call("PUT", `/flows/${id}`, "tams-api/write", flow)).status, 403);
     assert.equal((await call("PUT", `/flows/${id}`, "tams-api/admin", flow)).status, 201);
     assert.equal((await call("PUT", `/flows/${id}/read_only`, "tams-api/write", false)).status, 403);
+    // Deleting flows, segments and reading deletion jobs need tams-api/delete, not write.
+    const disposable = crypto.randomUUID();
+    assert.equal((await call("PUT", `/flows/${disposable}`, "tams-api/write", { ...flow, id: disposable, read_only: false })).status, 201);
+    assert.equal((await call("PUT", `/flows/${disposable}/tags/stage`, "tams-api/write", ["draft"])).status, 204);
+    assert.equal((await call("DELETE", `/flows/${disposable}/tags/stage`, "tams-api/write")).status, 204);
+    assert.equal((await call("DELETE", `/flows/${disposable}/tags/stage`, "tams-api/delete")).status, 403);
+    for (const scope of ["tams-api/read", "tams-api/write"]) {
+      assert.equal((await call("DELETE", `/flows/${disposable}/segments`, scope)).status, 403);
+      assert.equal((await call("DELETE", `/flows/${disposable}`, scope)).status, 403);
+      assert.equal((await call("GET", `/flow-delete-requests/${crypto.randomUUID()}`, scope)).status, 403);
+    }
+    assert.equal((await call("GET", `/flow-delete-requests/${crypto.randomUUID()}`, "tams-api/delete")).status, 404);
+    assert.equal((await call("GET", `/flows/${disposable}`, "tams-api/delete")).status, 403);
+    assert.equal((await call("DELETE", `/flows/${disposable}/segments`, "tams-api/delete")).status, 204);
+    assert.equal((await call("DELETE", `/flows/${disposable}`, "tams-api/delete")).status, 204);
     for (const url of ["https://unlisted.example", "http://hooks.example.com", "https://hooks.example.com:444/", "https://hooks.example.com/#fragment", "https://127.0.0.1/", "https://[::ffff:127.0.0.1]/"]) {
       const response = await request("/service/webhooks", { method: "POST", body: JSON.stringify({ url, events: ["flows/created"] }) });
       assert.equal(response.status, 400, url + ": " + await response.text());
@@ -148,6 +163,11 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     for (const query of ["verbose_storage=invalid", "accept_get_urls=,", "accept_storage_ids=invalid", "presigned=invalid", "storage_backend_tag_exists.test=invalid"]) {
       assert.equal((await request(`/flows/${id}/segments?${query}`, { method: "HEAD" })).status, 400);
     }
+    // Moving the only flow to another source removes the old, now empty source.
+    const moved = crypto.randomUUID();
+    assert.equal((await request(`/flows/${id}`, { method: "PUT", body: JSON.stringify({ ...flow, source_id: moved }) })).status, 204);
+    assert.equal((await request(`/sources/${moved}`)).status, 200);
+    assert.equal((await request(`/sources/${source_id}`)).status, 404);
   });
 
   await t.test("R2 allocation, precise segments, copy and asynchronous deletion", { timeout: 30_000 }, async () => {

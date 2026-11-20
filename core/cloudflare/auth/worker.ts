@@ -42,10 +42,13 @@ export class TokenVerifier extends WorkerEntrypoint<Env> {
           payload.scope.length > 4096) return null;
       return JSON.stringify({ subject: payload.sub, scopes: payload.scope.split(" ").filter(Boolean) });
     } catch (error) {
-      if (error instanceof errors.JWTExpired || error instanceof errors.JWTClaimValidationFailed ||
-          error instanceof errors.JWTInvalid || error instanceof errors.JWSInvalid ||
-          error instanceof errors.JWSSignatureVerificationFailed || error instanceof errors.JOSENotSupported ||
-          error instanceof errors.JWKSNoMatchingKey) return null;
+      // Any JOSE error about the presented token (disallowed algorithm, missing
+      // kid, bad signature, expired) is a rejection. Only failures to load or
+      // use the issuer's own keys mean verification is unavailable.
+      // jose reports an unreadable JWKS response with the base JOSEError class.
+      if (error instanceof errors.JOSEError && error.constructor !== errors.JOSEError &&
+          !(error instanceof errors.JWKSTimeout || error instanceof errors.JWKSInvalid ||
+            error instanceof errors.JWKInvalid)) return null;
       throw new Error("Token verification unavailable");
     }
   }

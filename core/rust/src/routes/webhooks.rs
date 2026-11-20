@@ -219,7 +219,18 @@ async fn update(
         ));
     }
     validate_configuration(&state, map).await?;
-    let (status, tags, data) = validated;
+    let (status, tags, mut data) = validated;
+    // GET never returns api_key_value, so a read-modify-write PUT omits it.
+    // Keep the stored secret while the header name is unchanged.
+    let previous = existing.record.get("data");
+    let same_header =
+        previous.and_then(|value| value.get("api_key_name")) == data.get("api_key_name");
+    if same_header
+        && !data.contains_key("api_key_value")
+        && let Some(secret) = previous.and_then(|value| value.get("api_key_value"))
+    {
+        data.insert("api_key_value".into(), secret.clone());
+    }
     let envelope = json!({"id":path,"data":data,"status":status,"tags":tags});
     let record = WebhookRecord {
         id: path,

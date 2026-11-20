@@ -20,10 +20,6 @@ pub const CLAIM_CLEANUPS: &str = "UPDATE tamoss_object_cleanups
                    AND status IN ('pending','started','error')
                    AND (claim_expires_at IS NULL OR claim_expires_at<=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') OR claimed_by=?2)";
 
-pub const CLEAR_REMAINING: &str = "UPDATE tamoss_delete_requests
-                 SET record=json_set(record,'$.timerange_remaining',json('null'))
-                 WHERE id=?1 AND claimed_by=?2";
-
 pub const UPDATE_REMAINING: &str = "UPDATE tamoss_delete_requests
                  SET record=json_set(record,'$.timerange_remaining',?2),
                      updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')
@@ -52,6 +48,8 @@ pub const OBJECT_RANGES: &str = "SELECT timerange,record FROM tamoss_segments WH
 pub const GET_OBJECTS: &str = "SELECT id,first_referenced_by_flow,referenced_by_flows,object_kind,content_type,record,created_at,updated_at FROM tamoss_media_objects WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY id";
 
 pub const FLOW_SEGMENTS: &str = "SELECT flow_id,object_id,init_object_id,timerange,timerange_start,timerange_end,record,created FROM tamoss_segments WHERE flow_id=?1 ORDER BY timerange_start,object_id,timerange";
+
+pub const FLOW_SEGMENT_BOUNDS: &str = "SELECT timerange_start,timerange_end FROM tamoss_segments WHERE flow_id=?1 AND timerange_end>?2 AND timerange_start<?3";
 
 pub const HAS_REFERENCES: &str = "SELECT EXISTS(SELECT 1 FROM tamoss_segments WHERE flow_id=?1 AND (object_id=?2 OR init_object_id=?2))";
 

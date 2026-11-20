@@ -23,7 +23,8 @@ use crate::{
 };
 
 use super::service::{
-    MetadataState, enqueue_event, internal, page, paged_response, query, tag_filters,
+    MetadataState, emit_flow_updated, enqueue_event, internal, page, paged_response, query,
+    tag_filters,
 };
 
 pub fn router() -> Router<MetadataState> {
@@ -597,11 +598,23 @@ async fn put_flow(
         return Err(invalid_flow());
     }
     let tags = model::tags(map.get("tags")).map_err(|_| invalid_flow())?;
-    if created {
-        payload
-            .entry("created_by")
-            .or_insert_with(|| json!(identity.subject));
+    // created_by is server-owned: set it on creation and keep it on replacement.
+    match existing
+        .as_ref()
+        .and_then(|flow| data(flow).get("created_by").cloned())
+    {
+        Some(creator) => {
+            payload.insert("created_by".into(), creator);
+        }
+        None if created => {
+            payload.insert("created_by".into(), json!(identity.subject));
+        }
+        None => {}
     }
+    let previous_source = existing
+        .as_ref()
+        .and_then(|flow| flow.source_id)
+        .filter(|id| *id != source_id);
     let mut record = existing.unwrap_or(FlowRecord {
         id: flow_id,
         source_id: Some(source_id),
@@ -675,6 +688,31 @@ async fn put_flow(
         &source_collected_by,
     )
     .await?;
+    // Moving the flow to another source can leave the old one without flows;
+    // remove it as DELETE /flows/{id} would.
+    if let Some(old) = previous_source {
+        let old_collected_by = db::flows::source_relationships(&mut *tx, &[old])
+            .await
+            .map_err(internal)?
+            .get(&old)
+            .map(|value| value.collected_by.clone())
+            .unwrap_or_default();
+        if db::flows::delete_source(&mut *tx, old)
+            .await
+            .map_err(internal)?
+        {
+            enqueue_event(
+                &mut tx,
+                "sources/deleted",
+                json!({"source_id":old}),
+                &[],
+                &[old],
+                &[],
+                &old_collected_by,
+            )
+            .await?;
+        }
+    }
     tx.commit().await.map_err(internal)?;
     if created {
         Ok((
@@ -790,29 +828,7 @@ async fn delete_flow(
         db::flows::save_flow(&mut *tx, &parent)
             .await
             .map_err(internal)?;
-        let collecting = db::flows::list_flows_collecting(&mut *tx, &[parent.id])
-            .await
-            .map_err(internal)?;
-        let collecting_ids = collecting.iter().map(|value| value.id).collect::<Vec<_>>();
-        let parent_sources = parent.source_id.into_iter().collect::<Vec<_>>();
-        let relationships = db::flows::source_relationships(&mut *tx, &parent_sources)
-            .await
-            .map_err(internal)?;
-        let source_parents = parent
-            .source_id
-            .and_then(|id| relationships.get(&id))
-            .map(|value| value.collected_by.clone())
-            .unwrap_or_default();
-        enqueue_event(
-            &mut tx,
-            "flows/updated",
-            json!({"flow":model::flow(&parent,&collecting_ids,None)}),
-            &[parent.id],
-            &parent_sources,
-            &collecting_ids,
-            &source_parents,
-        )
-        .await?;
+        emit_flow_updated(&mut tx, &parent).await?;
     }
     db::flows::delete_flow(&mut *tx, flow_id)
         .await
@@ -924,29 +940,7 @@ async fn set_collection(
     db::flows::save_flow(&mut *tx, &flow)
         .await
         .map_err(internal)?;
-    let parents = db::flows::list_flows_collecting(&mut *tx, &[flow_id])
-        .await
-        .map_err(internal)?;
-    let parent_ids = parents.iter().map(|value| value.id).collect::<Vec<_>>();
-    let source_ids = flow.source_id.into_iter().collect::<Vec<_>>();
-    let relationships = db::flows::source_relationships(&mut *tx, &source_ids)
-        .await
-        .map_err(internal)?;
-    let source_parents = flow
-        .source_id
-        .and_then(|id| relationships.get(&id))
-        .map(|value| value.collected_by.clone())
-        .unwrap_or_default();
-    enqueue_event(
-        &mut tx,
-        "flows/updated",
-        json!({"flow":model::flow(&flow,&parent_ids,None)}),
-        &[flow_id],
-        &source_ids,
-        &parent_ids,
-        &source_parents,
-    )
-    .await?;
+    emit_flow_updated(&mut tx, &flow).await?;
     tx.commit().await.map_err(internal)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -1061,29 +1055,7 @@ async fn set_property(
     db::flows::save_flow(&mut *tx, &flow)
         .await
         .map_err(internal)?;
-    let parents = db::flows::list_flows_collecting(&mut *tx, &[flow_id])
-        .await
-        .map_err(internal)?;
-    let parent_ids = parents.iter().map(|value| value.id).collect::<Vec<_>>();
-    let source_ids = flow.source_id.into_iter().collect::<Vec<_>>();
-    let relationships = db::flows::source_relationships(&mut *tx, &source_ids)
-        .await
-        .map_err(internal)?;
-    let source_parents = flow
-        .source_id
-        .and_then(|id| relationships.get(&id))
-        .map(|value| value.collected_by.clone())
-        .unwrap_or_default();
-    enqueue_event(
-        &mut tx,
-        "flows/updated",
-        json!({"flow":model::flow(&flow,&parent_ids,None)}),
-        &[flow_id],
-        &source_ids,
-        &parent_ids,
-        &source_parents,
-    )
-    .await?;
+    emit_flow_updated(&mut tx, &flow).await?;
     tx.commit().await.map_err(internal)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -1192,29 +1164,7 @@ async fn set_tag(
     db::flows::save_flow(&mut *tx, &flow)
         .await
         .map_err(internal)?;
-    let parents = db::flows::list_flows_collecting(&mut *tx, &[flow_id])
-        .await
-        .map_err(internal)?;
-    let parent_ids = parents.iter().map(|value| value.id).collect::<Vec<_>>();
-    let source_ids = flow.source_id.into_iter().collect::<Vec<_>>();
-    let relationships = db::flows::source_relationships(&mut *tx, &source_ids)
-        .await
-        .map_err(internal)?;
-    let source_parents = flow
-        .source_id
-        .and_then(|id| relationships.get(&id))
-        .map(|value| value.collected_by.clone())
-        .unwrap_or_default();
-    enqueue_event(
-        &mut tx,
-        "flows/updated",
-        json!({"flow":model::flow(&flow,&parent_ids,None)}),
-        &[flow_id],
-        &source_ids,
-        &parent_ids,
-        &source_parents,
-    )
-    .await?;
+    emit_flow_updated(&mut tx, &flow).await?;
     tx.commit().await.map_err(internal)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }

@@ -6,6 +6,7 @@ pub mod http;
 pub mod sqlite;
 #[path = "../../../rust/src/storage.rs"]
 pub mod storage;
+#[path = "../../../rust/src/webhooks.rs"]
 pub mod webhooks;
 #[path = "../../../rust/src/worker.rs"]
 pub mod worker;
@@ -53,4 +54,5 @@ impl Tasm {
 
 pub use sqlite as sql;
 
+#[path = "../../../rust/src/webhook_target.rs"]
 mod webhook_target;

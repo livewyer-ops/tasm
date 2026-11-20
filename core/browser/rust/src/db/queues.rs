@@ -42,7 +42,7 @@ pub async fn fail_delete_request(
     worker: &str,
     error: Value,
 ) -> Result<bool, DbError> {
-    Ok(sqlx::query("UPDATE tamoss_delete_requests SET status='error',claimed_at=NULL,claimed_by=NULL,record=jsonb_set(jsonb_set(jsonb_set(record,'{status}','\"error\"',true),'{error}',$3,true),'{updated}',to_jsonb(NOW()),true),updated=NOW(),updated_at=NOW() WHERE id=$1 AND status='started' AND claimed_by=$2").bind(id).bind(worker).bind(sqlx::types::Json(error)).execute(pool).await?.rows_affected()==1)
+    Ok(sqlx::query("UPDATE tamoss_delete_requests SET status='error',claimed_at=NULL,claimed_by=NULL,claim_expires_at=NOW()+make_interval(secs=>LEAST(3600,60*power(2,LEAST(GREATEST(COALESCE((record->>'attempt_count')::int,0)+1,1)-1,6)))),record=jsonb_set(jsonb_set(jsonb_set(jsonb_set(record,'{status}','\"error\"',true),'{error}',$3,true),'{updated}',to_jsonb(NOW()),true),'{attempt_count}',to_jsonb(COALESCE((record->>'attempt_count')::int,0)+1),true),updated=NOW(),updated_at=NOW() WHERE id=$1 AND status='started' AND claimed_by=$2").bind(id).bind(worker).bind(sqlx::types::Json(error)).execute(pool).await?.rows_affected()==1)
 }
 pub async fn release_delete_request(
     pool: &PgPool,
@@ -241,13 +241,13 @@ async fn finish_simple(
             "UPDATE tamoss_object_cleanups SET status=$3,claimed_at=NULL,claimed_by=NULL,claim_expires_at=NULL,record=jsonb_set(jsonb_set(jsonb_set(record,'{status}',to_jsonb($3::text),true),'{error}',COALESCE($4,'null'::jsonb),true),'{updated}',to_jsonb(NOW()),true),updated=NOW(),updated_at=NOW() WHERE id=$1 AND status='started' AND claimed_by=$2"
         }
         ("tamoss_object_cleanups", false) => {
-            "UPDATE tamoss_object_cleanups SET status=$3,claimed_at=NULL,claimed_by=NULL,record=jsonb_set(jsonb_set(jsonb_set(record,'{status}',to_jsonb($3::text),true),'{error}',COALESCE($4,'null'::jsonb),true),'{updated}',to_jsonb(NOW()),true),updated=NOW(),updated_at=NOW() WHERE id=$1 AND status='started' AND claimed_by=$2"
+            "UPDATE tamoss_object_cleanups SET status=$3,claimed_at=NULL,claimed_by=NULL,claim_expires_at=NOW()+make_interval(secs=>LEAST(3600,60*power(2,LEAST(GREATEST(COALESCE((record->>'attempt_count')::int,1),1)-1,6)))),record=jsonb_set(jsonb_set(jsonb_set(record,'{status}',to_jsonb($3::text),true),'{error}',COALESCE($4,'null'::jsonb),true),'{updated}',to_jsonb(NOW()),true),updated=NOW(),updated_at=NOW() WHERE id=$1 AND status='started' AND claimed_by=$2"
         }
         ("tamoss_object_copies", true) => {
             "UPDATE tamoss_object_copies SET status=$3,claimed_at=NULL,claimed_by=NULL,claim_expires_at=NULL,record=jsonb_set(jsonb_set(jsonb_set(record,'{status}',to_jsonb($3::text),true),'{error}',COALESCE($4,'null'::jsonb),true),'{updated}',to_jsonb(NOW()),true),updated=NOW(),updated_at=NOW() WHERE id=$1 AND status='started' AND claimed_by=$2"
         }
         ("tamoss_object_copies", false) => {
-            "UPDATE tamoss_object_copies SET status=$3,claimed_at=NULL,claimed_by=NULL,record=jsonb_set(jsonb_set(jsonb_set(record,'{status}',to_jsonb($3::text),true),'{error}',COALESCE($4,'null'::jsonb),true),'{updated}',to_jsonb(NOW()),true),updated=NOW(),updated_at=NOW() WHERE id=$1 AND status='started' AND claimed_by=$2"
+            "UPDATE tamoss_object_copies SET status=$3,claimed_at=NULL,claimed_by=NULL,claim_expires_at=NOW()+make_interval(secs=>LEAST(3600,60*power(2,LEAST(GREATEST(COALESCE((record->>'attempt_count')::int,1),1)-1,6)))),record=jsonb_set(jsonb_set(jsonb_set(record,'{status}',to_jsonb($3::text),true),'{error}',COALESCE($4,'null'::jsonb),true),'{updated}',to_jsonb(NOW()),true),updated=NOW(),updated_at=NOW() WHERE id=$1 AND status='started' AND claimed_by=$2"
         }
         _ => return Err(DbError::Record("unknown queue".into())),
     };

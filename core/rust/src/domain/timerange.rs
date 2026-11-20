@@ -23,7 +23,8 @@ fn integer(value: &str, signed: bool) -> Result<i128, ValidationError> {
     value.parse().map_err(|_| ValidationError)
 }
 
-fn timestamp(value: &str) -> Result<i128, ValidationError> {
+/// Parses a TAMS timestamp such as `10:0` or `-1:500` into nanoseconds.
+pub fn timestamp(value: &str) -> Result<i128, ValidationError> {
     let (seconds, nanos) = value.split_once(':').ok_or(ValidationError)?;
     let negative = seconds.starts_with('-');
     let seconds = integer(seconds.strip_prefix('-').unwrap_or(seconds), false)?;
@@ -50,10 +51,12 @@ pub fn parse(value: &str) -> Result<Bounds, ValidationError> {
     }
 
     if !value.contains('_') {
-        let point = value
-            .strip_prefix('[')
-            .and_then(|value| value.strip_suffix(']'))
-            .ok_or(ValidationError)?;
+        // A single timestamp may carry inclusive markers or none (TAMS appnote 0008).
+        let point = match value.strip_prefix('[') {
+            Some(inner) => inner.strip_suffix(']').ok_or(ValidationError)?,
+            None if !value.ends_with(']') => value,
+            None => return Err(ValidationError),
+        };
         let point = timestamp(point)?;
         return Ok(Bounds {
             start: Some(point),
@@ -67,14 +70,13 @@ pub fn parse(value: &str) -> Result<Bounds, ValidationError> {
     let (left, start) = match left_value.as_bytes().first().copied() {
         Some(b'[') => ('[', &left_value[1..]),
         Some(b'(') => ('(', &left_value[1..]),
-        _ if left_value.is_empty() => ('[', ""),
-        _ => return Err(ValidationError),
+        // Omitted markers default to an inclusive start and an exclusive end.
+        _ => ('[', left_value),
     };
     let (right, end) = match right_value.as_bytes().last().copied() {
         Some(b']') => (']', &right_value[..right_value.len() - 1]),
         Some(b')') => (')', &right_value[..right_value.len() - 1]),
-        _ if right_value.is_empty() => (')', ""),
-        _ => return Err(ValidationError),
+        _ => (')', right_value),
     };
     let start = (!start.is_empty()).then(|| timestamp(start)).transpose()?;
     let end = (!end.is_empty()).then(|| timestamp(end)).transpose()?;
@@ -132,5 +134,73 @@ pub fn from_bounds(start: Option<i128>, end: Option<i128>) -> String {
         (Some(start), None) => format!("[{}_", format_timestamp(start)),
         (None, Some(end)) => format!("_{})", format_timestamp(end)),
         (None, None) => "()".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const S: i128 = NANOS_PER_SECOND;
+
+    #[test]
+    fn parses_bounds_and_clusivity() {
+        let range = parse("[1:0_2:0)").unwrap();
+        assert_eq!(
+            (range.start, range.end, range.point, range.empty),
+            (Some(S), Some(2 * S), false, false)
+        );
+        let range = parse("(1:0_2:0]").unwrap();
+        assert_eq!((range.start, range.end), (Some(S + 1), Some(2 * S + 1)));
+        assert_eq!(parse("[-1:500_").unwrap().start, Some(-S - 500));
+        assert_eq!(parse("_2:0)").unwrap().end, Some(2 * S));
+        assert!(parse("[2:0_1:0)").unwrap().empty);
+        assert!(parse("()").unwrap().empty);
+        assert_eq!(parse("_").unwrap(), Bounds::default());
+    }
+
+    #[test]
+    fn accepts_omitted_markers() {
+        // TAMS appnote 0008: markers may be omitted; a bare timestamp is a point.
+        let point = parse("10:0").unwrap();
+        assert!(point.point);
+        assert_eq!(point.start, Some(10 * S));
+        assert_eq!(parse("0:0_10:0").unwrap(), parse("[0:0_10:0)").unwrap());
+        assert_eq!(parse("0:0_").unwrap(), parse("[0:0_").unwrap());
+        assert_eq!(parse("_10:0").unwrap(), parse("_10:0)").unwrap());
+        assert_eq!(parse("[1:0_2:0").unwrap(), parse("[1:0_2:0)").unwrap());
+    }
+
+    #[test]
+    fn rejects_malformed_values() {
+        for value in [
+            "[1:0",
+            "1:0]",
+            "[01:0]",
+            "[1:1000000000]",
+            "[a:0]",
+            "[1_2]",
+            "[1:-1]",
+        ] {
+            assert!(parse(value).is_err(), "{value} must be rejected");
+        }
+        assert!(timestamp("1:0_2:0").is_err());
+        assert!(timestamp("[1:0]").is_err());
+        assert_eq!(timestamp("-2:5").unwrap(), -2 * S - 5);
+    }
+
+    #[test]
+    fn formats_and_round_trips() {
+        assert_eq!(format_timestamp(-S - 5), "-1:5");
+        for (start, end) in [
+            (Some(S), Some(2 * S)),
+            (Some(-S), None),
+            (None, Some(3 * S)),
+        ] {
+            let text = from_bounds(start, end);
+            let parsed = parse(&text).unwrap();
+            assert_eq!((parsed.start, parsed.end), (start, end), "{text}");
+        }
+        assert_eq!(from_bounds(None, None), "()");
     }
 }

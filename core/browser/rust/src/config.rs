@@ -14,7 +14,7 @@ pub struct Settings {
     pub worker_enable_webhook: bool,
     pub webhook_allow_private_targets: bool,
     pub webhook_allowed_hosts: Vec<String>,
-    pub webhook_delivery_concurrency: u64,
+    pub webhook_require_https: bool,
     pub webhook_max_attempts: u64,
     pub webhook_timeout_seconds: f64,
     pub media_base: String,
@@ -36,15 +36,20 @@ impl Settings {
             worker_enable_delete: true,
             worker_enable_webhook: true,
             webhook_allow_private_targets: true,
+            webhook_require_https: false,
             webhook_allowed_hosts: vec!["*".into()],
-            webhook_delivery_concurrency: 1,
             webhook_max_attempts: 8,
             webhook_timeout_seconds: 10.0,
             media_base,
         }
     }
+    /// Seconds from the advertised `min_object_timeout`, so the value the
+    /// service reports and the value garbage collection uses cannot differ.
     pub fn min_object_timeout_seconds(&self) -> u64 {
-        300
+        tasm_core::domain::timerange::timestamp(&self.min_object_timeout)
+            .ok()
+            .and_then(|nanos| u64::try_from(nanos.div_euclid(1_000_000_000)).ok())
+            .unwrap_or(300)
     }
 }
 
