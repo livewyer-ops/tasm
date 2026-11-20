@@ -225,3 +225,32 @@ test('webhooks filter by tags, page by url and receive matching events', async (
   for (let attempt = 0; attempt < 5 && deliveries.length < 2; attempt++) await core.poll();
   assert.deepEqual(deliveries.map(d => `${d.event} ${d.url}`).sort(), ['flows/created http://hooks.test/a', 'flows/created http://hooks.test/c']);
 });
+
+test('a reused object only accepts segments within its own timerange', async () => {
+  const { request, upload } = await store();
+  const put = async () => {
+    const id = crypto.randomUUID();
+    assert.equal((await request('PUT', `/flows/${id}`, { ...videoFlow, id, source_id: crypto.randomUUID() })).status, 201);
+    return id;
+  };
+  const original = await put(), reuse = await put();
+  const allocated = await request('POST', `/flows/${original}/storage`, { limit: 1 });
+  const objectId = JSON.parse(allocated.body).media_objects[0].object_id as string;
+  upload(objectId);
+  assert.equal((await request('POST', `/flows/${original}/segments`, { object_id: objectId, timerange: '[0:0_10:0)' })).status, 201);
+  const register = (body: unknown) => request('POST', `/flows/${reuse}/segments`, body);
+  const segment = (timerange: string, ts_offset: string) => ({ object_id: objectId, timerange, ts_offset });
+  assert.equal((await register(segment('[100:0_110:0)', '100:0'))).status, 201, 'exact fit');
+  assert.equal((await register(segment('[204:0_206:0)', '200:0'))).status, 201, 'partial clip');
+  assert.equal((await register(segment('[500:0]', '500:0'))).status, 201, 'point at the start');
+  const before = JSON.parse((await request('GET', `/flows/${reuse}/segments`)).body).length;
+  assert.equal((await register(segment('[312:0_313:0)', '300:0'))).status, 400, 'overrun');
+  assert.equal((await register(segment('[410:0]', '400:0'))).status, 400, 'point at the exclusive end');
+  assert.equal(JSON.parse((await request('GET', `/flows/${reuse}/segments`)).body).length, before);
+  const mixed = await register([segment('[604:0_605:0)', '600:0'), segment('[612:0_613:0)', '600:0')]);
+  assert.equal(mixed.status, 200, mixed.body);
+  assert.deepEqual(JSON.parse(mixed.body).failed_segments.map((s: { timerange: string }) => s.timerange), ['[612:0_613:0)']);
+  const ranges = JSON.parse((await request('GET', `/flows/${reuse}/segments`)).body).map((s: { timerange: string }) => s.timerange);
+  assert.ok(ranges.includes('[604:0_605:0)') && !ranges.includes('[612:0_613:0)'), ranges.join());
+  assert.equal(JSON.parse((await request('GET', `/objects/${objectId}`)).body).timerange, '[0:0_10:0)');
+});

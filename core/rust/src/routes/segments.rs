@@ -542,6 +542,24 @@ async fn register_one(
     {
         return Err(bad().into());
     }
+    // A reused Object's samples are fixed: once offset by ts_offset, the
+    // Segment must lie within the Object's timerange.
+    if had_references && let Some(object_range) = media.timerange.as_deref() {
+        let in_object = segment::effective_object_timerange(
+            timerange,
+            data.get("ts_offset").and_then(Value::as_str),
+            None,
+        )
+        .and_then(|value| segment::bounds(&value))
+        .map_err(|_| bad())?;
+        let object = segment::bounds(object_range).map_err(|_| bad())?;
+        if in_object.start < object.start || in_object.end > object.end {
+            return Err(
+                "Bad request. The Segment timerange, offset by ts_offset, must lie within the Media Object's timerange."
+                    .into(),
+            );
+        }
+    }
     if !had_references {
         uploaded(storage, &mut media, flow.id, uploads).await?;
     }

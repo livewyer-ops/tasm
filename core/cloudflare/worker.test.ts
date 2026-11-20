@@ -348,6 +348,37 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     assert.deepEqual([a, b, both, shared, none].map(id => ranges[id]), ["[0:0_4:0)", "[10:0_12:0)", "[0:0_21:0)", "[10:0_12:0)", "()"]);
   });
 
+  await t.test("A reused object only accepts segments within its own timerange", async () => {
+    const env = await api.getEnv();
+    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const put = async () => {
+      const id = crypto.randomUUID();
+      assert.equal((await request(`/flows/${id}`, { method: "PUT", body: JSON.stringify({ ...video, id, source_id: crypto.randomUUID() }) })).status, 201);
+      return id;
+    };
+    const original = await put(), reuse = await put();
+    const allocated = await request(`/flows/${original}/storage`, { method: "POST", body: JSON.stringify({ limit: 1 }) });
+    const object = (await allocated.json() as { media_objects: { object_id: string; put_url: { url: string } }[] }).media_objects[0];
+    await env.MEDIA.put(new URL(object.put_url.url).pathname.split("/").slice(2).join("/"), "media", { httpMetadata: { contentType: "video/mp2t" } });
+    assert.equal((await request(`/flows/${original}/segments`, { method: "POST", body: JSON.stringify({ object_id: object.object_id, timerange: "[0:0_10:0)" }) })).status, 201);
+    const register = (body: unknown) => request(`/flows/${reuse}/segments`, { method: "POST", body: JSON.stringify(body) });
+    const segment = (timerange: string, ts_offset: string) => ({ object_id: object.object_id, timerange, ts_offset });
+    const listed = async () => (await (await request(`/flows/${reuse}/segments`)).json() as { timerange: string }[]).map(s => s.timerange);
+    assert.equal((await register(segment("[100:0_110:0)", "100:0"))).status, 201, "exact fit");
+    assert.equal((await register(segment("[204:0_206:0)", "200:0"))).status, 201, "partial clip");
+    assert.equal((await register(segment("[500:0]", "500:0"))).status, 201, "point at the start");
+    const before = (await listed()).length;
+    assert.equal((await register(segment("[312:0_313:0)", "300:0"))).status, 400, "overrun");
+    assert.equal((await register(segment("[410:0]", "400:0"))).status, 400, "point at the exclusive end");
+    assert.equal((await listed()).length, before);
+    const mixed = await register([segment("[604:0_605:0)", "600:0"), segment("[612:0_613:0)", "600:0")]);
+    assert.equal(mixed.status, 200);
+    assert.deepEqual((await mixed.json() as { failed_segments: { timerange: string }[] }).failed_segments.map(s => s.timerange), ["[612:0_613:0)"]);
+    const ranges = await listed();
+    assert.ok(ranges.includes("[604:0_605:0)") && !ranges.includes("[612:0_613:0)"), ranges.join());
+    assert.equal((await (await request(`/objects/${encodeURIComponent(object.object_id)}`)).json() as { timerange: string }).timerange, "[0:0_10:0)");
+  });
+
   await t.test("Profiles page in id order, filter, reject duplicates and lock for flows", async () => {
     const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
     const metadata = { format: video.format, codec: video.codec, container: video.container, essence_parameters: video.essence_parameters };
