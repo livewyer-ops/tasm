@@ -2,6 +2,7 @@
 // same SQL bridge as core/browser/runtime.ts, so SQL and row decoding bugs fail
 // here in seconds rather than in the browser suite.
 import { test } from 'node:test';
+import { checkUuidFilters } from './contract/uuid-filters';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
@@ -62,6 +63,11 @@ async function store() {
 }
 
 await init({ module_or_path: readFileSync('pkg/browser/tasm_bg.wasm') });
+
+test('UUID filters follow the TAMS wire format', async () => {
+  const { request } = await store();
+  await checkUuidFilters(request, videoFlow);
+});
 
 test('the SQL bridge returns columns by position, keeps exact integers and rolls back', async () => {
   const { db, sql } = await store();

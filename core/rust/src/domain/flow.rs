@@ -33,12 +33,7 @@ pub fn validate_put(map: &Map<String, Value>, path_id: Uuid) -> Result<(), Valid
     if uuid_field(map, "id")? != path_id || uuid_field(map, "source_id").is_err() {
         return Err(ValidationError);
     }
-    if let Some(value) = map.get("profile_id") {
-        match value {
-            Value::String(value) if value.is_empty() || value.parse::<Uuid>().is_ok() => {}
-            _ => return Err(ValidationError),
-        }
-    }
+    super::model::optional_uuid_field(map, "profile_id")?;
     for name in ["label", "description", "metadata_version"] {
         if map.get(name).is_some_and(|value| !value.is_string()) {
             return Err(ValidationError);

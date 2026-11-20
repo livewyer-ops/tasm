@@ -1,5 +1,6 @@
 import { apiConfig, apiConfigPath } from "./test-installation.ts";
 import assert from "node:assert/strict";
+import { checkUuidFilters } from "../../tests/contract/uuid-filters.ts";
 import { readFileSync } from "node:fs";
 import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -65,6 +66,14 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     const unsupported = await request("/service", { method: "PUT", body: "{}" });
     assert.equal(unsupported.status, 405);
     assert.equal((await unsupported.json() as { type: string }).type, "method_not_allowed");
+  });
+
+  await t.test("UUID filters follow the TAMS wire format", async () => {
+    const videoFlow = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    await checkUuidFilters(async (method, path, body) => {
+      const response = await request(path, { method, body: JSON.stringify(body) });
+      return { status: response.status, body: await response.text() };
+    }, videoFlow);
   });
 
   await t.test("Each Wasm instance uses its own SQLite host", async () => {
@@ -529,6 +538,18 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     assert.equal((await request("/service")).status, 503);
     assert.equal((await api.fetch(origin + "/service")).status, 503);
     assert.equal((await api.fetch(origin + "/healthz")).status, 200);
+  });
+
+  await t.test("Configured storage IDs must be usable by UUID filters", async () => {
+    for (const id of ["abcdef12-3456-7abc-89ab-0123456789ab", "abcdef12-3456-4abc-c9ab-0123456789ab"]) {
+      const backends = JSON.parse(apiConfig.vars.STORAGE_BACKENDS);
+      backends.MEDIA.storage_id = id;
+      await server.update(() => ({ workers: [{ configPath: apiConfigPath,
+        vars: { STORAGE_BACKENDS: JSON.stringify(backends) } }] }));
+      const env = await api.getEnv();
+      const wire = JSON.stringify({ method: "GET", url: origin + "/service/storage-backends", headers: {}, body: null, actor: { subject: username, scopes: ["tams-api/admin"] } });
+      await assert.rejects(async () => await env.STORE.getByName(id).request(wire), /Invalid storage backend configuration/);
+    }
   });
 });
 

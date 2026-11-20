@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 use super::error::ApiError;
+use crate::domain::model::parse_uuid;
 
 pub const TAG_PREFIXES: [&str; 6] = [
     "tag.",
@@ -81,11 +82,11 @@ impl QueryParams {
 
     pub fn uuid(&self, name: &str) -> Result<Option<Uuid>, ApiError> {
         self.last(name)
-            .map(|value| value.parse().map_err(|_| invalid_query()))
+            .map(|value| parse_uuid(value).map_err(|_| invalid_query()))
             .transpose()
     }
 
-    pub fn uuid_set(&self, name: &str) -> Result<Option<BTreeSet<Uuid>>, ApiError> {
+    pub fn uuid_list<C: FromIterator<Uuid>>(&self, name: &str) -> Result<Option<C>, ApiError> {
         let Some(value) = self.last(name) else {
             return Ok(None);
         };
@@ -94,7 +95,7 @@ impl QueryParams {
         }
         value
             .split(',')
-            .map(|part| part.parse().map_err(|_| invalid_query()))
+            .map(|part| parse_uuid(part).map_err(|_| invalid_query()))
             .collect::<Result<_, _>>()
             .map(Some)
     }

@@ -91,11 +91,6 @@ async fn list(
             "sort_by" if !matches!(value, "created" | "updated" | "label") => {
                 return Err(invalid_query());
             }
-            "collected_by_ids" if !value.is_empty() => {
-                for id in value.split(',') {
-                    id.parse::<Uuid>().map_err(|_| invalid_query())?;
-                }
-            }
             _ => {}
         }
     }
@@ -117,11 +112,7 @@ async fn list(
     let filters = SourceFilters {
         format,
         label: query.last("label").map(str::to_owned),
-        collected_by_ids: collected
-            .filter(|value| !value.is_empty())
-            .map(|value| value.split(',').map(str::parse).collect::<Result<_, _>>())
-            .transpose()
-            .map_err(|_| invalid_query())?,
+        collected_by_ids: query.uuid_list("collected_by_ids")?,
         top_level_only: collected == Some(""),
         tags: tag_filters(&query)?,
     };

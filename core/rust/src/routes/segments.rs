@@ -46,7 +46,7 @@ fn flow_id(request: &Request<Body>, message: &str) -> Result<Uuid, ApiError> {
         .path()
         .split('/')
         .nth(2)
-        .and_then(|value| value.parse().ok())
+        .and_then(|value| model::parse_uuid(&crate::http::lenient_decode_path(value)).ok())
         .ok_or_else(|| ApiError::not_found(message))
 }
 fn invalid_json() -> ApiError {
@@ -133,9 +133,7 @@ async fn list(
         &["storage_backend_tag.", "storage_backend_tag_exists."],
     )?;
     let labels = params.csv_set("accept_get_urls")?;
-    let storage_ids = params
-        .uuid_set("accept_storage_ids")?
-        .filter(|values| !values.is_empty());
+    let storage_ids = params.uuid_list("accept_storage_ids")?;
     let presigned = params.bool("presigned")?;
     let verbose = params.bool("verbose_storage")?.unwrap_or(false);
     let tag_values = params.dynamic_csv("storage_backend_tag.")?;

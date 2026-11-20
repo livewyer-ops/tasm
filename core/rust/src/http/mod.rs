@@ -13,6 +13,12 @@ use axum::{
 };
 use error::ApiError;
 use serde::de::DeserializeOwned;
+
+pub fn path_uuid(value: &str) -> Result<uuid::Uuid, ApiError> {
+    crate::domain::model::parse_uuid(value)
+        .map_err(|_| ApiError::not_found("The requested resource identifier is invalid."))
+}
+
 #[derive(Clone)]
 pub struct RawRequestTarget(pub axum::http::Uri);
 pub fn lenient_decode_path(path: &str) -> String {

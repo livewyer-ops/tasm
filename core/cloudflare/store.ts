@@ -3,10 +3,12 @@ import { initSync, Tasm } from "../../pkg/cloudflare/tasm_cloudflare.js";
 import module from "../../pkg/cloudflare/tasm_cloudflare_bg.wasm";
 import openapi from "../../pkg/cloudflare/openapi.json";
 import schema from "./schema.sql";
+import uuidSchema from "../../contracts/tams/api/schemas/uuid.json";
 import type { Bindings } from "./worker.ts";
 import { presign } from "./signing.ts";
 
 initSync({ module });
+const storageUuid = new RegExp(uuidSchema.pattern);
 
 type Backend = { storage_id: string; bucket_name: string; label: string; default_storage: boolean; tags?: Record<string, string[]> };
 type Transaction = { finish(): void; rollback(): void; promise: Promise<void> };
@@ -50,7 +52,7 @@ export class WasmStore extends DurableObject<Bindings> {
     for (const [, backend] of entries) if (typeof backend.storage_id === "string") backend.storage_id = backend.storage_id.toLowerCase();
     if (!entries.length || entries.filter(([, b]) => b.default_storage === true).length !== 1 ||
         ["storage_id", "bucket_name", "label"].some(field => new Set(entries.map(([, b]) => b[field as keyof Backend])).size !== entries.length) ||
-        entries.some(([binding, b]) => !/^[A-Z][A-Z0-9_]*$/.test(binding) || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(b.storage_id) || !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(b.bucket_name) || !b.label?.trim() || typeof b.default_storage !== "boolean" || !(env[binding as keyof Bindings] as R2Bucket)?.head)) {
+        entries.some(([binding, b]) => !/^[A-Z][A-Z0-9_]*$/.test(binding) || !storageUuid.test(b.storage_id) || !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(b.bucket_name) || !b.label?.trim() || typeof b.default_storage !== "boolean" || !(env[binding as keyof Bindings] as R2Bucket)?.head)) {
       throw new Error("Invalid storage backend configuration");
     }
     const endpoint = new URL(env.R2_ENDPOINT);
