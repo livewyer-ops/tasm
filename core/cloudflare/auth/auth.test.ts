@@ -14,7 +14,7 @@ const server = createTestHarness({ workers: [
   { configPath: issuerConfigPath, secrets: { BETTER_AUTH_SECRET: "local-auth-test-secret-at-least-32-characters" } },
 ] });
 const issuer = server.getWorker<Env>("cf-tams-auth");
-const api = server.getWorker<Bindings & { AUTH: { verify(token: string): Promise<string | null> } }>("cf-tams-wasm-experiment");
+const api = server.getWorker<Bindings & { AUTH: { verify(token: string): Promise<string | null> } }>("cf-tams-wasm");
 let env: Env;
 let auth: ReturnType<typeof createAuth>;
 let ownerHeaders: Headers;
@@ -198,7 +198,7 @@ test("OAuth issuance, permissions, rotation and failure handling", async (t) => 
       },
     };
     const server = createTestHarness({ workers: [{ configPath: apiConfigPath, config: structuredClone(config) }] });
-    const api = server.getWorker<Bindings>("cf-tams-wasm-experiment");
+    const api = server.getWorker<Bindings>("cf-tams-wasm");
     t.after(async () => { await server.close(); });
     await server.listen();
     assert.equal((await api.getEnv()).AUTH, undefined);

@@ -14,7 +14,7 @@ const server = createTestHarness({ workers: [{
   secrets: { BASIC_AUTH_USERNAME: username, BASIC_AUTH_PASSWORD: password, R2_ACCESS_KEY_ID: "test-key", R2_SECRET_ACCESS_KEY: "test-secret" },
   vars: { API_CORS: '{"origins":["https://client.example"]}', WEBHOOK_ALLOWED_HOSTS: '["hooks.example.com","*.example.net"]' },
 }] });
-const api = server.getWorker<Bindings>("cf-tams-wasm-experiment");
+const api = server.getWorker<Bindings>("cf-tams-wasm");
 const origin = "https://wasm.example";
 type RequestOptions = NonNullable<Parameters<typeof api.fetch>[1]>;
 const request = (path: string, init: Omit<RequestOptions, "headers"> & { headers?: Record<string, string>; duplex?: "half" } = {}) => api.fetch(origin + path, {

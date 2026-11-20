@@ -16,7 +16,7 @@ before(async () => { await server.listen(); });
 after(async () => { await server.close(); });
 
 test("Every TAMS 8.2 operation matches the contract with HTTP Basic", { timeout: 120_000 }, async t => {
-  const api = server.getWorker<Bindings>("cf-tams-wasm-experiment");
+  const api = server.getWorker<Bindings>("cf-tams-wasm");
   const { operations, remainingFlow } = await runCloudflareContract(api, "https://wasm.example", "Basic " + btoa(`${username}:${password}`));
   assert.ok(operations.length > 0);
   t.diagnostic(`${operations.length} operations covered (Basic): ${operations.join(", ")}`);

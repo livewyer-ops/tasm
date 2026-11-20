@@ -1,6 +1,6 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
-  "name": "cf-tams-wasm-experiment",
+  "name": "cf-tams-wasm",
   "main": "worker.ts",
   "compatibility_date": "2026-09-22",
   "workers_dev": true,
@@ -55,7 +55,7 @@
     ]
   },
   "vars": {
-    "STORE_ID": "wasm-experiment",
+    "STORE_ID": "tams",
     "AUTH_MODE": "basic",
     "API_CORS": "{}",
     "WEBHOOK_ALLOWED_HOSTS": "[]",

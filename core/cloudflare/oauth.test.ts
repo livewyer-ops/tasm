@@ -14,7 +14,7 @@ const server = createTestHarness({ workers: [
   } },
   { configPath: issuerConfigPath, secrets: { BETTER_AUTH_SECRET: "local-auth-test-secret-at-least-32-characters" } },
 ] });
-const api = server.getWorker<Bindings>("cf-tams-wasm-experiment");
+const api = server.getWorker<Bindings>("cf-tams-wasm");
 const issuer = server.getWorker<Env>("cf-tams-auth");
 let auth: ReturnType<typeof createAuth>;
 let headers: Headers;
