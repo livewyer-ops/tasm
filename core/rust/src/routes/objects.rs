@@ -15,7 +15,10 @@ use sqlx::{Engine, Row, Transaction};
 use uuid::Uuid;
 
 use crate::{
-    db::{self, MediaObjectRecord, ObjectCleanup, ObjectCopy, PageRequest, StorageBackend, Tags},
+    db::{
+        self, MediaObjectRecord, ObjectCleanup, ObjectCopy, PageRequest, StorageBackend,
+        TagFilters, Tags,
+    },
     domain::{
         model,
         object::{MediaObject, ObjectInstance},
@@ -206,29 +209,35 @@ async fn get_object(
     let flow_tag_exists = params.dynamic_bool("flow_tag_exists.")?;
     // Referencing flows come from stored segments, so a flow lookup is only
     // needed to apply flow tag filters.
-    let mut flows = Vec::new();
-    if flow_tag_values.is_empty() && flow_tag_exists.is_empty() {
-        flows.extend(media.referenced_by_flows.iter().copied());
+    let (selected, next) = if flow_tag_values.is_empty() && flow_tag_exists.is_empty() {
+        let flows = media
+            .referenced_by_flows
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let start = usize::try_from(page.offset)
+            .unwrap_or(usize::MAX)
+            .min(flows.len());
+        let end = start
+            .saturating_add(usize::try_from(page.limit).unwrap_or(usize::MAX))
+            .min(flows.len());
+        let next = (end < flows.len()).then(|| (page.offset + page.limit).to_string());
+        (flows[start..end].to_vec(), next)
     } else {
-        for flow_id in &media.referenced_by_flows {
-            if let Some(flow) = db::flows::get_flow(&pool, *flow_id)
-                .await
-                .map_err(internal)?
-                && tags_match(&flow.tags, &flow_tag_values, &flow_tag_exists)
-            {
-                flows.push(*flow_id);
-            }
-        }
-    }
-    flows.sort_unstable();
-    let start = usize::try_from(page.offset)
-        .unwrap_or(usize::MAX)
-        .min(flows.len());
-    let end = start
-        .saturating_add(usize::try_from(page.limit).unwrap_or(usize::MAX))
-        .min(flows.len());
-    let selected = &flows[start..end];
-    let next = (end < flows.len()).then(|| (page.offset + page.limit).to_string());
+        let ids = media
+            .referenced_by_flows
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let tags = TagFilters {
+            values: flow_tag_values,
+            exists: flow_tag_exists,
+        };
+        let flows = db::flows::page_flow_ids_with_tags(&pool, &ids, &tags, &page)
+            .await
+            .map_err(internal)?;
+        (flows.items, flows.next_page)
+    };
 
     let init_object = if !head
         && let Some(init_id) = media.init_object_id.as_deref()
@@ -254,7 +263,7 @@ async fn get_object(
     };
     let mut body = json!({
         "id": media.id,
-        "referenced_by_flows": selected,
+        "referenced_by_flows": &selected,
         "first_referenced_by_flow": media.first_referenced_by_flow,
         "timerange": media.timerange,
         "get_urls": urls,

@@ -113,6 +113,15 @@ pub fn push_json_int_eq<'a, B: sqlx::Bind + 'a>(
         .push("::int)");
 }
 
+/// Appends a test that `column` is one of `values`.
+pub fn push_in_array<'a, B: sqlx::Bind + 'a>(
+    q: &mut sqlx::QueryBuilder<'a, Engine>,
+    column: &str,
+    values: B,
+) {
+    q.push(column).push("=ANY(").push_bind(values).push(")");
+}
+
 /// Appends a test that the flow is collected by one of `parents`, or by no flow when `None`.
 pub fn push_flow_collected_by<'a, B: sqlx::Bind + 'a>(
     q: &mut sqlx::QueryBuilder<'a, Engine>,

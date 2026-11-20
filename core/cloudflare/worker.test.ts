@@ -510,6 +510,52 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     assert.equal((await remove(`timerange=${encodeURIComponent("()")}`)).status, 204);
   });
 
+  await t.test("Object references filter by flow tags and page in one query", { timeout: 30_000 }, async () => {
+    const name = "object-reference-tags";
+    const env = await api.getEnv();
+    const call = async (method: string, path: string, body?: unknown) => {
+      const result = JSON.parse(await env.STORE.getByName(name).request(JSON.stringify({ method, url: origin + path, headers: { "content-type": "application/json" }, body: body === undefined ? null : JSON.stringify(body), actor: { subject: username, scopes: ["tams-api/admin"] } })));
+      return { status: result.status as number, headers: Object.fromEntries(Object.entries(result.headers as Record<string, string>).map(([k, v]) => [k.toLowerCase(), v])), value: result.body ? JSON.parse(result.body) : null };
+    };
+    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const put = async (tags?: Record<string, unknown>) => {
+      const id = crypto.randomUUID();
+      assert.equal((await call("PUT", `/flows/${id}`, { ...video, id, source_id: crypto.randomUUID(), ...(tags ? { tags } : {}) })).status, 201);
+      return id;
+    };
+    const first = await put({ sample: "yes" });
+    const object = (await call("POST", `/flows/${first}/storage`, { limit: 1 })).value.media_objects[0] as { object_id: string; put_url: { url: string } };
+    await env.MEDIA.put(new URL(object.put_url.url).pathname.split("/").slice(2).join("/"), "media", { httpMetadata: { contentType: "video/mp2t" } });
+    const reference = async (id: string) => assert.equal((await call("POST", `/flows/${id}/segments`, { object_id: object.object_id, timerange: "[0:0_1:0)" })).status, 201);
+    await reference(first);
+    const tagged = async (tags?: Record<string, unknown>) => { const id = await put(tags); await reference(id); return id; };
+    const scalar = [first, await tagged({ sample: "yes" })];
+    const array = [await tagged({ sample: ["no", "yes"] }), await tagged({ sample: ["no", "yes"] })];
+    const other = [await tagged({ sample: "no" }), await tagged({ sample: ["no"] })];
+    const untagged = [await tagged(), await tagged()];
+    const sorted = (ids: string[]) => [...ids].sort();
+    const all = async (query: string) => {
+      const ids: string[] = [];
+      let path: string | undefined = `/objects/${object.object_id}?${query}`;
+      while (path) {
+        const page = await call("GET", path);
+        assert.equal(page.status, 200, JSON.stringify(page.value));
+        const head = await call("HEAD", path);
+        assert.equal(head.headers["x-paging-count"], page.headers["x-paging-count"]);
+        assert.equal(head.headers.link, page.headers.link);
+        assert.equal(page.headers["x-paging-count"], String(page.value.referenced_by_flows.length));
+        ids.push(...page.value.referenced_by_flows);
+        path = /<[^>]*?(\/objects\/[^>]*)>; rel="next"/.exec(page.headers.link ?? "")?.[1];
+      }
+      return ids;
+    };
+    assert.deepEqual(await all("flow_tag.sample=yes&limit=2"), sorted([...scalar, ...array]));
+    assert.deepEqual(await all("flow_tag.sample=yes,no&limit=3"), sorted([...scalar, ...array, ...other]));
+    assert.deepEqual(await all("flow_tag_exists.sample=false&limit=1"), sorted(untagged));
+    assert.deepEqual(await all("flow_tag_exists.sample=true&flow_tag.sample=no"), sorted([...array, ...other]));
+    assert.deepEqual(await all("limit=3"), sorted([...scalar, ...array, ...other, ...untagged]));
+  });
+
   await t.test("Profiles page in id order, filter, reject duplicates and lock for flows", async () => {
     const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
     const metadata = { format: video.format, codec: video.codec, container: video.container, essence_parameters: video.essence_parameters };

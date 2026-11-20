@@ -255,6 +255,31 @@ where
     )
 }
 
+/// The flows among `ids` whose tags match, one page at a time in ID order.
+pub async fn page_flow_ids_with_tags(
+    pool: &Pool,
+    ids: &[Uuid],
+    tags: &TagFilters,
+    page: &PageRequest,
+) -> Result<Page<Uuid>, DbError> {
+    let mut q = QueryBuilder::<Engine>::new("SELECT flow.id FROM tamoss_flows flow WHERE ");
+    dialect::push_in_array(&mut q, "flow.id", ids);
+    append_tags(&mut q, "flow.tags", tags, true);
+    q.push(" ORDER BY flow.id LIMIT ")
+        .push_bind(page.limit + 1)
+        .push(" OFFSET ")
+        .push_bind(page.offset);
+    Ok(finish_page(
+        q.build()
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|row| row.try_get(0))
+            .collect::<Result<_, _>>()?,
+        page,
+    ))
+}
+
 pub async fn list_flows_collecting<'e, E>(
     executor: E,
     child_ids: &[Uuid],

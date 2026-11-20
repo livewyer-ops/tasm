@@ -25,12 +25,13 @@ async function store() {
   const files = new Map<string, Stored>();
   const deliveries: { url: string; event: string }[] = [];
   const key = (b: string, id: string) => `${b}/${id}`;
-  // Counts the rows the database returns to the core.
-  const returned = { rows: 0 };
+  // Counts the queries the core runs and the rows the database returns to it.
+  const returned = { queries: 0, rows: 0 };
   const bridge = async (op: string, payload: string): Promise<string> => {
     const p = JSON.parse(payload);
     if (sql.handles(op)) {
       const result = await sql.call(op, p) as { rows?: unknown[] } | undefined;
+      if (op === 'sql') returned.queries++;
       returned.rows += result?.rows?.length ?? 0;
       return JSON.stringify(result);
     }
@@ -394,4 +395,59 @@ test('segment deletion selects matching segments in the database', async () => {
   assert.equal(JSON.parse(whole.body).timerange_to_delete, '[0:0_40:0)');
   assert.equal((await remove(`timerange=${encodeURIComponent('[45:0_46:0)')}`)).status, 204);
   assert.equal((await remove(`timerange=${encodeURIComponent('()')}`)).status, 204);
+});
+
+test('object references filter by flow tags and page in one query', async () => {
+  const { request, upload, returned } = await store();
+  const put = async (tags?: Record<string, unknown>) => {
+    const id = crypto.randomUUID();
+    assert.equal((await request('PUT', `/flows/${id}`, { ...videoFlow, id, source_id: crypto.randomUUID(), ...(tags ? { tags } : {}) })).status, 201);
+    return id;
+  };
+  const first = await put({ sample: 'yes' });
+  const objectId = JSON.parse((await request('POST', `/flows/${first}/storage`, { limit: 1 })).body).media_objects[0].object_id as string;
+  upload(objectId);
+  const reference = async (tags?: Record<string, unknown>) => {
+    const id = await put(tags);
+    const response = await request('POST', `/flows/${id}/segments`, { object_id: objectId, timerange: '[0:0_1:0)' });
+    assert.equal(response.status, 201, response.body);
+    return id;
+  };
+  assert.equal((await request('POST', `/flows/${first}/segments`, { object_id: objectId, timerange: '[0:0_1:0)' })).status, 201);
+  const scalar = [first, await reference({ sample: 'yes' }), await reference({ sample: 'yes' })];
+  const array = [await reference({ sample: ['no', 'yes'] }), await reference({ sample: ['no', 'yes'] })];
+  const other = [await reference({ sample: 'no' }), await reference({ sample: 'no' }), await reference({ sample: ['no'] })];
+  const untagged = [await reference(), await reference()];
+  const sorted = (ids: string[]) => [...ids].sort();
+  const all = async (query: string) => {
+    const ids: string[] = [];
+    let path: string | undefined = `/objects/${objectId}?${query}`;
+    while (path) {
+      const page = await request('GET', path);
+      assert.equal(page.status, 200, page.body);
+      const head = await request('HEAD', path);
+      assert.equal(head.headers['x-paging-count'], page.headers['x-paging-count']);
+      assert.equal(head.headers.link, page.headers.link);
+      const referenced = JSON.parse(page.body).referenced_by_flows as string[];
+      assert.equal(page.headers['x-paging-count'], String(referenced.length));
+      ids.push(...referenced);
+      path = /<[^>]*?(\/objects\/[^>]*)>; rel="next"/.exec(page.headers.link ?? '')?.[1];
+    }
+    return ids;
+  };
+  assert.deepEqual(await all('flow_tag.sample=yes&limit=2'), sorted([...scalar, ...array]));
+  assert.deepEqual(await all('flow_tag.sample=yes,no&limit=3'), sorted([...scalar, ...array, ...other]));
+  assert.deepEqual(await all('flow_tag_exists.sample=false&limit=1'), sorted(untagged));
+  assert.deepEqual(await all('flow_tag_exists.sample=true&flow_tag.sample=no'), sorted([...array, ...other]));
+  assert.deepEqual(await all('limit=4'), sorted([...scalar, ...array, ...other, ...untagged]));
+
+  // The number of queries does not grow with the number of referencing flows.
+  const queries = async () => {
+    returned.queries = 0;
+    assert.equal((await request('GET', `/objects/${objectId}?flow_tag.sample=yes&limit=1`)).status, 200);
+    return returned.queries;
+  };
+  const before = await queries();
+  for (let i = 0; i < 6; i++) await reference({ sample: 'yes' });
+  assert.equal(await queries(), before);
 });
