@@ -1,0 +1,5 @@
+{
+  "extends": "./auth/tsconfig.json",
+  "compilerOptions": { "lib": ["ES2022"] },
+  "include": ["*.ts", "../../pkg/cloudflare/*.d.ts", "./auth/worker-configuration.d.ts"]
+}

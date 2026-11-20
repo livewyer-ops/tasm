@@ -1,0 +1,70 @@
+CF TAMS Wasm adaptation (2026-10-23)
+Copyright 2026 Livewyer Ltd
+
+The Rust HTTP handlers, domain models, background jobs, canonical JSON and
+query bindings are adapted from TASM revision
+112c7a9e6e206ffbc528f5b0961e5eba432a010c. PostgreSQL queries are converted to
+native SQLite, with exact ordered timestamp keys and per-instance host callbacks.
+Cloudflare integration adds R2 signing and allocation incarnations, retained
+physical cleanup, alarms, HTTP Basic/OAuth authentication and CORS.
+Browser UI, PGlite and OPFS components are omitted. Source hashes are recorded
+in provenance.json. See ../LICENSE (Apache-2.0).
+
+Relevant upstream notices follow. References to paths and components in those
+notices describe the upstream distributions.
+
+TAMOSS (Time Addressable Media Open Source Store)
+Copyright 2026 Livewyer Ltd
+
+This Rust implementation is derived from and modifies/reimplements portions of
+TAMOSS 8.2.0-oss1-rc2, commit 6431efcb5b7a6d5e0d0091508549dc27a1a0a19e,
+licensed under the Apache License, Version 2.0.
+
+The following upstream BBC attribution block is reproduced verbatim:
+
+This product includes or is derived from the following third-party software:
+
+------------------------------------------------------------------------
+BBC Time-addressable Media Store API Specification
+https://github.com/bbc/tams
+------------------------------------------------------------------------
+
+Copyright BBC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+This product implements the BBC TAMS API specification and includes it
+as a git submodule under src/vendor/bbc-tams/.
+
+This distribution does not contain that upstream git submodule; it vendors the
+frozen `assets/openapi.json` contract and SQL/migration provenance described
+below.
+
+Modification notice (2026-08-20): Livewyer Ltd rewrote the API, worker, health,
+and migration runtime in Rust; added the static Alpine multi-architecture image,
+operator-compatible argv dispatcher, conformance/validation scripts, and
+operational rollback documentation; and retained the frozen contract and SQL
+migration assets with their upstream provenance. `assets/openapi.json` is the
+unchanged frozen packaged BBC contract; runtime code changes only its three
+advertised version fields in memory. Dependency licenses are reported by the
+repository's cargo-deny/source-archive inventory.
+
+TASM modification notice (2026-09-18):
+The Rust HTTP handlers, domain models, PostgreSQL repositories and background
+jobs have been adapted from rust-tams-api commit
+58c73d8add60a819605c1009661872f676c2769d for browser WebAssembly execution.
+Native server, authentication, console and infrastructure components are omitted.
+The PostgreSQL adapter uses PGlite, and browser storage uses IndexedDB and OPFS.
+Timestamp arithmetic and encoded object identity handling have been changed.
+
+Canonical JSON code is adapted from the ibc-cnm-demo-1 workspace, licensed
+under Apache-2.0 (git base 56f6986e56407d26938bde90011e0e23a3cd3907).
+The exact source file hash is recorded in contracts/provenance.json.
+
+The preceding canonical JSON provenance refers to the upstream TASM distribution.
+Core source hashes are recorded in core/cloudflare/provenance.json. Both runtimes
+build their contract from the frozen BBC 8.2 reference in contracts/tams/.

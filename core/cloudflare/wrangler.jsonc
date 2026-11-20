@@ -1,0 +1,68 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cf-tams-wasm-experiment",
+  "main": "worker.ts",
+  "compatibility_date": "2026-09-22",
+  "workers_dev": true,
+  "rules": [
+    {
+      "type": "CompiledWasm",
+      "globs": [
+        "**/*.wasm"
+      ],
+      "fallthrough": true
+    },
+    {
+      "type": "Text",
+      "globs": [
+        "**/*.sql"
+      ],
+      "fallthrough": true
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "STORE",
+        "class_name": "WasmStore"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "WasmStore"
+      ]
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "cf-tams-media"
+    },
+    {
+      "binding": "MEDIA_SECONDARY",
+      "bucket_name": "cf-tams-media-secondary"
+    }
+  ],
+  "secrets": {
+    "required": [
+      "BASIC_AUTH_USERNAME",
+      "BASIC_AUTH_PASSWORD",
+      "R2_ACCESS_KEY_ID",
+      "R2_SECRET_ACCESS_KEY"
+    ]
+  },
+  "vars": {
+    "STORE_ID": "wasm-experiment",
+    "AUTH_MODE": "basic",
+    "API_CORS": "{}",
+    "WEBHOOK_ALLOWED_HOSTS": "[]",
+    "R2_ENDPOINT": "https://ACCOUNT_ID.r2.cloudflarestorage.com",
+    "STORAGE_BACKENDS": "{\"MEDIA\":{\"storage_id\":\"00000000-0000-4000-8000-000000000001\",\"bucket_name\":\"cf-tams-media\",\"label\":\"Primary\",\"default_storage\":true},\"MEDIA_SECONDARY\":{\"storage_id\":\"00000000-0000-4000-8000-000000000002\",\"bucket_name\":\"cf-tams-media-secondary\",\"label\":\"Secondary\",\"default_storage\":false}}"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
