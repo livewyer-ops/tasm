@@ -1,0 +1,9 @@
+/*
+  Cache-Control: no-cache
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  X-Frame-Options: DENY
+/samples/*.ts
+  Content-Type: video/mp2t
+/*.wasm
+  Content-Type: application/wasm

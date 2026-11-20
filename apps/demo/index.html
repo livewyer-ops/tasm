@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f7f8f6"><title>TAMS in Practice</title><link rel="icon" type="image/svg+xml" href="./branding/tams-favicon.svg"><link rel="icon" type="image/png" sizes="32x32" href="./branding/tams-icon-32.png"><link rel="icon" type="image/png" sizes="16x16" href="./branding/tams-icon-16.png">
+  <link rel="preload" href="./branding/HKGrotesk-Regular.otf" as="font" type="font/otf" crossorigin>
+  <link rel="preload" href="./branding/HKGrotesk-Bold.otf" as="font" type="font/otf" crossorigin>
+  <link rel="stylesheet" href="./omakase.css"><link rel="stylesheet" href="./demo.css"><link rel="stylesheet" href="./onboarding.css">
+</head>
+<body data-app="demo">
+  <div id="startup-notice" role="status"><span id="startup-message">Opening application...</span> <button id="startup-retry" type="button">Retry</button></div>
+  <header>
+    <a class="brand" href="./">TAMS in Practice</a>
+    <nav class="partners" aria-label="Demo partners">
+      <a href="https://livewyer.io/" target="_blank" rel="noopener noreferrer"><img src="./branding/livewyer.svg" alt="LiveWyer" width="160" height="22"></a>
+      <span class="partner-divider" aria-hidden="true"></span>
+      <a href="https://techex.tv/" target="_blank" rel="noopener noreferrer"><img src="./branding/techex.svg" alt="Techex" width="108" height="24"></a>
+    </nav>
+    <div class="header-actions"><button id="about-demo" type="button">About this demo</button><button id="reset-demo" type="button" disabled>Reset</button></div>
+  </header>
+  <main>
+    <div class="intro"><h1>Explore media by time</h1><p>An interactive introduction to working with media by time.</p></div>
+    <nav aria-label="Demonstration steps"><ol class="steps">
+      <li><button data-step="1" aria-label="Step 1. Create a source" aria-current="step" disabled><span aria-hidden="true">1</span>Source</button></li>
+      <li><button data-step="2" aria-label="Step 2. Add a video flow" disabled><span aria-hidden="true">2</span>Flow</button></li>
+      <li><button data-step="3" aria-label="Step 3. Store the sample media" disabled><span aria-hidden="true">3</span>Media</button></li>
+      <li><button data-step="4" aria-label="Step 4. Play a time range" disabled><span aria-hidden="true">4</span>Play</button></li>
+      <li><button id="list-flows" data-step="5" aria-label="Step 5. Find the available video flows" disabled><span aria-hidden="true">5</span>Flows</button></li>
+      <li><button id="list-segments" data-step="6" aria-label="Step 6. Inspect the flow’s segments" disabled><span aria-hidden="true">6</span>Segments</button></li>
+      <li><button id="create-excerpt" data-step="7" aria-label="Step 7. Reuse media: Create a four-second excerpt" disabled><span aria-hidden="true">7</span>Reuse</button></li>
+      <li><button id="delete-previous" data-step="8" aria-label="Step 8. Delete the original flow" disabled><span aria-hidden="true">8</span>Delete</button></li>
+    </ol></nav>
+    <div class="demo-layout">
+      <section class="walkthrough" aria-labelledby="step-title" aria-busy="true">
+        <div class="presentation">
+          <div class="instruction">
+            <p id="step-label" class="eyebrow">Step 1 of 8</p>
+            <h2 id="step-title" tabindex="-1">Step 1. Create a source</h2>
+            <div id="description" tabindex="0" aria-label="Explanation"><p id="explanation">Start by creating a source for this sample video. A source identifies a piece of content, such as a recording. Its flows describe the media available for that content.</p><a id="tams-reference" href="https://github.com/bbc/tams/blob/34fb31b80cb8afb3194f28c8b787301379caacf8/README.md#sources" target="_blank" rel="noopener noreferrer">Read more in the TAMS reference</a></div>
+            <pre id="api-result" tabindex="0" aria-label="API query and response" hidden></pre>
+            <div class="actions"><button id="primary" class="primary" disabled>Create a source</button></div>
+          </div>
+          <div class="media-panel">
+            <div class="preview">
+              <div id="omakase-player"></div>
+              <div id="poster"><img src="./samples/orbit.jpg" alt="Colourful orbiting shapes from the example video"><span>Orbit <small>6.4 seconds · Video · No audio</small></span></div>
+            </div>
+            <div id="playback-controls" class="playback-controls" hidden><label id="ranges" class="range-control"><span>Playback range</span><select id="range-select" disabled><option value="whole">Whole video</option><option value="first">First 2 seconds</option><option value="last">Last 2 seconds</option></select></label><button id="replay" aria-label="Replay section" disabled>Replay</button><button id="pause" disabled>Pause</button></div>
+          </div>
+        </div>
+        <p id="status" role="status" aria-live="polite">Opening browser storage...</p>
+        <section id="structure" aria-label="Source and flow timeline">
+          <div class="source-heading"><h3>Source</h3><span id="source-state"></span></div>
+          <p id="source-empty">No source yet.</p>
+          <p id="flow-empty"></p>
+          <div id="flows"><div id="flow" class="flow-row" hidden>
+            <div class="flow-heading"><strong class="flow-label" hidden></strong><span id="timeline-state" class="timeline-state">Empty flow</span></div>
+            <div class="ruler" aria-hidden="true"><span style="left:0">0 s</span><span style="left:31.25%">2 s</span><span style="left:62.5%">4 s</span><span class="end">6.4 s</span></div>
+            <div id="track" class="track">
+              <div id="pieces" class="pieces" role="group" aria-label="Video segments"></div>
+              <p id="track-empty" class="track-empty">No segments yet.</p>
+              <div id="requested-range" class="requested-range" hidden></div><div id="playhead" class="playhead" hidden></div>
+            </div>
+            <div class="timeline-key"><span>Segment width = duration</span><span id="playhead-time" class="playhead-time">Playback 0 s</span></div>
+          </div></div>
+          <p id="piece-description"></p>
+        </section>
+        <p id="range-result" hidden></p>
+        <section id="storage" aria-labelledby="storage-title" aria-busy="false">
+          <div class="storage-heading"><div><h3 id="storage-title">Media objects</h3><p id="storage-summary">No objects stored yet.</p></div><button id="storage-refresh" disabled>Check storage</button></div>
+          <table id="storage-table" hidden><thead><tr><th scope="col">Object ID</th><th scope="col">Segment</th><th scope="col">Size</th><th scope="col">State</th></tr></thead><tbody id="storage-objects"></tbody></table>
+          <p id="storage-note"></p>
+          <details id="object-details" hidden><summary>Object details</summary><div class="object-identity"><code id="full-object-id"></code><button id="copy-object-id">Copy ID</button></div><p id="copy-status" role="status"></p><pre id="object-detail"></pre></details>
+        </section>
+        <div id="error" role="alert" hidden><p id="error-message"></p><button id="retry">Retry</button><details><summary>Error details</summary><pre id="error-detail"></pre></details></div>
+      </section>
+      <aside id="technical" aria-labelledby="activity-title">
+        <section id="result-tip" aria-labelledby="result-tip-title" hidden>
+          <button id="result-tip-close" type="button" aria-label="Dismiss explanation">×</button>
+          <h2 id="result-tip-title"></h2><p id="result-tip-text"></p>
+          <div class="result-tip-buttons"><button id="result-tip-hide" type="button">Hide tips</button></div>
+        </section>
+        <h2 id="activity-title">Under the hood</h2><p class="activity-intro">Each action makes real TAMS API requests. Open a request to see what the application sends and what TAMS returns.</p>
+        <div id="requests"><p class="muted">No actions yet.</p></div>
+        <details id="background"><summary>Background requests <span id="background-count">(0)</span></summary><p>The player may fetch media ahead to keep playback smooth. Storage checks confirm that media objects are present. These requests are separate from the time range you ask TAMS to find.</p><div id="background-requests"></div></details>
+        <details class="guide"><summary>Terms</summary><p><strong>Source:</strong> the identity of a piece of content, such as a recording.</p><p><strong>Flow:</strong> a representation of that content with particular media properties and a timeline.</p><p><strong>Segment:</strong> a record connecting a time range on a flow to a stored media object.</p><p><strong>Media object:</strong> the stored media data that a segment refers to. Multiple flows can use the same object.</p><p><strong>API:</strong> the interface an application uses to ask TAMS to store, find and retrieve media.</p><p>In this demo, a collection flow groups the video flows. Publishing makes a completed flow available through that collection.</p></details>
+      </aside>
+    </div>
+    <footer><a href="https://livewyer.io/" target="_blank" rel="noopener noreferrer">Powered by TASM</a><button id="restart" disabled>Restart walkthrough</button></footer>
+  </main>
+  <dialog id="reset-dialog" aria-labelledby="reset-title" aria-describedby="reset-warning"><h2 id="reset-title">Reset Demo?</h2><p id="reset-warning">Stops active work and permanently clears all Demo data in this browser, including media, imported samples, preferences and cached app files. Close other Demo tabs first. A connection is needed to reload. This cannot be undone.</p><p id="reset-status" role="status" aria-live="polite"></p><div class="dialog-buttons"><button id="reset-cancel" autofocus>Cancel</button><button id="reset-confirm">Reset Demo</button></div></dialog>
+  <dialog class="welcome-dialog" id="demo-about" aria-labelledby="demo-about-title"><form method="dialog"><button class="welcome-close" aria-label="Close" title="Close welcome">×</button><h2 id="demo-about-title">Welcome to TAMS in Practice</h2><p>TAMS (Time Addressable Media Store), developed by <a href="https://github.com/bbc/tams" target="_blank" rel="noopener noreferrer">BBC R&amp;D</a>, lets applications store and retrieve media by time via an API.</p><p>In this demo, you’ll store a short video, play a chosen time range and create an excerpt without making another copy of the media. Along the way, you’ll learn what sources, flows and segments mean in TAMS, and see the API calls behind each action.</p><p>The demo runs in your browser using TASM, a full TAMS implementation developed at LiveWyer and compiled to WebAssembly.</p><label class="result-tip-preference"><input id="show-result-tips" type="checkbox" checked> Show step explanations</label><div class="dialog-buttons"><button autofocus>Start demo</button></div></form></dialog>
+  <script src="./startup.js"></script>
+  <script type="module">import('./demo.js').catch(error => window.tasmStartup.fail(error));</script>
+</body>
+</html>
