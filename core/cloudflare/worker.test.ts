@@ -90,6 +90,66 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     assert.equal(JSON.parse(result.body).name, "Preserved prototype");
   });
 
+  await t.test("Collection membership is backfilled on upgrade and follows flow writes", async () => {
+    const name = "membership-upgrade";
+    const call = async (method: string, path: string, body?: unknown) => {
+      const env = await api.getEnv();
+      const result = JSON.parse(await env.STORE.getByName(name).request(JSON.stringify({ method, url: origin + path, headers: { "content-type": "application/json" }, body: body === undefined ? null : JSON.stringify(body), actor: { subject: username, scopes: ["tams-api/admin"] } })));
+      return { status: result.status as number, value: result.body ? JSON.parse(result.body) : null };
+    };
+    const ids = (value: { id: string }[]) => value.map(item => item.id);
+    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const [a, b, c, parent] = [0, 1, 2, 3].map(() => ({ id: crypto.randomUUID(), source: crypto.randomUUID() }));
+    for (const flow of [a, b, c]) assert.equal((await call("PUT", `/flows/${flow.id}`, { ...video, id: flow.id, source_id: flow.source })).status, 201);
+    assert.equal((await call("PUT", `/flows/${parent.id}`, { ...video, id: parent.id, source_id: parent.source, flow_collection: [{ id: a.id, role: "a" }, { id: b.id, role: "b" }] })).status, 201);
+    // Responses before the downgrade, compared in order after the upgrade.
+    const listings = ["/flows?collected_by_ids=" + parent.id, "/flows?collected_by_ids=", "/sources?collected_by_ids=" + parent.source, "/sources?collected_by_ids="];
+    const list = () => Promise.all(listings.map(async path => ids((await call("GET", path)).value)));
+    const listed = await list();
+    assert.deepEqual([...listed[0]].sort(), [a.id, b.id].sort());
+    let sql = await api.getDurableObjectStorage("STORE", { name });
+    // Recreate a version 2 store: no membership table, plus a duplicate and a dangling member.
+    await sql.exec("DROP TRIGGER tamoss_flow_members_insert");
+    await sql.exec("DROP TRIGGER tamoss_flow_members_update");
+    await sql.exec("DROP TRIGGER tamoss_flow_members_delete");
+    await sql.exec("DROP TABLE tamoss_flow_collection_members");
+    await sql.exec("DELETE FROM wasm_schema_versions WHERE version=3");
+    const dangling = crypto.randomUUID();
+    await sql.exec("UPDATE tamoss_flows SET flow_collection_ids=? WHERE id=?", JSON.stringify([a.id, b.id, a.id, dangling]), parent.id);
+    await server.update(options => options);
+    assert.equal((await call("GET", "/service")).status, 200);
+    sql = await api.getDurableObjectStorage("STORE", { name });
+    const members = async () => (await sql.exec<{ child_id: string }>("SELECT child_id FROM tamoss_flow_collection_members WHERE parent_id=? ORDER BY position", parent.id)).map(row => row.child_id);
+    assert.deepEqual(await members(), [a.id, b.id, a.id, dangling]);
+    assert.deepEqual(await list(), listed);
+    const [, topLevel, collectedSources, topSources] = listed;
+    assert.ok(topLevel.includes(parent.id) && topLevel.includes(c.id) && !topLevel.includes(a.id) && !topLevel.includes(b.id));
+    assert.deepEqual([...collectedSources].sort(), [a.source, b.source].sort());
+    assert.ok(topSources.includes(parent.source) && !topSources.includes(a.source));
+    // A write that keeps the collection leaves its member rows alone.
+    await sql.exec("CREATE TABLE member_writes(n INTEGER)");
+    await sql.exec("CREATE TRIGGER count_member_inserts AFTER INSERT ON tamoss_flow_collection_members BEGIN INSERT INTO member_writes VALUES (1); END");
+    await sql.exec("CREATE TRIGGER count_member_deletes AFTER DELETE ON tamoss_flow_collection_members BEGIN INSERT INTO member_writes VALUES (1); END");
+    assert.equal((await call("PUT", `/flows/${parent.id}/label`, "renamed")).status, 204);
+    assert.equal((await call("GET", `/flows/${parent.id}`)).value.label, "renamed");
+    assert.equal((await sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM member_writes"))[0].n, 0);
+    await sql.exec("DROP TRIGGER count_member_inserts");
+    await sql.exec("DROP TRIGGER count_member_deletes");
+    await sql.exec("DROP TABLE member_writes");
+    // Replacing the collection replaces its members in the same write.
+    assert.equal((await call("PUT", `/flows/${parent.id}/flow_collection`, [{ id: c.id, role: "c" }])).status, 204);
+    assert.deepEqual(await members(), [c.id]);
+    assert.deepEqual(ids((await call("GET", `/flows?collected_by_ids=${parent.id}`)).value), [c.id]);
+    assert.ok(ids((await call("GET", "/flows?collected_by_ids=")).value).includes(a.id));
+    // Deleting a child removes it from its parent; deleting the parent removes its rows.
+    assert.equal((await call("DELETE", `/flows/${c.id}`)).status, 204);
+    assert.deepEqual(await members(), []);
+    assert.equal((await call("PUT", `/flows/${parent.id}/flow_collection`, [{ id: a.id, role: "a" }])).status, 204);
+    assert.equal((await call("DELETE", `/flows/${parent.id}`)).status, 204);
+    assert.deepEqual(await members(), []);
+    assert.ok(ids((await call("GET", "/flows?collected_by_ids=")).value).includes(a.id));
+  });
+
   await t.test("CORS errors and preflight use the configured policy", async () => {
     const headers = { Origin: "https://client.example", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization,content-type" };
     assert.equal((await api.fetch(origin + "/service", { method: "OPTIONS", headers })).status, 200);

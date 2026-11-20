@@ -56,6 +56,13 @@ export class WasmStore extends DurableObject<Bindings> {
         }
         ctx.storage.sql.exec("INSERT INTO wasm_schema_versions VALUES (2)");
       }
+      if (!ctx.storage.sql.exec("SELECT version FROM wasm_schema_versions WHERE version=3").toArray().length) {
+        // Version 3 adds tamoss_flow_collection_members; fill it from existing collections.
+        ctx.storage.sql.exec(schema);
+        ctx.storage.sql.exec("DELETE FROM tamoss_flow_collection_members");
+        ctx.storage.sql.exec("INSERT INTO tamoss_flow_collection_members(parent_id,position,child_id) SELECT flow.id, member.key, member.value FROM tamoss_flows AS flow, json_each(flow.flow_collection_ids) AS member");
+        ctx.storage.sql.exec("INSERT INTO wasm_schema_versions VALUES (3)");
+      }
       for (const old of ctx.storage.sql.exec<{ id: string; bucket_name: string; endpoint_url: string }>("SELECT id,bucket_name,endpoint_url FROM tamoss_storage_backends").toArray()) {
         if (this.#backends.get(old.id)?.bucket_name !== old.bucket_name || old.endpoint_url !== endpoint.origin) throw new Error("Existing storage identities cannot be removed or remapped");
       }

@@ -167,9 +167,9 @@ pub async fn list_flows_page(
     }
     if f.top_level_only || f.collected_by_ids.is_some() {
         clause!(if f.top_level_only {
-            "NOT EXISTS(SELECT 1 FROM tamoss_flows parent WHERE EXISTS(SELECT 1 FROM json_each(parent.flow_collection_ids) WHERE value=flow.id))"
+            "NOT EXISTS(SELECT 1 FROM tamoss_flow_collection_members member WHERE member.child_id=flow.id)"
         } else {
-            "EXISTS(SELECT 1 FROM tamoss_flows parent WHERE EXISTS(SELECT 1 FROM json_each(parent.flow_collection_ids) WHERE value=flow.id) AND parent.id IN (SELECT value FROM json_each("
+            "EXISTS(SELECT 1 FROM tamoss_flow_collection_members member WHERE member.child_id=flow.id AND member.parent_id IN (SELECT value FROM json_each("
         });
         if !f.top_level_only {
             q.push_bind(f.collected_by_ids.as_ref().unwrap())
@@ -256,7 +256,7 @@ where
         return Ok(Vec::new());
     }
     sqlx::query(&format!(
-        "{FLOW_COLUMNS} WHERE EXISTS(SELECT 1 FROM json_each(flow.flow_collection_ids) WHERE value IN (SELECT value FROM json_each(?1))) ORDER BY flow.id"
+        "{FLOW_COLUMNS} WHERE flow.id IN (SELECT member.parent_id FROM tamoss_flow_collection_members member WHERE member.child_id IN (SELECT value FROM json_each(?1))) ORDER BY flow.id"
     ))
     .bind(child_ids)
     .fetch_all(executor)
@@ -391,9 +391,9 @@ pub async fn list_sources_page(
         q.push(if wh { " AND " } else { " WHERE " });
         wh = true;
         if f.top_level_only {
-            q.push("NOT EXISTS(SELECT 1 FROM tamoss_flows child JOIN tamoss_flows parent ON EXISTS(SELECT 1 FROM json_each(parent.flow_collection_ids) WHERE value=child.id) WHERE child.source_id=source.id)");
+            q.push("NOT EXISTS(SELECT 1 FROM tamoss_flows child JOIN tamoss_flow_collection_members member ON member.child_id=child.id WHERE child.source_id=source.id)");
         } else {
-            q.push("EXISTS(SELECT 1 FROM tamoss_flows child JOIN tamoss_flows parent ON EXISTS(SELECT 1 FROM json_each(parent.flow_collection_ids) WHERE value=child.id) WHERE child.source_id=source.id AND parent.source_id IN (SELECT value FROM json_each(").push_bind(f.collected_by_ids.as_ref().unwrap()).push(")))");
+            q.push("EXISTS(SELECT 1 FROM tamoss_flows child JOIN tamoss_flow_collection_members member ON member.child_id=child.id JOIN tamoss_flows parent ON parent.id=member.parent_id WHERE child.source_id=source.id AND parent.source_id IN (SELECT value FROM json_each(").push_bind(f.collected_by_ids.as_ref().unwrap()).push(")))");
         }
     }
     append_tags(&mut q, "source.tags", &f.tags, wh);
