@@ -4,12 +4,13 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createTestHarness } from "wrangler";
 import { createAuth, ownerEmail, scopes } from "./auth/config.ts";
+import { runCloudflareContract } from "./contract-host.ts";
 
 const server = createTestHarness({ workers: [
   { configPath: apiConfigPath, config: { ...config,
     services: [verifier],
     secrets: { required: [] },
-    vars: { ...config.vars, AUTH_MODE: "oauth2", API_CORS: '{"origins":["http://localhost:3000"]}', R2_ACCESS_KEY_ID: "test-key", R2_SECRET_ACCESS_KEY: "test-secret" },
+    vars: { ...config.vars, AUTH_MODE: "oauth2", API_CORS: '{"origins":["http://localhost:3000"]}', WEBHOOK_ALLOWED_HOSTS: '["hooks.example.com"]', R2_ACCESS_KEY_ID: "test-key", R2_SECRET_ACCESS_KEY: "test-secret" },
   } },
   { configPath: issuerConfigPath, secrets: { BETTER_AUTH_SECRET: "local-auth-test-secret-at-least-32-characters" } },
 ] });
@@ -50,4 +51,10 @@ test("Paid OAuth identity and existing Workers integration checks", async () => 
   }
   const admin = await token("tams-api/admin");
   await checkMedia(api, "Bearer " + admin);
+});
+
+test("Every TAMS 8.2 operation matches the contract with an OAuth administrator token", { timeout: 120_000 }, async t => {
+  const { operations } = await runCloudflareContract(api, "https://wasm.example", "Bearer " + await token("tams-api/admin"));
+  assert.ok(operations.length > 0);
+  t.diagnostic(`${operations.length} operations covered (OAuth): ${operations.join(", ")}`);
 });
