@@ -4,10 +4,10 @@ import { readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
 import type { Page } from '@playwright/test';
 
-type Site = { url: string; demoURL: string; release: string; failure: string };
+type Site = { url: string; demoURL: string; release: string; failure: string; failedWasmLoads: number };
 const test = base.extend<{ site: Site }>({
   site: async ({}, use) => {
-    const site = { url: '', demoURL: '', release: 'A', failure: '' };
+    const site = { url: '', demoURL: '', release: 'A', failure: '', failedWasmLoads: 0 };
     const types: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm', '.json': 'application/json', '.svg': 'image/svg+xml', '.otf': 'font/otf', '.ttf': 'font/ttf', '.jpg': 'image/jpeg', '.png': 'image/png', '.ts': 'video/mp2t' };
     const servers = [];
     for (const app of ['playpen', 'demo']) {
@@ -15,6 +15,11 @@ const test = base.extend<{ site: Site }>({
         try {
           const path = new URL(request.url!, 'http://localhost').pathname;
           if (path === '/blank') { response.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html>'); return; }
+          if (site.failure === 'runtime-wasm' && path === '/tasm_bg.wasm') {
+            site.failedWasmLoads++;
+            response.writeHead(503, { 'cache-control': 'no-store' }).end();
+            return;
+          }
           if (site.failure === 'offline') { request.socket.destroy(); return; }
           if ((site.failure === 'asset' && path.endsWith('/samples/black.ts')) ||
               (site.failure === 'module' && path.endsWith('/playpen.js'))) { response.writeHead(503).end(); return; }
@@ -190,4 +195,51 @@ test('Reset is available after workspace loading fails with a healthy runtime', 
   await expect(page.locator('#reset-playpen')).toBeEnabled();
   await page.locator('#reset-playpen').click(); await page.locator('#reset-confirm').click();
   await ready(page); await expect(page.locator('#source-title')).toHaveText('No source yet');
+});
+
+test('a live shared worker can reopen its store after startup fails', async ({ page, site }) => {
+  await page.goto(site.url + '/');
+  await ready(page);
+  const media = await seed(page);
+  await page.evaluate(async () => {
+    const client = await (window as any).tasmReady;
+    await client.shutdown();
+    client.close();
+    for (const registration of await navigator.serviceWorker.getRegistrations()) await registration.unregister();
+  });
+  await page.goto(site.url + '/blank');
+  const ports = await page.evaluateHandle(() => {
+    const base = new URL('/', location.href).href;
+    const connect = () => new SharedWorker(base + 'worker.js', { type: 'module', name: 'store-retry' }).port;
+    function open(port: MessagePort, backends?: { id: string; label: string }[]) {
+      return new Promise<{ type: string; message?: string }>(resolve => {
+        port.onmessage = event => resolve(event.data);
+        port.postMessage({ type: 'init', base, backends });
+      });
+    }
+    return { base, first: connect(), second: connect(), open };
+  });
+  const invalid = await ports.evaluate(({ first, open }) => open(first, []));
+  expect(invalid).toMatchObject({ type: 'error', message: expect.stringContaining('Storage backends') });
+
+  // This module loads after opening PGlite and acquiring the exclusive store lock.
+  site.failure = 'runtime-wasm';
+  const errors = await ports.evaluate(({ first, second, open }) => Promise.all([open(first), open(second)]));
+  expect(site.failedWasmLoads).toBe(1);
+  expect(errors[0].type).toBe('error');
+  expect(errors[1]).toEqual(errors[0]);
+
+  site.failure = '';
+  expect(await ports.evaluate(({ second, open }) => open(second))).toEqual({ type: 'ready' });
+  const result = await ports.evaluate(({ first, base }, url) => {
+    const channel = new MessageChannel();
+    return new Promise<{ status: number; text: string }>(resolve => {
+      channel.port1.onmessage = async ({ data }) => {
+        channel.port1.close();
+        resolve({ status: data.status, text: data.body instanceof Blob ? await data.body.text() : data.body });
+      };
+      first.postMessage({ type: 'tasm-request', base, method: 'GET', url, headers: {} }, [channel.port2]);
+    });
+  }, media);
+  expect(result).toEqual({ status: 200, text: 'keep these media bytes' });
 });

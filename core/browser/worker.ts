@@ -28,7 +28,18 @@ scope.onconnect = ({ ports }) => {
     if (data.type === 'init') {
       try {
         if (stopping) throw new Error('TASM is shutting down. Reload after reset completes.');
-        if (!runtime) { runtime = new Runtime(data.base); opening = runtime.open(data.backends); }
+        if (!runtime) {
+          const candidate = new Runtime(data.base);
+          runtime = candidate;
+          opening = candidate.open(data.backends).catch(async error => {
+            try { await candidate.close(); }
+            catch (closeError) { console.warn('Failed to close the store after startup failed.', closeError); }
+            finally {
+              if (runtime === candidate) { runtime = undefined; opening = undefined; }
+            }
+            throw error;
+          });
+        }
         if (runtime.base !== data.base) throw new Error('Shared worker has a different base path.');
         await opening; connection.postMessage({ type: 'ready' });
       } catch (error) { connection.postMessage({ type: 'error', message: String(error) }); }
