@@ -1,9 +1,10 @@
-// Cloudflare adaptation of TASM and rust-tams-api (Apache-2.0); see NOTICE.
-use crate::sqlite as sqlx;
+// TASM adaptation of rust-tams-api (Apache-2.0), shared by the browser and
+// Cloudflare adapters through their db::dialect modules; see NOTICE.
+use super::dialect::{self, Engine, NOW, Pool, RecordRow, sqlx};
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
-use sqlx::{Pool, QueryBuilder, Row, Sqlite, SqliteRow};
+use sqlx::{QueryBuilder, Row};
 use uuid::Uuid;
 
 use super::{
@@ -74,9 +75,9 @@ pub async fn get_flow(pool: &Pool, id: Uuid) -> Result<Option<FlowRecord>, DbErr
 
 pub async fn get_flow_with<'e, E>(executor: E, id: Uuid) -> Result<Option<FlowRecord>, DbError>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
-    sqlx::query(FLOW_SELECT)
+    dialect::query(FLOW_SELECT)
         .bind(id)
         .fetch_optional(executor)
         .await?
@@ -84,7 +85,7 @@ where
         .transpose()
 }
 pub async fn list_flows(pool: &Pool) -> Result<Vec<FlowRecord>, DbError> {
-    sqlx::query(&format!("{FLOW_COLUMNS} ORDER BY id"))
+    dialect::query(&format!("{FLOW_COLUMNS} ORDER BY id"))
         .fetch_all(pool)
         .await?
         .into_iter()
@@ -98,7 +99,7 @@ pub async fn list_flows_page(
     reverse: bool,
     page: &PageRequest,
 ) -> Result<Page<FlowRecord>, DbError> {
-    let mut q = QueryBuilder::<Sqlite>::new(FLOW_COLUMNS);
+    let mut q = QueryBuilder::<Engine>::new(FLOW_COLUMNS);
     let mut where_started = false;
     macro_rules! clause {
         ($sql:expr) => {{
@@ -127,14 +128,26 @@ pub async fn list_flows_page(
         clause!("flow.init_segments=").push_bind(v);
     }
     if let Some(v) = &f.codec {
-        clause!("json_extract(flow.record, '$.data.codec')=").push_bind(v);
+        clause!("");
+        dialect::push_json_text_eq(&mut q, "flow.record", &["data", "codec"], v);
     }
     if let Some(v) = f.frame_width {
-        clause!("json_extract(flow.record, '$.data.essence_parameters.frame_width')=").push_bind(v);
+        clause!("");
+        dialect::push_json_int_eq(
+            &mut q,
+            "flow.record",
+            &["data", "essence_parameters", "frame_width"],
+            v,
+        );
     }
     if let Some(v) = f.frame_height {
-        clause!("json_extract(flow.record, '$.data.essence_parameters.frame_height')=")
-            .push_bind(v);
+        clause!("");
+        dialect::push_json_int_eq(
+            &mut q,
+            "flow.record",
+            &["data", "essence_parameters", "frame_height"],
+            v,
+        );
     }
     if let Some(v) = &f.label {
         clause!("flow.label=").push_bind(v);
@@ -166,15 +179,11 @@ pub async fn list_flows_page(
         }
     }
     if f.top_level_only || f.collected_by_ids.is_some() {
-        clause!(if f.top_level_only {
-            "NOT EXISTS(SELECT 1 FROM tamoss_flow_collection_members member WHERE member.child_id=flow.id)"
-        } else {
-            "EXISTS(SELECT 1 FROM tamoss_flow_collection_members member WHERE member.child_id=flow.id AND member.parent_id IN (SELECT value FROM json_each("
-        });
-        if !f.top_level_only {
-            q.push_bind(f.collected_by_ids.as_ref().unwrap())
-                .push(")))");
-        }
+        clause!("");
+        dialect::push_flow_collected_by(
+            &mut q,
+            f.collected_by_ids.as_ref().filter(|_| !f.top_level_only),
+        );
     }
     append_tags(&mut q, "flow.tags", &f.tags, where_started);
     // Tag filters are applied in an outer query to keep binding/order exact without unsafe SQL interpolation.
@@ -208,16 +217,16 @@ pub async fn list_flows_page(
 }
 pub async fn save_flow<'e, E>(e: E, v: &FlowRecord) -> Result<(), DbError>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
-    sqlx::query("INSERT INTO tamoss_flows(id,source_id,format,container,profile_id,status,init_segments,label,flow_collection_ids,read_only,tags,record,metadata_updated,created,segments_updated,updated_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'))ON CONFLICT(id)DO UPDATE SET source_id=EXCLUDED.source_id,format=EXCLUDED.format,container=EXCLUDED.container,profile_id=EXCLUDED.profile_id,status=EXCLUDED.status,init_segments=EXCLUDED.init_segments,label=EXCLUDED.label,flow_collection_ids=EXCLUDED.flow_collection_ids,read_only=EXCLUDED.read_only,tags=EXCLUDED.tags,record=EXCLUDED.record,metadata_updated=EXCLUDED.metadata_updated,created=EXCLUDED.created,segments_updated=EXCLUDED.segments_updated,updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')").bind(v.id).bind(v.source_id).bind(&v.format).bind(&v.container).bind(v.profile_id).bind(&v.status).bind(v.init_segments).bind(&v.label).bind(&v.flow_collection_ids).bind(v.read_only).bind(sqlx::types::Json(&v.tags)).bind(sqlx::types::Json(&v.record)).bind(v.metadata_updated).bind(v.created).bind(v.segments_updated).execute(e).await?;
+    dialect::query(&format!("INSERT INTO tamoss_flows(id,source_id,format,container,profile_id,status,init_segments,label,flow_collection_ids,read_only,tags,record,metadata_updated,created,segments_updated,updated_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,{NOW})ON CONFLICT(id)DO UPDATE SET source_id=EXCLUDED.source_id,format=EXCLUDED.format,container=EXCLUDED.container,profile_id=EXCLUDED.profile_id,status=EXCLUDED.status,init_segments=EXCLUDED.init_segments,label=EXCLUDED.label,flow_collection_ids=EXCLUDED.flow_collection_ids,read_only=EXCLUDED.read_only,tags=EXCLUDED.tags,record=EXCLUDED.record,metadata_updated=EXCLUDED.metadata_updated,created=EXCLUDED.created,segments_updated=EXCLUDED.segments_updated,updated_at={NOW}")).bind(v.id).bind(v.source_id).bind(&v.format).bind(&v.container).bind(v.profile_id).bind(&v.status).bind(v.init_segments).bind(&v.label).bind(&v.flow_collection_ids).bind(v.read_only).bind(sqlx::types::Json(&v.tags)).bind(sqlx::types::Json(&v.record)).bind(v.metadata_updated).bind(v.created).bind(v.segments_updated).execute(e).await?;
     Ok(())
 }
 pub async fn delete_flow<'e, E>(e: E, id: Uuid) -> Result<bool, DbError>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
-    Ok(sqlx::query("DELETE FROM tamoss_flows WHERE id=?1")
+    Ok(dialect::query("DELETE FROM tamoss_flows WHERE id=$1")
         .bind(id)
         .execute(e)
         .await?
@@ -226,19 +235,17 @@ where
 }
 pub async fn lock_flow_segments<'e, E>(e: E, id: Uuid) -> Result<(), DbError>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
-    let _ = id;
-    e.host().call("transaction_check", Value::Null).await?;
-    Ok(())
+    dialect::lock(e, &format!("tamoss_segments:{id}")).await
 }
 
 pub async fn has_segments<'e, E>(executor: E, id: Uuid) -> Result<bool, DbError>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
     Ok(
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tamoss_segments WHERE flow_id=?1)")
+        dialect::query_scalar("SELECT EXISTS(SELECT 1 FROM tamoss_segments WHERE flow_id=$1)")
             .bind(id)
             .fetch_one(executor)
             .await?,
@@ -250,13 +257,14 @@ pub async fn list_flows_collecting<'e, E>(
     child_ids: &[Uuid],
 ) -> Result<Vec<FlowRecord>, DbError>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
     if child_ids.is_empty() {
         return Ok(Vec::new());
     }
-    sqlx::query(&format!(
-        "{FLOW_COLUMNS} WHERE flow.id IN (SELECT member.parent_id FROM tamoss_flow_collection_members member WHERE member.child_id IN (SELECT value FROM json_each(?1))) ORDER BY flow.id"
+    dialect::query(&format!(
+        "{FLOW_COLUMNS} WHERE {} ORDER BY flow.id",
+        dialect::COLLECTING_FLOWS
     ))
     .bind(child_ids)
     .fetch_all(executor)
@@ -272,7 +280,7 @@ pub async fn flow_timeranges<'e, E>(
     bounds: crate::domain::timerange::Bounds,
 ) -> Result<BTreeMap<Uuid, Option<(i128, i128)>>, DbError>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
     // One pass per call: each requested flow and its collection members, with the
     // first and last matching segment of each found through the segment indexes.
@@ -291,10 +299,10 @@ where
     let mut next = 1;
     let mut placeholder = |condition: &str| {
         next += 1;
-        format!(" AND segment.{condition}?{next}")
+        format!(" AND segment.{condition}${next}")
     };
     let (after, before) = if bounds.empty {
-        (" AND 0".to_owned(), " AND 0".to_owned())
+        (" AND false".to_owned(), " AND false".to_owned())
     } else {
         (
             start.map_or(String::new(), |_| placeholder("timerange_end>")),
@@ -304,9 +312,10 @@ where
     let first_before = before.replace("segment.", "first.");
     let last_after = after.replace("segment.", "last.");
     let sql = format!(
-        "WITH requested(id) AS (SELECT value FROM json_each(?1)), members(flow_id,member_id) AS (SELECT flow.id,flow.id FROM tamoss_flows flow WHERE flow.id IN requested UNION SELECT member.parent_id,member.child_id FROM tamoss_flow_collection_members member WHERE member.parent_id IN requested) SELECT members.flow_id,MIN((SELECT first.timerange_start FROM (SELECT segment.timerange_start FROM tamoss_segments segment WHERE segment.flow_id=members.member_id{after} ORDER BY segment.timerange_end LIMIT 1) first WHERE 1{first_before})),MAX((SELECT last.timerange_end FROM (SELECT segment.timerange_end FROM tamoss_segments segment WHERE segment.flow_id=members.member_id{before} ORDER BY segment.timerange_start DESC LIMIT 1) last WHERE 1{last_after})) FROM members GROUP BY members.flow_id"
+        "{} SELECT members.flow_id,MIN((SELECT first.timerange_start FROM (SELECT segment.timerange_start FROM tamoss_segments segment WHERE segment.flow_id=members.member_id{after} ORDER BY segment.timerange_end LIMIT 1) first WHERE true{first_before})),MAX((SELECT last.timerange_end FROM (SELECT segment.timerange_end FROM tamoss_segments segment WHERE segment.flow_id=members.member_id{before} ORDER BY segment.timerange_start DESC LIMIT 1) last WHERE true{last_after})) FROM members GROUP BY members.flow_id",
+        dialect::TIMERANGE_MEMBERS
     );
-    let mut query = sqlx::query(&sql).bind(ids);
+    let mut query = dialect::query(&sql).bind(ids);
     if let Some(start) = start {
         query = query.bind(start);
     }
@@ -329,7 +338,7 @@ pub async fn source_relationships<'e, E>(
     ids: &[Uuid],
 ) -> Result<BTreeMap<Uuid, crate::domain::model::SourceRelationships>, DbError>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
     let mut result = ids
         .iter()
@@ -339,8 +348,10 @@ where
     if ids.is_empty() {
         return Ok(result);
     }
-    let rows = sqlx::query("SELECT target_source,kind,related_source,role FROM (SELECT parent.source_id target_source,0 kind,child.source_id related_source,item.value->>'role' role,parent.id flow_order,item.key item_order FROM tamoss_flows parent CROSS JOIN json_each(COALESCE(json_extract(parent.record, '$.data.flow_collection'),'[]')) AS item JOIN tamoss_flows child ON child.id=(item.value->>'id') WHERE parent.source_id IN (SELECT value FROM json_each(?1)) UNION ALL SELECT child.source_id target_source,1 kind,parent.source_id related_source,NULL role,parent.id flow_order,item.key item_order FROM tamoss_flows parent CROSS JOIN json_each(COALESCE(json_extract(parent.record, '$.data.flow_collection'),'[]')) AS item JOIN tamoss_flows child ON child.id=(item.value->>'id') WHERE child.source_id IN (SELECT value FROM json_each(?1))) relationships ORDER BY target_source,kind,flow_order,item_order")
-        .bind(ids).fetch_all(executor).await?;
+    let rows = dialect::query(dialect::SOURCE_RELATIONSHIPS)
+        .bind(ids)
+        .fetch_all(executor)
+        .await?;
     for row in rows {
         let target: Uuid = row.try_get(0)?;
         let kind: i32 = row.try_get(1)?;
@@ -369,9 +380,9 @@ pub async fn get_source(pool: &Pool, id: Uuid) -> Result<Option<SourceRecord>, D
 
 pub async fn get_source_with<'e, E>(executor: E, id: Uuid) -> Result<Option<SourceRecord>, DbError>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
-    sqlx::query(SOURCE_SELECT)
+    dialect::query(SOURCE_SELECT)
         .bind(id)
         .fetch_optional(executor)
         .await?
@@ -384,24 +395,24 @@ pub async fn get_source_for_update<'e, E>(
     id: Uuid,
 ) -> Result<Option<SourceRecord>, DbError>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
-    sqlx::query("SELECT id,format,label,tags,record,metadata_updated,created FROM tamoss_sources WHERE id=?1")
+    dialect::query(&format!("SELECT id,format,label,tags,record,metadata_updated,created FROM tamoss_sources WHERE id=$1{}", dialect::FOR_UPDATE))
         .bind(id).fetch_optional(executor).await?.map(map_source).transpose()
 }
 pub async fn save_source<'e, E>(e: E, v: &SourceRecord) -> Result<(), DbError>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
-    sqlx::query("INSERT INTO tamoss_sources(id,format,label,tags,record,metadata_updated,created,updated_at)VALUES(?1,?2,?3,?4,?5,?6,?7,(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'))ON CONFLICT(id)DO UPDATE SET format=EXCLUDED.format,label=EXCLUDED.label,tags=EXCLUDED.tags,record=EXCLUDED.record,metadata_updated=EXCLUDED.metadata_updated,created=EXCLUDED.created,updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')").bind(v.id).bind(&v.format).bind(&v.label).bind(sqlx::types::Json(&v.tags)).bind(sqlx::types::Json(&v.record)).bind(v.metadata_updated).bind(v.created).execute(e).await?;
+    dialect::query(&format!("INSERT INTO tamoss_sources(id,format,label,tags,record,metadata_updated,created,updated_at)VALUES($1,$2,$3,$4,$5,$6,$7,{NOW})ON CONFLICT(id)DO UPDATE SET format=EXCLUDED.format,label=EXCLUDED.label,tags=EXCLUDED.tags,record=EXCLUDED.record,metadata_updated=EXCLUDED.metadata_updated,created=EXCLUDED.created,updated_at={NOW}")).bind(v.id).bind(&v.format).bind(&v.label).bind(sqlx::types::Json(&v.tags)).bind(sqlx::types::Json(&v.record)).bind(v.metadata_updated).bind(v.created).execute(e).await?;
     Ok(())
 }
 
 pub async fn delete_source<'e, E>(executor: E, id: Uuid) -> Result<bool, DbError>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
-    Ok(sqlx::query("DELETE FROM tamoss_sources AS source WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM tamoss_flows WHERE source_id=source.id)")
+    Ok(dialect::query("DELETE FROM tamoss_sources AS source WHERE id=$1 AND NOT EXISTS(SELECT 1 FROM tamoss_flows WHERE source_id=source.id)")
         .bind(id).execute(executor).await?.rows_affected() == 1)
 }
 pub async fn list_sources_page(
@@ -411,7 +422,7 @@ pub async fn list_sources_page(
     reverse: bool,
     page: &PageRequest,
 ) -> Result<Page<SourceRecord>, DbError> {
-    let mut q = QueryBuilder::<Sqlite>::new(
+    let mut q = QueryBuilder::<Engine>::new(
         "SELECT source.id,source.format,source.label,source.tags,source.record,source.metadata_updated,source.created FROM tamoss_sources source",
     );
     let mut wh = false;
@@ -428,11 +439,10 @@ pub async fn list_sources_page(
     if f.top_level_only || f.collected_by_ids.is_some() {
         q.push(if wh { " AND " } else { " WHERE " });
         wh = true;
-        if f.top_level_only {
-            q.push("NOT EXISTS(SELECT 1 FROM tamoss_flows child JOIN tamoss_flow_collection_members member ON member.child_id=child.id WHERE child.source_id=source.id)");
-        } else {
-            q.push("EXISTS(SELECT 1 FROM tamoss_flows child JOIN tamoss_flow_collection_members member ON member.child_id=child.id JOIN tamoss_flows parent ON parent.id=member.parent_id WHERE child.source_id=source.id AND parent.source_id IN (SELECT value FROM json_each(").push_bind(f.collected_by_ids.as_ref().unwrap()).push(")))");
-        }
+        dialect::push_source_collected_by(
+            &mut q,
+            f.collected_by_ids.as_ref().filter(|_| !f.top_level_only),
+        );
     }
     append_tags(&mut q, "source.tags", &f.tags, wh);
     let (key, descending) = match sort {
@@ -463,7 +473,7 @@ pub async fn list_sources_page(
         page,
     ))
 }
-fn push_segment_filters(q: &mut QueryBuilder<'_, Sqlite>, flow_id: Uuid, f: &SegmentFilters) {
+fn push_segment_filters(q: &mut QueryBuilder<'_, Engine>, flow_id: Uuid, f: &SegmentFilters) {
     q.push_bind(flow_id);
     if let Some(id) = &f.object_id {
         q.push(" AND object_id=").push_bind(id.clone());
@@ -485,7 +495,7 @@ pub async fn list_segments_page(
     reverse: bool,
     page: &PageRequest,
 ) -> Result<Page<SegmentRecord>, DbError> {
-    let mut q = QueryBuilder::<Sqlite>::new(
+    let mut q = QueryBuilder::<Engine>::new(
         "SELECT flow_id,object_id,init_object_id,timerange,timerange_start,timerange_end,record,created FROM tamoss_segments WHERE flow_id=",
     );
     push_segment_filters(&mut q, flow_id, f);
@@ -514,7 +524,7 @@ pub async fn segment_summary(
     flow_id: Uuid,
     f: &SegmentFilters,
 ) -> Result<SegmentSummary, DbError> {
-    let mut q = QueryBuilder::<Sqlite>::new(
+    let mut q = QueryBuilder::<Engine>::new(
         "SELECT COUNT(*) AS count,MIN(timerange_start) AS start_ns,MAX(timerange_end) AS end_ns,MIN(timerange) AS first_timerange FROM tamoss_segments WHERE flow_id=",
     );
     push_segment_filters(&mut q, flow_id, f);
@@ -528,16 +538,16 @@ pub async fn segment_summary(
 }
 pub async fn append_segment<'e, E>(e: E, v: &SegmentRecord) -> Result<(), DbError>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
-    sqlx::query("INSERT INTO tamoss_segments(flow_id,object_id,init_object_id,timerange,timerange_start,timerange_end,record,created,updated_at)VALUES(?1,?2,?3,?4,?5,?6,?7,?8,(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'))ON CONFLICT(flow_id,object_id,timerange)DO UPDATE SET init_object_id=EXCLUDED.init_object_id,timerange_start=EXCLUDED.timerange_start,timerange_end=EXCLUDED.timerange_end,record=EXCLUDED.record,created=EXCLUDED.created,updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')").bind(v.flow_id).bind(&v.object_id).bind(&v.init_object_id).bind(&v.timerange).bind(v.timerange_start).bind(v.timerange_end).bind(sqlx::types::Json(&v.record)).bind(v.created).execute(e).await?;
+    dialect::query(&format!("INSERT INTO tamoss_segments(flow_id,object_id,init_object_id,timerange,timerange_start,timerange_end,record,created,updated_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,{NOW})ON CONFLICT(flow_id,object_id,timerange)DO UPDATE SET init_object_id=EXCLUDED.init_object_id,timerange_start=EXCLUDED.timerange_start,timerange_end=EXCLUDED.timerange_end,record=EXCLUDED.record,created=EXCLUDED.created,updated_at={NOW}")).bind(v.flow_id).bind(&v.object_id).bind(&v.init_object_id).bind(&v.timerange).bind(v.timerange_start).bind(v.timerange_end).bind(sqlx::types::Json(&v.record)).bind(v.created).execute(e).await?;
     Ok(())
 }
 const FLOW_COLUMNS: &str = "SELECT flow.id,flow.source_id,flow.format,flow.container,flow.profile_id,flow.status,flow.init_segments,flow.label,flow.flow_collection_ids,flow.read_only,flow.tags,flow.record,flow.metadata_updated,flow.created,flow.segments_updated FROM tamoss_flows flow";
-const FLOW_SELECT: &str = "SELECT id,source_id,format,container,profile_id,status,init_segments,label,flow_collection_ids,read_only,tags,record,metadata_updated,created,segments_updated FROM tamoss_flows WHERE id=?1";
+const FLOW_SELECT: &str = "SELECT id,source_id,format,container,profile_id,status,init_segments,label,flow_collection_ids,read_only,tags,record,metadata_updated,created,segments_updated FROM tamoss_flows WHERE id=$1";
 const SOURCE_SELECT: &str =
-    "SELECT id,format,label,tags,record,metadata_updated,created FROM tamoss_sources WHERE id=?1";
-fn map_flow(r: SqliteRow) -> Result<FlowRecord, DbError> {
+    "SELECT id,format,label,tags,record,metadata_updated,created FROM tamoss_sources WHERE id=$1";
+fn map_flow(r: RecordRow) -> Result<FlowRecord, DbError> {
     Ok(FlowRecord {
         id: r.try_get(0)?,
         source_id: r.try_get(1)?,
@@ -556,7 +566,7 @@ fn map_flow(r: SqliteRow) -> Result<FlowRecord, DbError> {
         segments_updated: r.try_get(14)?,
     })
 }
-fn map_source(r: SqliteRow) -> Result<SourceRecord, DbError> {
+fn map_source(r: RecordRow) -> Result<SourceRecord, DbError> {
     Ok(SourceRecord {
         id: r.try_get(0)?,
         format: r.try_get(1)?,
@@ -567,7 +577,7 @@ fn map_source(r: SqliteRow) -> Result<SourceRecord, DbError> {
         created: r.try_get(6)?,
     })
 }
-fn map_segment(r: SqliteRow) -> Result<SegmentRecord, DbError> {
+fn map_segment(r: RecordRow) -> Result<SegmentRecord, DbError> {
     Ok(SegmentRecord {
         flow_id: r.try_get(0)?,
         object_id: r.try_get(1)?,

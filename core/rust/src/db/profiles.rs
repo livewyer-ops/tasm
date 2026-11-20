@@ -1,7 +1,8 @@
-// TASM browser adaptation of rust-tams-api (Apache-2.0); see NOTICE for changes.
-use crate::pglite as sqlx;
+// TASM adaptation of rust-tams-api (Apache-2.0), shared by the browser and
+// Cloudflare adapters through their db::dialect modules; see NOTICE.
+use super::dialect::{self, Engine, Pool, RecordRow, sqlx};
 use serde_json::Value;
-use sqlx::{PgPool, Postgres, QueryBuilder, Row, postgres::PgRow};
+use sqlx::{QueryBuilder, Row};
 use uuid::Uuid;
 
 use super::{
@@ -10,13 +11,13 @@ use super::{
 };
 
 pub async fn list(
-    pool: &PgPool,
+    pool: &Pool,
     format: Option<&str>,
     codec: Option<&str>,
     label: Option<&str>,
     page: &PageRequest,
 ) -> Result<Page<ProfileRecord>, DbError> {
-    let mut query = QueryBuilder::<Postgres>::new(
+    let mut query = QueryBuilder::<Engine>::new(
         "SELECT id,format,codec,label,tags,record,created FROM tamoss_profiles",
     );
     let mut first = true;
@@ -28,10 +29,10 @@ pub async fn list(
         }
     }
     query
-        .push(" ORDER BY id ASC OFFSET ")
-        .push_bind(page.offset)
-        .push(" LIMIT ")
-        .push_bind(page.limit + 1);
+        .push(" ORDER BY id ASC LIMIT ")
+        .push_bind(page.limit + 1)
+        .push(" OFFSET ")
+        .push_bind(page.offset);
     Ok(finish_page(
         query
             .build()
@@ -44,27 +45,29 @@ pub async fn list(
     ))
 }
 
-pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<ProfileRecord>, DbError> {
+pub async fn get(pool: &Pool, id: Uuid) -> Result<Option<ProfileRecord>, DbError> {
     get_with(pool, id).await
 }
 
 pub async fn get_with<'e, E>(executor: E, id: Uuid) -> Result<Option<ProfileRecord>, DbError>
 where
-    E: sqlx::Executor<'e, Database = Postgres>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
-    sqlx::query("SELECT id,format,codec,label,tags,record,created FROM tamoss_profiles WHERE id=$1")
-        .bind(id)
-        .fetch_optional(executor)
-        .await?
-        .map(map)
-        .transpose()
+    dialect::query(
+        "SELECT id,format,codec,label,tags,record,created FROM tamoss_profiles WHERE id=$1",
+    )
+    .bind(id)
+    .fetch_optional(executor)
+    .await?
+    .map(map)
+    .transpose()
 }
 
 pub async fn create<'e, E>(executor: E, value: &ProfileRecord) -> Result<bool, DbError>
 where
-    E: sqlx::Executor<'e, Database = Postgres>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
-    Ok(sqlx::query("INSERT INTO tamoss_profiles(id,format,codec,label,tags,record,created)VALUES($1,$2,$3,$4,$5,$6,$7)ON CONFLICT(id)DO NOTHING")
+    Ok(dialect::query("INSERT INTO tamoss_profiles(id,format,codec,label,tags,record,created)VALUES($1,$2,$3,$4,$5,$6,$7)ON CONFLICT(id)DO NOTHING")
         .bind(value.id)
         .bind(&value.format)
         .bind(&value.codec)
@@ -80,38 +83,35 @@ where
 
 pub async fn lock<'e, E>(executor: E, id: Uuid) -> Result<(), DbError>
 where
-    E: sqlx::Executor<'e, Database = Postgres>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
-        .bind(format!("tamoss-profile:{id}"))
-        .execute(executor)
-        .await?;
-    Ok(())
+    dialect::lock(executor, &format!("tamoss-profile:{id}")).await
 }
 
 pub async fn lock_row<'e, E>(executor: E, id: Uuid) -> Result<bool, DbError>
 where
-    E: sqlx::Executor<'e, Database = Postgres>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
-    Ok(
-        sqlx::query("SELECT id FROM tamoss_profiles WHERE id=$1 FOR UPDATE")
-            .bind(id)
-            .fetch_optional(executor)
-            .await?
-            .is_some(),
-    )
+    Ok(dialect::query(&format!(
+        "SELECT id FROM tamoss_profiles WHERE id=$1{}",
+        dialect::FOR_UPDATE
+    ))
+    .bind(id)
+    .fetch_optional(executor)
+    .await?
+    .is_some())
 }
 
-pub async fn flow_count(pool: &PgPool, id: Uuid) -> Result<i64, DbError> {
+pub async fn flow_count(pool: &Pool, id: Uuid) -> Result<i64, DbError> {
     flow_count_with(pool, id).await
 }
 
 pub async fn flow_count_with<'e, E>(executor: E, id: Uuid) -> Result<i64, DbError>
 where
-    E: sqlx::Executor<'e, Database = Postgres>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
     Ok(
-        sqlx::query_scalar("SELECT count(*) FROM tamoss_flows WHERE profile_id=$1")
+        dialect::query_scalar("SELECT count(*) FROM tamoss_flows WHERE profile_id=$1")
             .bind(id)
             .fetch_one(executor)
             .await?,
@@ -120,9 +120,9 @@ where
 
 pub async fn delete<'e, E>(executor: E, id: Uuid) -> Result<bool, DbError>
 where
-    E: sqlx::Executor<'e, Database = Postgres>,
+    E: sqlx::Executor<'e, Database = Engine>,
 {
-    Ok(sqlx::query("DELETE FROM tamoss_profiles WHERE id=$1")
+    Ok(dialect::query("DELETE FROM tamoss_profiles WHERE id=$1")
         .bind(id)
         .execute(executor)
         .await?
@@ -130,7 +130,7 @@ where
         == 1)
 }
 
-fn map(row: PgRow) -> Result<ProfileRecord, DbError> {
+fn map(row: RecordRow) -> Result<ProfileRecord, DbError> {
     Ok(ProfileRecord {
         id: row.try_get(0)?,
         format: row.try_get(1)?,

@@ -122,6 +122,10 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     const members = async () => (await sql.exec<{ child_id: string }>("SELECT child_id FROM tamoss_flow_collection_members WHERE parent_id=? ORDER BY position", parent.id)).map(row => row.child_id);
     assert.deepEqual(await members(), [a.id, b.id, a.id, dangling]);
     assert.deepEqual(await list(), listed);
+    const matching = async (query: string) => ids((await call("GET", `/flows?${query}`)).value).includes(c.id);
+    assert.equal(await matching(`codec=${video.codec}&frame_width=${video.essence_parameters.frame_width}&frame_height=${video.essence_parameters.frame_height}`), true);
+    assert.equal(await matching("frame_width=1"), false);
+    assert.equal(await matching("codec=video/x-none"), false);
     const [, topLevel, collectedSources, topSources] = listed;
     assert.ok(topLevel.includes(parent.id) && topLevel.includes(c.id) && !topLevel.includes(a.id) && !topLevel.includes(b.id));
     assert.deepEqual([...collectedSources].sort(), [a.source, b.source].sort());
@@ -342,6 +346,66 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     const listed = await (await request("/flows?include_timerange=true&limit=1000")).json() as { id: string; timerange: string }[];
     const ranges = Object.fromEntries(listed.map(flow => [flow.id, flow.timerange]));
     assert.deepEqual([a, b, both, shared, none].map(id => ranges[id]), ["[0:0_4:0)", "[10:0_12:0)", "[0:0_21:0)", "[10:0_12:0)", "()"]);
+  });
+
+  await t.test("Profiles page in id order, filter, reject duplicates and lock for flows", async () => {
+    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const metadata = { format: video.format, codec: video.codec, container: video.container, essence_parameters: video.essence_parameters };
+    const ids = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+    const codec = `video/x-profile-${crypto.randomUUID().slice(0, 8)}`;
+    for (const [i, id] of ids.entries()) {
+      const created = await request(`/service/profiles/${id}`, { method: "POST", body: JSON.stringify({ id, label: `profile ${i}`, flow_metadata: { ...metadata, codec } }) });
+      assert.equal(created.status, 201, await created.text());
+    }
+    assert.notEqual((await request(`/service/profiles/${ids[0]}`, { method: "POST", body: JSON.stringify({ id: ids[0], flow_metadata: metadata }) })).status, 201);
+    const pages: string[] = [];
+    let path: string | undefined = `/service/profiles?codec=${codec}&limit=2`;
+    while (path) {
+      const page = await request(path);
+      assert.equal(page.status, 200);
+      pages.push(...(await page.json() as { id: string }[]).map(p => p.id));
+      path = /<[^>]*?(\/service\/profiles[^>]*)>; rel="next"/.exec(page.headers.get("link") ?? "")?.[1];
+    }
+    assert.deepEqual(pages, [...ids].sort());
+    assert.equal((await (await request(`/service/profiles/${ids[1]}`)).json() as { label: string }).label, "profile 1");
+    const flowId = crypto.randomUUID();
+    const flow = await request(`/flows/${flowId}`, { method: "PUT", body: JSON.stringify({ id: flowId, source_id: crypto.randomUUID(), profile_id: ids[0] }) });
+    assert.equal(flow.status, 201, await flow.text());
+    assert.equal((await (await request(`/flows/${flowId}`)).json() as { codec: string }).codec, codec);
+  });
+
+  await t.test("Webhooks filter by tags, page by url and queue matching events", async () => {
+    const name = "webhook-filters";
+    const call = async (method: string, path: string, body?: unknown) => {
+      const env = await api.getEnv();
+      const result = JSON.parse(await env.STORE.getByName(name).request(JSON.stringify({ method, url: origin + path, headers: { "content-type": "application/json" }, body: body === undefined ? null : JSON.stringify(body), actor: { subject: username, scopes: ["tams-api/admin"] } })));
+      return { status: result.status as number, value: result.body ? JSON.parse(result.body) : null };
+    };
+    assert.equal((await call("GET", "/service")).status, 200);
+    const sql = await api.getDurableObjectStorage("STORE", { name });
+    await sql.exec("CREATE TRIGGER IF NOT EXISTS test_hold_filter_webhooks AFTER INSERT ON tamoss_webhook_deliveries BEGIN UPDATE tamoss_webhook_deliveries SET next_attempt_at='2099-01-01T00:00:00.000000000Z' WHERE id=NEW.id; END");
+    const hooks = [
+      { url: "https://hooks.example.com/a", events: ["flows/created"], tags: { role: "edit" } },
+      { url: "https://hooks.example.com/b", events: ["flows/deleted"], tags: { role: ["edit", "review"] } },
+      { url: "https://hooks.example.com/c", events: ["flows/created"] },
+    ];
+    const ids: Record<string, string> = {};
+    for (const hook of hooks) {
+      const created = await call("POST", "/service/webhooks", hook);
+      assert.equal(created.status, 201, JSON.stringify(created.value));
+      ids[created.value.id] = hook.url;
+    }
+    const urls = async (query: string) => ((await call("GET", `/service/webhooks${query}`)).value as { url: string }[]).map(h => h.url);
+    assert.deepEqual(await urls("?tag.role=edit"), ["https://hooks.example.com/a", "https://hooks.example.com/b"]);
+    assert.deepEqual(await urls("?tag.role=review"), ["https://hooks.example.com/b"]);
+    assert.deepEqual(await urls("?tag_exists.role=false"), ["https://hooks.example.com/c"]);
+    assert.deepEqual(await urls("?limit=2&reverse_order=true"), ["https://hooks.example.com/c", "https://hooks.example.com/b"]);
+    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const flowId = crypto.randomUUID();
+    assert.equal((await call("PUT", `/flows/${flowId}`, { ...video, id: flowId, source_id: crypto.randomUUID() })).status, 201);
+    const queued = await sql.exec<{ webhook: string }>("SELECT webhook_id AS webhook FROM tamoss_webhook_deliveries WHERE json_extract(record,'$.event_type')='flows/created'");
+    assert.deepEqual(queued.map(row => ids[row.webhook]).sort(), ["https://hooks.example.com/a", "https://hooks.example.com/c"]);
+    await sql.exec("DROP TRIGGER test_hold_filter_webhooks");
   });
 
   await t.test("Webhook segment snapshots use the endpoint's URL filters and Object timeranges", async () => {

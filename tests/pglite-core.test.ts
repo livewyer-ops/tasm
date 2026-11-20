@@ -23,6 +23,7 @@ async function store() {
   const sql = new SqlHost(db);
   // In-memory stand-in for OPFS: bytes are never read, only their metadata.
   const files = new Map<string, Stored>();
+  const deliveries: { url: string; event: string }[] = [];
   const key = (b: string, id: string) => `${b}/${id}`;
   const bridge = async (op: string, payload: string): Promise<string> => {
     const p = JSON.parse(payload);
@@ -42,7 +43,9 @@ async function store() {
         files.set(key(p.destination, p.id), file);
         return 'null';
       }
-      case 'webhook': return JSON.stringify({ status: 200, reason: 'OK', redirected: false });
+      case 'webhook':
+        deliveries.push({ url: p.webhook.url, event: JSON.parse(p.payload_json).event_type });
+        return JSON.stringify({ status: 200, reason: 'OK', redirected: false });
       default: throw new Error(`Unknown host operation ${op}`);
     }
   };
@@ -55,7 +58,7 @@ async function store() {
     return response;
   };
   const upload = (id: string) => files.set(key(backend, id), { size: 188, contentType: 'video/mp2t', checksum: 'a'.repeat(64) });
-  return { db, sql, core, request, upload, files };
+  return { db, sql, core, request, upload, files, deliveries };
 }
 
 await init({ module_or_path: readFileSync('pkg/browser/tasm_bg.wasm') });
@@ -106,11 +109,18 @@ test('flows, segments, filters and asynchronous deletion work against PGlite', a
   const filtered = await request('GET', `/flows/${flowId}/segments?timerange=[2:0_4:0)`);
   assert.deepEqual(JSON.parse(filtered.body).map((s: { object_id: string }) => s.object_id), [ids[1]]);
   assert.equal(filtered.headers['x-paging-timerange'], '[2:0_4:0)');
+  const object = await request('GET', `/objects/${ids[0]}`);
+  assert.equal(object.status, 200, object.body);
+  assert.deepEqual(JSON.parse(object.body).referenced_by_flows, [flowId]);
   const overlap = await request('POST', `/flows/${flowId}/segments`, { object_id: ids[0], timerange: '[1:0_3:0)' });
   assert.equal(overlap.status, 400, overlap.body);
 
   assert.equal((await request('PUT', `/flows/${collectionId}`, { ...videoFlow, id: collectionId, source_id: crypto.randomUUID(),
     flow_collection: [{ id: flowId, role: 'video' }] })).status, 201);
+  const matching = async (query: string) => JSON.parse((await request('GET', `/flows?${query}`)).body).some((f: { id: string }) => f.id === flowId);
+  assert.equal(await matching('codec=video/h264&frame_width=1920&frame_height=1080'), true);
+  assert.equal(await matching('frame_width=1280'), false);
+  assert.equal(await matching('codec=video/h265'), false);
   const inRange = await request('GET', '/flows?timerange=[1:0_2:0)');
   assert.ok(JSON.parse(inRange.body).some((f: { id: string }) => f.id === flowId), inRange.body);
   assert.equal(JSON.parse((await request('GET', '/flows?timerange=[10:0_11:0)')).body).some((f: { id: string }) => f.id === flowId), false);
@@ -166,4 +176,52 @@ test('flow timeranges cover own segments and collection members', async () => {
   const listed = JSON.parse((await request('GET', '/flows?include_timerange=true&limit=1000')).body) as { id: string; timerange: string }[];
   const ranges = Object.fromEntries(listed.map(flow => [flow.id, flow.timerange]));
   assert.deepEqual([a, b, both, shared, none].map(id => ranges[id]), ['[0:0_4:0)', '[10:0_12:0)', '[0:0_21:0)', '[10:0_12:0)', '()']);
+});
+
+test('profiles page in id order, filter, reject duplicates and lock for flows', async () => {
+  const { request } = await store();
+  const ids = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+  const metadata = { format: videoFlow.format, codec: videoFlow.codec, container: videoFlow.container, essence_parameters: videoFlow.essence_parameters };
+  for (const [i, id] of ids.entries()) {
+    const created = await request('POST', `/service/profiles/${id}`, { id, label: `profile ${i}`, flow_metadata: { ...metadata, codec: i === 2 ? 'video/h265' : metadata.codec } });
+    assert.equal(created.status, 201, created.body);
+  }
+  assert.notEqual((await request('POST', `/service/profiles/${ids[0]}`, { id: ids[0], flow_metadata: metadata })).status, 201);
+  const pages: string[] = [];
+  let path: string | undefined = '/service/profiles?limit=2';
+  while (path) {
+    const page = await request('GET', path);
+    assert.equal(page.status, 200, page.body);
+    pages.push(...JSON.parse(page.body).map((p: { id: string }) => p.id));
+    path = /<[^>]*?(\/service\/profiles[^>]*)>; rel="next"/.exec(page.headers.link ?? '')?.[1];
+  }
+  assert.deepEqual(pages, [...ids].sort());
+  assert.deepEqual(JSON.parse((await request('GET', '/service/profiles?codec=video/h265')).body).map((p: { id: string }) => p.id), [ids[2]]);
+  assert.equal(JSON.parse((await request('GET', `/service/profiles/${ids[1]}`)).body).label, 'profile 1');
+  const flowId = crypto.randomUUID();
+  const flow = await request('PUT', `/flows/${flowId}`, { id: flowId, source_id: crypto.randomUUID(), profile_id: ids[0] });
+  assert.equal(flow.status, 201, flow.body);
+  assert.equal(JSON.parse((await request('GET', `/flows/${flowId}`)).body).codec, videoFlow.codec);
+});
+
+test('webhooks filter by tags, page by url and receive matching events', async () => {
+  const { request, core, deliveries } = await store();
+  const hooks = [
+    { url: 'http://hooks.test/a', events: ['flows/created'], tags: { role: 'edit' } },
+    { url: 'http://hooks.test/b', events: ['flows/deleted'], tags: { role: ['edit', 'review'] } },
+    { url: 'http://hooks.test/c', events: ['flows/created'] },
+  ];
+  for (const hook of hooks) {
+    const created = await request('POST', '/service/webhooks', hook);
+    assert.equal(created.status, 201, created.body);
+  }
+  const urls = async (query: string) => JSON.parse((await request('GET', `/service/webhooks${query}`)).body).map((h: { url: string }) => h.url);
+  assert.deepEqual(await urls('?tag.role=edit'), ['http://hooks.test/a', 'http://hooks.test/b']);
+  assert.deepEqual(await urls('?tag.role=review'), ['http://hooks.test/b']);
+  assert.deepEqual(await urls('?tag_exists.role=false'), ['http://hooks.test/c']);
+  assert.deepEqual(await urls('?limit=2&reverse_order=true'), ['http://hooks.test/c', 'http://hooks.test/b']);
+  const flowId = crypto.randomUUID();
+  assert.equal((await request('PUT', `/flows/${flowId}`, { ...videoFlow, id: flowId, source_id: crypto.randomUUID() })).status, 201);
+  for (let attempt = 0; attempt < 5 && deliveries.length < 2; attempt++) await core.poll();
+  assert.deepEqual(deliveries.map(d => `${d.event} ${d.url}`).sort(), ['flows/created http://hooks.test/a', 'flows/created http://hooks.test/c']);
 });
