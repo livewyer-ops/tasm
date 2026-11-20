@@ -1,0 +1,23 @@
+[package]
+name = "tasm-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+description = "Shared TAMS domain and HTTP rules"
+
+[dependencies]
+axum.workspace = true
+js-sys.workspace = true
+percent-encoding.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+send_wrapper.workspace = true
+tower.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
