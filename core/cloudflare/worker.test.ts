@@ -304,6 +304,46 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     assert.equal(await (await env.MEDIA.get(replacementKey))?.text(), "replacement bytes");
   });
 
+  await t.test("Flow timeranges cover own segments and collection members", async () => {
+    const env = await api.getEnv();
+    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const put = async (extra: Record<string, unknown> = {}) => {
+      const id = crypto.randomUUID();
+      assert.equal((await request(`/flows/${id}`, { method: "PUT", body: JSON.stringify({ ...video, id, source_id: crypto.randomUUID(), ...extra }) })).status, 201);
+      return id;
+    };
+    const segments = async (id: string, timeranges: string[]) => {
+      const allocated = await request(`/flows/${id}/storage`, { method: "POST", body: JSON.stringify({ limit: timeranges.length }) });
+      const objects = (await allocated.json() as { media_objects: { object_id: string; put_url: { url: string } }[] }).media_objects;
+      for (const object of objects) await env.MEDIA.put(new URL(object.put_url.url).pathname.split("/").slice(2).join("/"), "media", { httpMetadata: { contentType: "video/mp2t" } });
+      const registered = await request(`/flows/${id}/segments`, { method: "POST", body: JSON.stringify(objects.map((object, i) => ({ object_id: object.object_id, timerange: timeranges[i] }))) });
+      assert.equal(registered.status, 201, await registered.text());
+    };
+    const timerange = async (id: string, query = "") => (await (await request(`/flows/${id}?include_timerange=true${query}`)).json() as { timerange: string }).timerange;
+    const a = await put(), b = await put(), none = await put();
+    await segments(a, ["[0:0_2:0)", "[2:0_4:0)"]);
+    await segments(b, ["[10:0_12:0)"]);
+    const both = await put({ flow_collection: [{ id: a, role: "a" }, { id: b, role: "b" }] });
+    const shared = await put({ flow_collection: [{ id: b, role: "b" }] });
+    await segments(both, ["[20:0_21:0)"]);
+    assert.equal(await timerange(a), "[0:0_4:0)");
+    assert.equal(await timerange(both), "[0:0_21:0)");
+    assert.equal(await timerange(shared), "[10:0_12:0)");
+    assert.equal(await timerange(none), "()");
+    // Bounds select whole segments: a partial overlap reports the segment's full range.
+    assert.equal(await timerange(a, "&timerange=[3:0_5:0)"), "[2:0_4:0)");
+    assert.equal(await timerange(a, "&timerange=[4:0_5:0)"), "()");
+    assert.equal(await timerange(a, "&timerange=[1:0_3:0)"), "[0:0_4:0)");
+    assert.equal(await timerange(a, "&timerange=[2:0]"), "[2:0_4:0)");
+    assert.equal(await timerange(a, "&timerange=[2:0_"), "[2:0_4:0)");
+    assert.equal(await timerange(a, "&timerange=_2:0)"), "[0:0_2:0)");
+    assert.equal(await timerange(a, "&timerange=()"), "()");
+    assert.equal(await timerange(both, "&timerange=[3:0_11:0)"), "[2:0_12:0)");
+    const listed = await (await request("/flows?include_timerange=true&limit=1000")).json() as { id: string; timerange: string }[];
+    const ranges = Object.fromEntries(listed.map(flow => [flow.id, flow.timerange]));
+    assert.deepEqual([a, b, both, shared, none].map(id => ranges[id]), ["[0:0_4:0)", "[10:0_12:0)", "[0:0_21:0)", "[10:0_12:0)", "()"]);
+  });
+
   await t.test("Webhook segment snapshots use the endpoint's URL filters and Object timeranges", async () => {
     const env = await api.getEnv();
     const sql = await api.getDurableObjectStorage("STORE", { name: env.STORE_ID });

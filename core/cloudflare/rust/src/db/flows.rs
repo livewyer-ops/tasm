@@ -274,8 +274,46 @@ pub async fn flow_timeranges<'e, E>(
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    let rows = sqlx::query("SELECT flow.id,MIN(segment.timerange_start),MAX(segment.timerange_end) FROM tamoss_flows flow LEFT JOIN tamoss_segments segment ON (segment.flow_id=flow.id OR segment.flow_id IN (SELECT value FROM json_each(flow.flow_collection_ids))) AND NOT ?2 AND (?3 IS NULL OR segment.timerange_end>?3) AND (?4 IS NULL OR segment.timerange_start<?4) WHERE flow.id IN (SELECT value FROM json_each(?1)) GROUP BY flow.id")
-        .bind(ids).bind(bounds.empty).bind(bounds.start).bind(if bounds.point { bounds.start.map(|start| start.saturating_add(1)) } else { bounds.end }).fetch_all(executor).await?;
+    // One pass per call: each requested flow and its collection members, with the
+    // first and last matching segment of each found through the segment indexes.
+    // Segments in a flow never overlap, so ordering by end and by start agree.
+    let end = if bounds.point {
+        bounds.start.map(|start| start.saturating_add(1))
+    } else {
+        bounds.end
+    };
+    // Only set bounds become placeholders, numbered after the id list.
+    let (start, end) = if bounds.empty {
+        (None, None)
+    } else {
+        (bounds.start, end)
+    };
+    let mut next = 1;
+    let mut placeholder = |condition: &str| {
+        next += 1;
+        format!(" AND segment.{condition}?{next}")
+    };
+    let (after, before) = if bounds.empty {
+        (" AND 0".to_owned(), " AND 0".to_owned())
+    } else {
+        (
+            start.map_or(String::new(), |_| placeholder("timerange_end>")),
+            end.map_or(String::new(), |_| placeholder("timerange_start<")),
+        )
+    };
+    let first_before = before.replace("segment.", "first.");
+    let last_after = after.replace("segment.", "last.");
+    let sql = format!(
+        "WITH requested(id) AS (SELECT value FROM json_each(?1)), members(flow_id,member_id) AS (SELECT flow.id,flow.id FROM tamoss_flows flow WHERE flow.id IN requested UNION SELECT member.parent_id,member.child_id FROM tamoss_flow_collection_members member WHERE member.parent_id IN requested) SELECT members.flow_id,MIN((SELECT first.timerange_start FROM (SELECT segment.timerange_start FROM tamoss_segments segment WHERE segment.flow_id=members.member_id{after} ORDER BY segment.timerange_end LIMIT 1) first WHERE 1{first_before})),MAX((SELECT last.timerange_end FROM (SELECT segment.timerange_end FROM tamoss_segments segment WHERE segment.flow_id=members.member_id{before} ORDER BY segment.timerange_start DESC LIMIT 1) last WHERE 1{last_after})) FROM members GROUP BY members.flow_id"
+    );
+    let mut query = sqlx::query(&sql).bind(ids);
+    if let Some(start) = start {
+        query = query.bind(start);
+    }
+    if let Some(end) = end {
+        query = query.bind(end);
+    }
+    let rows = query.fetch_all(executor).await?;
     rows.into_iter()
         .map(|row| {
             let id: Uuid = row.try_get(0)?;

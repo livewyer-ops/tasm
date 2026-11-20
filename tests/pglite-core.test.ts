@@ -128,3 +128,42 @@ test('flows, segments, filters and asynchronous deletion work against PGlite', a
   for (let attempt = 0; attempt < 5 && files.size; attempt++) await core.poll();
   assert.equal(files.size, 0, 'cleanup removes the deleted flow\'s objects');
 });
+
+test('flow timeranges cover own segments and collection members', async () => {
+  const { request, upload } = await store();
+  const put = async (extra: Record<string, unknown> = {}) => {
+    const id = crypto.randomUUID();
+    assert.equal((await request('PUT', `/flows/${id}`, { ...videoFlow, id, source_id: crypto.randomUUID(), ...extra })).status, 201);
+    return id;
+  };
+  const segments = async (id: string, timeranges: string[]) => {
+    const allocated = await request('POST', `/flows/${id}/storage`, { limit: timeranges.length });
+    const objects = (JSON.parse(allocated.body).media_objects as { object_id: string }[]).map(o => o.object_id);
+    objects.forEach(upload);
+    const registered = await request('POST', `/flows/${id}/segments`, objects.map((object_id, i) => ({ object_id, timerange: timeranges[i] })));
+    assert.equal(registered.status, 201, registered.body);
+  };
+  const timerange = async (id: string, query = '') => JSON.parse((await request('GET', `/flows/${id}?include_timerange=true${query}`)).body).timerange;
+  const a = await put(), b = await put(), none = await put();
+  await segments(a, ['[0:0_2:0)', '[2:0_4:0)']);
+  await segments(b, ['[10:0_12:0)']);
+  const both = await put({ flow_collection: [{ id: a, role: 'a' }, { id: b, role: 'b' }] });
+  const shared = await put({ flow_collection: [{ id: b, role: 'b' }] });
+  await segments(both, ['[20:0_21:0)']);
+  assert.equal(await timerange(a), '[0:0_4:0)');
+  assert.equal(await timerange(both), '[0:0_21:0)');
+  assert.equal(await timerange(shared), '[10:0_12:0)');
+  assert.equal(await timerange(none), '()');
+  // Bounds select whole segments: a partial overlap reports the segment's full range.
+  assert.equal(await timerange(a, '&timerange=[3:0_5:0)'), '[2:0_4:0)');
+  assert.equal(await timerange(a, '&timerange=[4:0_5:0)'), '()');
+  assert.equal(await timerange(a, '&timerange=[1:0_3:0)'), '[0:0_4:0)');
+  assert.equal(await timerange(a, '&timerange=[2:0]'), '[2:0_4:0)');
+  assert.equal(await timerange(a, '&timerange=[2:0_'), '[2:0_4:0)');
+  assert.equal(await timerange(a, '&timerange=_2:0)'), '[0:0_2:0)');
+  assert.equal(await timerange(a, '&timerange=()'), '()');
+  assert.equal(await timerange(both, '&timerange=[3:0_11:0)'), '[2:0_12:0)');
+  const listed = JSON.parse((await request('GET', '/flows?include_timerange=true&limit=1000')).body) as { id: string; timerange: string }[];
+  const ranges = Object.fromEntries(listed.map(flow => [flow.id, flow.timerange]));
+  assert.deepEqual([a, b, both, shared, none].map(id => ranges[id]), ['[0:0_4:0)', '[10:0_12:0)', '[0:0_21:0)', '[10:0_12:0)', '()']);
+});
