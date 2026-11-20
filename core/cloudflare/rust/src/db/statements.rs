@@ -29,9 +29,6 @@ pub const REMAINING_BOUNDS: &str =
     "SELECT MIN(timerange_start),MAX(timerange_end) FROM tamoss_segments
              WHERE flow_id=?1 AND timerange_start>=?2 AND timerange_end<=?3";
 
-pub const OBJECT_BOUNDS: &str = "SELECT MIN(timerange_start),MAX(timerange_end)
-                     FROM tamoss_segments WHERE object_id=?1";
-
 pub const REFERENCING_FLOWS: &str = "SELECT DISTINCT flow_id FROM tamoss_segments
                  WHERE object_id=?1 OR init_object_id=?1 ORDER BY flow_id";
 

@@ -232,17 +232,9 @@ impl Worker {
                 continue;
             }
             let mut media = MediaObject::from_record(&media_record, &[]);
+            // The object's timerange is on its own timeline and does not depend
+            // on which flows still reference it.
             media.referenced_by_flows = referenced_by.into_iter().collect();
-            if media.object_kind != "init" {
-                let bounds = sqlx::query(crate::db::statements::OBJECT_BOUNDS)
-                    .bind(&object_id)
-                    .fetch_one(&mut *transaction)
-                    .await
-                    .map_err(db::DbError::from)?;
-                let lower: Option<i128> = bounds.try_get(0).map_err(db::DbError::from)?;
-                let upper: Option<i128> = bounds.try_get(1).map_err(db::DbError::from)?;
-                media.timerange = Some(timerange::from_bounds(lower, upper));
-            }
             db::objects::save(&mut *transaction, &media.into_record(now)).await?;
         }
         let remaining_bounds = sqlx::query(crate::db::statements::REMAINING_BOUNDS)

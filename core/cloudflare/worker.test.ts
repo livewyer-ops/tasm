@@ -379,6 +379,46 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     assert.equal((await (await request(`/objects/${encodeURIComponent(object.object_id)}`)).json() as { timerange: string }).timerange, "[0:0_10:0)");
   });
 
+  await t.test("Deleting a reference keeps a reused object on its own timeline", { timeout: 30_000 }, async () => {
+    const env = await api.getEnv();
+    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const json = async (path: string) => (await request(path)).json() as Promise<any>;
+    const post = (path: string, body: unknown) => request(path, { method: "POST", body: JSON.stringify(body) });
+    const put = async () => {
+      const id = crypto.randomUUID();
+      assert.equal((await request(`/flows/${id}`, { method: "PUT", body: JSON.stringify({ ...video, id, source_id: crypto.randomUUID() }) })).status, 201);
+      return id;
+    };
+    const shared = async () => {
+      const original = await put(), reuse = await put();
+      const object = (await (await post(`/flows/${original}/storage`, { limit: 1 })).json() as { media_objects: { object_id: string; put_url: { url: string } }[] }).media_objects[0];
+      await env.MEDIA.put(new URL(object.put_url.url).pathname.split("/").slice(2).join("/"), "media", { httpMetadata: { contentType: "video/mp2t" } });
+      assert.equal((await post(`/flows/${original}/segments`, { object_id: object.object_id, timerange: "[0:0_10:0)" })).status, 201);
+      assert.equal((await post(`/flows/${reuse}/segments`, { object_id: object.object_id, timerange: "[104:0_106:0)", ts_offset: "100:0" })).status, 201);
+      return { original, reuse, objectId: object.object_id };
+    };
+    const unchanged = async (reuse: string, objectId: string) => {
+      assert.equal((await json(`/objects/${encodeURIComponent(objectId)}`)).timerange, "[0:0_10:0)");
+      assert.deepEqual((await json(`/flows/${reuse}/segments?include_object_timerange=true`)).map((s: { object_timerange: string }) => s.object_timerange), ["[0:0_10:0)"]);
+      const third = await put();
+      const reused = await post(`/flows/${third}/segments`, { object_id: objectId, timerange: "[200:0_210:0)", ts_offset: "200:0" });
+      assert.equal(reused.status, 201, await reused.text());
+      assert.equal((await json(`/flows/${third}/segments?include_object_timerange=true`))[0].object_timerange, "[0:0_10:0)");
+    };
+
+    // Deleting the flow queues the deletion of its segments.
+    const queued = await shared();
+    assert.equal((await request(`/flows/${queued.original}`, { method: "DELETE" })).status, 202);
+    for (let attempt = 0; attempt < 50 && (await request(`/flows/${queued.original}`)).status !== 404; attempt++) await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal((await request(`/flows/${queued.original}`)).status, 404);
+    await unchanged(queued.reuse, queued.objectId);
+
+    // Deleting by object ID removes the segment immediately.
+    const immediate = await shared();
+    assert.equal((await request(`/flows/${immediate.original}/segments?object_id=${encodeURIComponent(immediate.objectId)}`, { method: "DELETE" })).status, 204);
+    await unchanged(immediate.reuse, immediate.objectId);
+  });
+
   await t.test("Profiles page in id order, filter, reject duplicates and lock for flows", async () => {
     const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
     const metadata = { format: video.format, codec: video.codec, container: video.container, essence_parameters: video.essence_parameters };

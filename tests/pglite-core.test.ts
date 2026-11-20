@@ -254,3 +254,41 @@ test('a reused object only accepts segments within its own timerange', async () 
   assert.ok(ranges.includes('[604:0_605:0)') && !ranges.includes('[612:0_613:0)'), ranges.join());
   assert.equal(JSON.parse((await request('GET', `/objects/${objectId}`)).body).timerange, '[0:0_10:0)');
 });
+
+test('deleting a reference keeps a reused object on its own timeline', async () => {
+  const { request, upload, core } = await store();
+  const put = async () => {
+    const id = crypto.randomUUID();
+    assert.equal((await request('PUT', `/flows/${id}`, { ...videoFlow, id, source_id: crypto.randomUUID() })).status, 201);
+    return id;
+  };
+  const shared = async () => {
+    const original = await put(), reuse = await put();
+    const objectId = JSON.parse((await request('POST', `/flows/${original}/storage`, { limit: 1 })).body).media_objects[0].object_id as string;
+    upload(objectId);
+    assert.equal((await request('POST', `/flows/${original}/segments`, { object_id: objectId, timerange: '[0:0_10:0)' })).status, 201);
+    assert.equal((await request('POST', `/flows/${reuse}/segments`, { object_id: objectId, timerange: '[104:0_106:0)', ts_offset: '100:0' })).status, 201);
+    return { original, reuse, objectId };
+  };
+  const unchanged = async (reuse: string, objectId: string) => {
+    assert.equal(JSON.parse((await request('GET', `/objects/${objectId}`)).body).timerange, '[0:0_10:0)');
+    const segments = JSON.parse((await request('GET', `/flows/${reuse}/segments?include_object_timerange=true`)).body);
+    assert.deepEqual(segments.map((s: { object_timerange: string }) => s.object_timerange), ['[0:0_10:0)']);
+    const third = await put();
+    const reused = await request('POST', `/flows/${third}/segments`, { object_id: objectId, timerange: '[200:0_210:0)', ts_offset: '200:0' });
+    assert.equal(reused.status, 201, reused.body);
+    assert.equal(JSON.parse((await request('GET', `/flows/${third}/segments?include_object_timerange=true`)).body)[0].object_timerange, '[0:0_10:0)');
+  };
+
+  // Deleting the flow queues the deletion of its segments.
+  const queued = await shared();
+  assert.equal((await request('DELETE', `/flows/${queued.original}`)).status, 202);
+  for (let attempt = 0; attempt < 5 && (await request('GET', `/flows/${queued.original}`)).status !== 404; attempt++) await core.poll();
+  assert.equal((await request('GET', `/flows/${queued.original}`)).status, 404);
+  await unchanged(queued.reuse, queued.objectId);
+
+  // Deleting by object ID removes the segment immediately.
+  const immediate = await shared();
+  assert.equal((await request('DELETE', `/flows/${immediate.original}/segments?object_id=${immediate.objectId}`)).status, 204);
+  await unchanged(immediate.reuse, immediate.objectId);
+});
