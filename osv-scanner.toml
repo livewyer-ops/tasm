@@ -1,0 +1,9 @@
+[[IgnoredVulns]]
+id = "GHSA-fc5q-39xc-vjpf"
+ignoreUntil = 2026-12-17
+reason = """
+picomatch 2.3.2 is pulled in only by Omakase Player's patch-package tooling
+through find-yarn-workspace-root and micromatch. No browser bundle includes it
+and TASM passes no external glob patterns to this tool. Upstream lists no
+fixed release. Recheck the dependency path and upstream fix by expiry.
+"""
