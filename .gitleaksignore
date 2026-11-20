@@ -1,0 +1,4 @@
+# Upstream mock server example credentials for localhost.
+b7dde433aaae596b499b0f63b17f3b856d967f14:contracts/tams/api/Makefile:curl-auth-user:45
+# Upstream Rust source revision.
+b7dde433aaae596b499b0f63b17f3b856d967f14:contracts/provenance.json:generic-api-key:3

@@ -1,0 +1,19 @@
+name: Bug report
+description: Report a reproducible problem with TASM.
+body:
+  - type: markdown
+    attributes:
+      value: "Report vulnerabilities privately to hello@livewyer.com."
+  - type: input
+    id: environment
+    attributes:
+      label: Version or site URL, browser or Worker environment
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the expected and observed behaviour.
+    validations:
+      required: true
