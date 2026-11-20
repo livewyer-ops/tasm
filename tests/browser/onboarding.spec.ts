@@ -7,7 +7,7 @@ const expect = browserExpect.configure({ timeout: 90000 });
 test.use({ showOnboarding: true });
 test.setTimeout(180000);
 
-test('distinct welcomes persist separately and the Playpen tour can be dismissed and restarted', async ({ page, demoURL, playpenURL }) => {
+test('distinct welcomes persist separately and the Playpen tour can be dismissed and restarted', { tag: '@pr' }, async ({ page, demoURL, playpenURL }) => {
   await page.goto(demoURL);
   await expect(page.locator('#demo-about')).toBeVisible();
   await expect(page.locator('#demo-about')).toContainText('store and retrieve media by time via an API');
@@ -57,7 +57,7 @@ async function advance(page: Page, label: string, position: string) {
   await expectTourAtTop(page);
 }
 
-test('mobile tour preserves an existing draft and can end while creating its example', async ({ page }) => {
+test('mobile tour preserves an existing draft and can end while creating its example', { tag: '@pr' }, async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 }); await page.goto('/');
   await page.locator('#playpen-about').getByText('Explore on my own', { exact: true }).click();
   for (const [button, name] of [['#new-source', 'My draft'], ['#add-audio', 'My voice']]) {
@@ -98,7 +98,7 @@ test('mobile tour preserves an existing draft and can end while creating its exa
   await page.reload(); await expect(page.locator('.clip')).toHaveCount(1);
 });
 
-test('Playpen actions and result explanations perform the complete offset example, retries safely and decodes the result', async ({ page, browserName, audioOutput }) => {
+test('Playpen actions and result explanations perform the complete offset example, retries safely and decodes the result', { tag: '@pr' }, async ({ page, browserName, audioOutput }) => {
   test.setTimeout(browserName === 'webkit' ? 720000 : 360000);
   await page.addInitScript(() => {
     const fetch = window.fetch; (window as any).__tourWrites = 0;
@@ -127,7 +127,7 @@ test('Playpen actions and result explanations perform the complete offset exampl
   await advance(page, 'Add flows', '3 of 15'); await expect(page.locator('.lane')).toHaveCount(2);
   await advance(page, 'Add samples', '4 of 15'); await expect(page.locator('.clip')).toHaveCount(2);
   await expect(page.locator('#preview-empty')).toContainText('Save your arrangement to preview these clips.');
-  await expect(page.locator('#preview-caption')).toHaveText('Save your arrangement to preview these clips.');
+  await expect(page.locator('#preview-caption')).toBeHidden();
   await page.evaluate(() => window.scrollTo(0, 0));
   for (const selector of ['#save-draft', '.lane']) {
     const box = await page.locator(selector).last().boundingBox(); expect(box!.y).toBeGreaterThanOrEqual(0); expect(box!.y + box!.height).toBeLessThanOrEqual(800);
@@ -203,7 +203,7 @@ test('Playpen actions and result explanations perform the complete offset exampl
   await expect(page.locator('.tour-popover')).not.toBeVisible();
 });
 
-test('tour keeps its place above Preview at every width and ends when editing manually', async ({ page }) => {
+test('tour keeps its place above Preview at every width and ends when editing manually', { tag: '@pr' }, async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 }); await page.goto('/');
   await page.locator('#playpen-about [data-start-tour]').click();
   await advance(page, 'Create example', '2 of 15');
@@ -233,7 +233,7 @@ test('tour keeps its place above Preview at every width and ends when editing ma
   await expect(page.locator('.tour-popover')).not.toBeVisible();
 });
 
-test('Demo welcome opens the main walkthrough with step explanations disabled', async ({ page, browserName, demoURL }) => {
+test('Demo welcome opens the main walkthrough with step explanations disabled', { tag: '@pr' }, async ({ page, browserName, demoURL }) => {
   test.setTimeout(browserName === 'webkit' ? 360000 : 180000);
   const timeout = browserName === 'webkit' ? 240000 : 60000;
   await page.setViewportSize({ width: 1280, height: 800 }); await page.goto(demoURL);
@@ -284,7 +284,7 @@ test('Demo welcome opens the main walkthrough with step explanations disabled', 
 });
 
 
-test('both sites load the TAMS favicon from their own offline cache', async ({ page }) => {
+test('both sites load the TAMS favicon from their own offline cache', { tag: '@pr' }, async ({ page }) => {
   for (const site of ['demo', 'playpen']) {
     // Stop a disposable origin: WebKit's offline flag also blocks cached responses.
     // https://github.com/microsoft/playwright/issues/42775

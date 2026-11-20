@@ -145,6 +145,7 @@ export function wireTerminal(options: TerminalOptions) {
   const fileInput = document.querySelector<HTMLInputElement>('#terminal-file')!;
   const form = document.querySelector<HTMLFormElement>('#terminal-form')!;
   const output = document.getElementById('terminal-output')!;
+  const status = document.getElementById('terminal-status')!;
   const list = document.getElementById('terminal-options')!;
   const run = document.querySelector<HTMLButtonElement>('#terminal-run')!;
   let submitting = false, fileCommand: string | undefined;
@@ -182,17 +183,18 @@ export function wireTerminal(options: TerminalOptions) {
       const request = parseCurl(input.value, options.apiUrl());
       if (request.filename && !file) {
         fileCommand = input.value; fileInput.value = '';
-        output.textContent = 'Choose ' + request.filename + ' to send this upload.';
+        output.textContent = status.textContent = 'Choose ' + request.filename + ' to send this upload.';
         fileInput.click(); return;
       }
       if (file && file.name !== request.filename) throw new Error('Choose the file named ' + request.filename);
       submitting = true; run.disabled = true;
-      output.textContent = 'Running ' + request.method + '…';
+      output.textContent = status.textContent = 'Running ' + request.method + '…';
       const record = await options.execute(request, file);
+      status.textContent = request.method + ' · HTTP ' + (record.status ?? 'request failed');
       const body = record.method === 'HEAD' ? record.responseHeaders : record.response;
       output.textContent = ['HTTP ' + (record.status ?? 'request failed'), record.error, body == null ? '' : JSON.stringify(body, null, 2)].filter(Boolean).join('\n');
       if (!record.error && record.status && record.status < 400) options.success(record);
-    } catch (error) { output.textContent = (error as Error).message; }
+    } catch (error) { output.textContent = status.textContent = (error as Error).message; }
     finally { submitting = false; run.disabled = false; }
   }
   form.onsubmit = event => { event.preventDefault(); void submit(); };
@@ -200,6 +202,6 @@ export function wireTerminal(options: TerminalOptions) {
     const file = fileInput.files?.[0];
     if (file && fileCommand === input.value) { fileCommand = undefined; void submit(file); }
   };
-  fileInput.oncancel = () => { if (fileCommand === input.value) output.textContent = 'Upload canceled.'; };
+  fileInput.oncancel = () => { if (fileCommand === input.value) output.textContent = status.textContent = 'Upload canceled.'; };
   return { fill };
 }

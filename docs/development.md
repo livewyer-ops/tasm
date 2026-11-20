@@ -34,3 +34,5 @@ sh scripts/test-browser.sh
 ```
 
 [Release checks and packaging](releases.md)
+
+Run `npm run check` to type-check the apps and browser tests. After building, use `npm run test:logic` for pure application logic and `npm run test:segments` for media timing. Run `sh scripts/test-browser.sh --smoke --project=chromium` for the pull-request suite. The wrapper creates an isolated PulseAudio sink for each worker. Main runs the full Chromium suite. Nightly and manual validation also cover Firefox and WebKit.

@@ -11,14 +11,15 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "check": "tsc --noEmit && tsc -p core/cloudflare/tsconfig.json && tsc -p core/cloudflare/auth/tsconfig.json",
-    "test": "npm run build && npm run test:worker && npm run test:segments && playwright test",
+    "check": "tsc --noEmit && tsc -p tests/browser && tsc -p core/cloudflare/tsconfig.json && tsc -p core/cloudflare/auth/tsconfig.json",
+    "test": "npm run build && npm run test:worker && npm run test:segments && npm run test:logic && playwright test",
     "test:browser": "playwright test",
     "serve": "node scripts/serve.mjs",
     "demo:preview": "node scripts/serve.mjs --app=demo --ui-preview",
     "ui:preview": "node scripts/serve.mjs --ui-preview",
     "ui:check": "tsc --noEmit",
     "demo:check": "tsc --noEmit",
+    "test:logic": "esbuild tests/app-logic.test.ts --bundle --platform=node --format=esm --packages=external --outfile=.local/app-logic.test.mjs && node --test .local/app-logic.test.mjs",
     "test:segments": "node tests/segmentation.mjs",
     "build:core": "node scripts/build.mjs core",
     "build:demo": "node scripts/build.mjs demo",
@@ -55,8 +56,7 @@
     "ajv-formats": "3.0.1",
     "esbuild": "0.28.2",
     "typescript": "7.0.2",
-    "wrangler": "4.164.0",
-    "yaml": "2.9.1"
+    "wrangler": "4.164.0"
   },
   "overrides": {
     "@byomakase/omakase-player": {

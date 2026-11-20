@@ -1,10 +1,9 @@
-import { expect } from './fixtures';
+import { expect, ready as waitForApp } from './fixtures';
 import { test, output, expectOutput } from './media-output';
 import type { Page } from '@playwright/test';
 
 async function ready(page: Page) {
-  await expect(page.locator('body')).toHaveAttribute('data-ready', 'true', { timeout: 90000 });
-  await expect(page.locator('body')).not.toHaveClass(/busy/, { timeout: test.info().project.name === 'webkit' ? 240000 : 90000 });
+  await waitForApp(page);
   await expect(page.locator('#preview-status')).toContainText('Source ready', { timeout: 60000 });
 }
 
@@ -119,12 +118,13 @@ test('source clock preserves offsets, empty intervals, tails and independent pre
   // Switching the preview while playing keeps both the source position and play state.
   await page.locator('video').evaluate((v: HTMLVideoElement) => { v.muted = true; });
   await page.locator('omakase-play-button').click();
+  const started = performance.now();
   const beforeSwitch = await page.locator('video').evaluate((v: HTMLVideoElement) => v.currentTime);
   await switchFlow('video', 'none');
   const switched = await page.locator('video').evaluate((v: HTMLVideoElement) => ({ paused: v.paused, time: v.currentTime }));
   expect(switched.paused).toBe(false);
   expect(switched.time).toBeGreaterThanOrEqual(beforeSwitch - 0.08);
-  expect(switched.time).toBeLessThan(beforeSwitch + 1.2);
+  expect(switched.time).toBeLessThan(beforeSwitch + (performance.now() - started) / 1000 + 0.25);
   await switchFlow('video', 'Picture two');
   expect(await page.locator('video').evaluate((v: HTMLVideoElement) => v.paused)).toBe(false);
   await page.locator('video').evaluate((v: HTMLVideoElement) => v.pause());

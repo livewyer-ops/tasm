@@ -100,6 +100,7 @@ export class Preview extends EventTarget {
   readonly omakase: OmakasePlayer;
   currentTime = 0;
   loaded = false;
+  private unsavedChoices = new Map<string, Partial<Selection>>();
   selection: Selection = { video: '', audio: '' };
   private generation = 0;
   private destroyed = false;
@@ -147,6 +148,7 @@ export class Preview extends EventTarget {
   choices(workspace?: Workspace) {
     let saved: Partial<Selection> = {};
     try { saved = JSON.parse(localStorage.getItem(`tasm-preview:${workspace?.root.id}`) ?? '{}'); } catch { /* use collection defaults */ }
+    saved = { ...saved, ...this.unsavedChoices.get(workspace?.root.id ?? '') };
     for (const kind of ['video', 'audio'] as const) {
       this.selection[kind] = saved[kind] === '' || workspace?.lanes.some(l => l.kind === kind && l.id === saved[kind]) ? saved[kind]! : workspace?.lanes.find(l => l.kind === kind && l.blocks.length)?.id ?? '';
     }
@@ -157,7 +159,9 @@ export class Preview extends EventTarget {
     const key = `tasm-preview:${workspace.root.id}`;
     let explicit: Partial<Selection> = {};
     try { explicit = JSON.parse(localStorage.getItem(key) ?? '{}'); } catch { /* reset malformed preferences */ }
-    localStorage.setItem(key, JSON.stringify({ ...explicit, [kind]: id }));
+    const choices = { ...explicit, ...this.unsavedChoices.get(workspace.root.id), [kind]: id };
+    try { localStorage.setItem(key, JSON.stringify(choices)); this.unsavedChoices.delete(workspace.root.id); }
+    catch { this.unsavedChoices.set(workspace.root.id, choices); }
   }
   stopRange(notify = true) {
     const active = this.rangeEnd !== undefined || this.rangeAlignment !== undefined;

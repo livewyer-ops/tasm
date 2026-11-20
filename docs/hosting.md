@@ -14,3 +14,5 @@ TASM_DEPLOY_DOMAIN=playpen.example.com npm run deploy:playpen
 ```
 
 To deploy a TAMS **API** backed by Durable Objects and R2, use the [Cloudflare installer](https://github.com/livewyer-ops/cf-tams).
+
+Both sites serve a same-origin Content Security Policy. The browser runtime uses WebAssembly, blob workers and media URLs. HTTPS and local HTTP connections support configured webhooks. Inline styles position the timeline and player controls. The local preview server applies the same policy as the deployed sites.

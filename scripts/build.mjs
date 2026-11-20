@@ -93,14 +93,24 @@ for (const app of selectedApps) {
   const out = `${dist}/${app}`;
   await rm(out, { recursive: true, force: true });
   await cp(core, out, { recursive: true });
-  const appBundle = await build({ ...options, metafile: true, entryPoints: { [app]: `apps/${app}/main.ts`,
+  const sampleDir = 'apps/shared/samples';
+  const catalogue = JSON.parse(await readFile(sampleDir + '/manifest.json', 'utf8'));
+  const entries = app === 'demo' ? catalogue.filter(sample => sample.id === 'orbit') : catalogue;
+  const samplesDir = `${out}/samples`;
+  await mkdir(samplesDir);
+  await writeFile(samplesDir + '/manifest.json', JSON.stringify(entries));
+  const media = new Set(['black.ts', 'silence.ts', ...entries.flatMap(sample => [sample.file, sample.thumbnail].filter(Boolean))]);
+  for (const file of media) await cp(`${sampleDir}/${file}`, `${samplesDir}/${file}`);
+  const appBundle = await build({ ...options, plugins: [{ name: 'app-samples', setup(builder) {
+    builder.onResolve({ filter: /^\.\/samples\/manifest\.json$/ }, () => ({ path: `${samplesDir}/manifest.json` }));
+  } }], metafile: true, entryPoints: { [app]: `apps/${app}/main.ts`,
     'preview-worker': 'apps/shared/preview-worker.ts', 'ingest-worker': 'apps/shared/ingest-worker.ts' }, outdir: out });
   await build({ ...options, entryPoints: ['apps/shared/startup.ts'], format: 'iife', outdir: out });
   await writeFile(`${out}/index.html`, appHTML(await readFile(`apps/${app}/index.html`, 'utf8'), app));
+  await cp(`apps/${app}/bootstrap.js`, `${out}/bootstrap.js`);
   await cp(`apps/${app}/style.css`, `${out}/${app}.css`);
   await cp('apps/shared/onboarding.css', `${out}/onboarding.css`);
   await cp('apps/shared/branding', `${out}/branding`, { recursive: true });
-  await cp('apps/shared/samples', `${out}/samples`, { recursive: true });
   await cp('node_modules/@byomakase/omakase-player/dist/omakase-player.css', `${out}/omakase.css`);
   await cp('node_modules/mediabunny/LICENSE', `${out}/mediabunny-LICENSE`);
   await cp('deploy/_headers', `${out}/_headers`);

@@ -71,6 +71,7 @@ try {
     assert(!existsSync(join(out, 'preview.html')));
     const worker = await readFile(join(out, 'service-worker.js'), 'utf8');
     assert(!worker.includes(`${peer}.js`));
+    assert.equal(worker.includes('samples/grid.ts'), app === 'playpen');
     for (const file of ['index.js', 'worker.js', 'tasm_bg.wasm', 'samples/manifest.json', 'branding/tams-favicon.svg']) assert(existsSync(join(out, file)), `${app}/${file}`);
     for (const path of ['LICENSE', 'NOTICE', 'THIRD_PARTY.txt', 'mediabunny-LICENSE', 'branding/HKGrotesk-OFL.txt', 'branding/FiraCode-OFL.txt']) assert(existsSync(join(out, path)), path);
     assert.match(await readFile(join(out, 'PLAYER-LICENSES.txt'), 'utf8'), /Components embedded in @byomakase/);

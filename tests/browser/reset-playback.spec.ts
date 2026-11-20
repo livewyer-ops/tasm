@@ -1,16 +1,10 @@
-import { test, expect } from './fixtures';
+import { test, expect, ready as waitForApp, named } from './fixtures';
 import { readFile } from 'node:fs/promises';
 import type { Page } from '@playwright/test';
 
 async function ready(page: Page) {
-  await expect(page.locator('body')).toHaveAttribute('data-ready', 'true', { timeout: 90000 });
-  await expect(page.locator('body')).not.toHaveClass(/busy/, { timeout: 90000 });
+  await waitForApp(page);
   await expect(page.locator('#reset-playpen')).toBeEnabled();
-}
-async function named(page: Page, button: string, name: string) {
-  await page.locator(button).click(); await page.locator('#entity-name').fill(name);
-  await page.locator('#dialog-submit').click(); await ready(page);
-  if (button !== '#new-source') { await page.locator('#save-draft').click(); await ready(page); }
 }
 async function reset(page: Page) {
   await page.locator('#reset-playpen').click();
@@ -130,7 +124,7 @@ test('confirmed reset stops playback and clears Playpen but preserves Demo and u
   }
 });
 
-test('reset refuses another tab and holds new tabs out through a failed cleanup and retry', async ({ page, context }) => {
+test('reset refuses another tab and holds new tabs out through a failed cleanup and retry', { tag: '@pr' }, async ({ page, context }) => {
   test.setTimeout(180000);
   await page.goto('/'); await ready(page); await named(page, '#new-source', 'Keep until confirmed');
   const second = await context.newPage(); await second.goto('/'); await ready(second);
@@ -163,7 +157,7 @@ test('reset cancels a library worker and an ingest paused before a write', async
     const real = Worker.prototype.postMessage;
     Worker.prototype.postMessage = function (data, transfer) {
       if (data.file) return;
-      real.call(this, data, transfer as Transferable[]);
+      Reflect.apply(real, this, [data, transfer]);
     };
   });
   await page.locator('#media-file').setInputFiles({ name: 'Waiting.ts', mimeType: 'video/mp2t', buffer: Buffer.from('pending') });

@@ -1,4 +1,4 @@
-import { test as base, expect } from './fixtures';
+import { test as base, expect, ready, listen, closeServer } from './fixtures';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
@@ -20,22 +20,28 @@ const test = base.extend<{ site: Site }>({
               (site.failure === 'module' && path.endsWith('/playpen.js'))) { response.writeHead(503).end(); return; }
           const file = path.slice(1) || 'index.html';
           let body = await readFile(resolve(process.env.TASM_DIST ?? 'dist', app, file));
-          if (file === 'service-worker.js') body = Buffer.from(body.toString().replace(/(var assetCache = [^;]+);/, `$1 + ":test-${site.release}";`));
-          if (file.endsWith('.html')) body = Buffer.from(body.toString().replace('<body ', `<body data-release="${site.release}" `));
+          if (file === 'service-worker.js') {
+            const changed = body.toString().replace(/(var assetCache = [^;]+);/, `$1 + ":test-${site.release}";`);
+            expect(changed).not.toBe(body.toString());
+            body = Buffer.from(changed);
+          }
+          if (file.endsWith('.html')) {
+            expect(body.toString()).toContain('<body ');
+            body = Buffer.from(body.toString().replace('<body ', `<body data-release="${site.release}" `));
+          }
           response.writeHead(200, { 'content-type': types[extname(file)] ?? 'application/octet-stream', 'cache-control': 'no-cache' });
           response.end(body);
         } catch { response.writeHead(404).end(); }
       });
-      await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
-      site[app === 'demo' ? 'demoURL' : 'url'] = `http://127.0.0.1:${(server.address() as any).port}`;
+      const serverURL = await listen(server);
+      site[app === 'demo' ? 'demoURL' : 'url'] = serverURL.origin;
       servers.push(server);
     }
     try { await use(site); }
-    finally { for (const server of servers) { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); } }
+    finally { for (const server of servers) { await closeServer(server); } }
   },
 });
 
-async function ready(page: Page) { await expect(page.locator('body')).toHaveAttribute('data-ready', 'true', { timeout: 60000 }); }
 async function seed(page: Page, prefix = '/') {
   return page.evaluate(async prefix => {
     const call = async (path: string, method = 'GET', body?: unknown) => {
@@ -58,7 +64,7 @@ async function installUpdate(page: Page) {
   await expect.poll(() => page.evaluate(async () => !!(await navigator.serviceWorker.getRegistration())?.waiting), { timeout: 30000 }).toBe(true);
 }
 
-test('startup waits when registration briefly exposes no worker', async ({ page, site }) => {
+test('startup waits when registration briefly exposes no worker', { tag: '@pr' }, async ({ page, site }) => {
   await page.addInitScript(() => {
     const register = navigator.serviceWorker.register.bind(navigator.serviceWorker);
     navigator.serviceWorker.register = async (...args) => {
@@ -77,7 +83,7 @@ test('startup waits when registration briefly exposes no worker', async ({ page,
   await expect(page.locator('#new-source')).toBeEnabled();
 });
 
-test('ready updates respect other tabs, apply on refresh and preserve offline media', async ({ page, context, site, browserName }) => {
+test('ready updates respect other tabs, apply on refresh and preserve offline media', { tag: '@pr' }, async ({ page, context, site, browserName }) => {
   test.setTimeout(browserName === 'webkit' ? 240000 : 90000);
   await page.goto(site.url + '/'); await ready(page);
   await page.locator('#new-source').click(); await page.locator('#entity-name').fill('Saved source'); await page.locator('#dialog-submit').click();
@@ -100,7 +106,7 @@ test('ready updates respect other tabs, apply on refresh and preserve offline me
   expect(await page.evaluate(() => localStorage.getItem('unrelated-test-sentinel'))).toBe('keep');
 });
 
-test('failed installation reports an error, releases its lease and retries without developer tools', async ({ page, site }) => {
+test('failed installation reports an error, releases its lease and retries without developer tools', { tag: '@pr' }, async ({ page, site }) => {
   site.failure = 'asset'; await page.goto(site.url + '/');
   await expect(page.locator('#startup-notice')).toBeVisible({ timeout: 15000 });
   await expect(page.locator('#startup-message')).toContainText('installation failed');
@@ -114,7 +120,7 @@ test('failed installation reports an error, releases its lease and retries witho
   await expect(page.locator('#new-source')).toBeEnabled();
 });
 
-test('startup deadlines cancel blocked locks and recovery survives a broken main module', async ({ page, context, site }) => {
+test('startup deadlines cancel blocked locks and recovery survives a broken main module', { tag: '@pr' }, async ({ page, context, site }) => {
   const holder = await context.newPage(); await holder.goto(site.url + '/blank');
   await holder.evaluate(() => { void navigator.locks.request(`tasm-client:${location.origin}/`, () => new Promise(() => {})); });
   await expect.poll(() => holder.evaluate(async () => (await navigator.locks.query()).held?.length)).toBe(1);
@@ -137,14 +143,14 @@ test('startup deadlines cancel blocked locks and recovery survives a broken main
   await ready(page);
 });
 
-test('Reset works while the runtime is stuck opening storage', async ({ page, site }) => {
+test('Reset works while the runtime is stuck opening storage', { tag: '@pr' }, async ({ page, site }) => {
   await page.addInitScript(() => {
     const post = MessagePort.prototype.postMessage;
     MessagePort.prototype.postMessage = function(data, transfer) {
       if (data.type === 'init' && !sessionStorage.getItem('blocked-init-once')) {
         sessionStorage.setItem('blocked-init-once', '1'); return;
       }
-      post.call(this, data, transfer as Transferable[]);
+      Reflect.apply(post, this, [data, transfer]);
     };
   });
   await page.goto(site.url + '/');
@@ -156,7 +162,7 @@ test('Reset works while the runtime is stuck opening storage', async ({ page, si
   await expect(page.locator('#source-title')).toHaveText('No source yet');
 });
 
-test('demo applies its update without changing an open Playpen store', async ({ page, context, site, browserName }) => {
+test('demo applies its update without changing an open Playpen store', { tag: '@pr' }, async ({ page, context, site, browserName }) => {
   test.setTimeout(browserName === 'webkit' ? 240000 : 90000);
   const playpen = await context.newPage(); await playpen.goto(site.url + '/'); await ready(playpen); const kept = await seed(playpen);
   await page.bringToFront();
@@ -169,7 +175,7 @@ test('demo applies its update without changing an open Playpen store', async ({ 
   expect(await playpen.evaluate(async url => (await fetch(url)).text(), kept)).toBe('keep these media bytes');
 });
 
-test('Reset is available after workspace loading fails with a healthy runtime', async ({ page, site }) => {
+test('Reset is available after workspace loading fails with a healthy runtime', { tag: '@pr' }, async ({ page, site }) => {
   await page.addInitScript(() => {
     const native = window.fetch;
     window.fetch = (input, init) => {

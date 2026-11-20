@@ -1,4 +1,4 @@
-import { test, expect as browserExpect } from './fixtures';
+import { test, expect as browserExpect, save, ready } from './fixtures';
 import type { Page } from '@playwright/test';
 
 // UI actions include durable WASM database writes, which take longer in WebKit.
@@ -7,11 +7,6 @@ test.afterEach(async ({ page }, info) => {
   if (info.status !== info.expectedStatus && !page.isClosed()) console.log('Playpen failure state', await page.evaluate(() => ({ busy: document.body.className, ingest: document.getElementById('ingest-title')?.textContent, summary: document.getElementById('ingest-summary')?.textContent, notice: document.getElementById('notice-text')?.textContent, step: (document.getElementById('step-through') as HTMLInputElement)?.checked, request: document.getElementById('activity-summary')?.textContent })));
 });
 
-async function ready(page: Page) {
-  const timeout = test.info().project.name === 'webkit' ? 180000 : 90000;
-  await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
-  await expect(page.locator('body')).not.toHaveClass(/busy/, { timeout });
-}
 async function name(page: Page, value: string) {
   await page.locator('#entity-name').fill(value);
   await page.locator('#dialog-submit').click();
@@ -100,7 +95,7 @@ test('playpen edits real TAMS media, preserves failed edits and restores the sou
   await expect(page.locator('#action-history')).toHaveValue(liveAction);
   // Starting in the empty gap still rejects an overlap with the following clip.
   await page.locator('.clip').first().click();
-  await page.locator('#block-start').fill('7'); await page.locator('#move-block').click(); if (await page.locator('#save-draft').isEnabled()) await page.locator('#save-draft').click();
+  await page.locator('#block-start').fill('7'); await page.locator('#move-block').click(); await expect(page.locator('#save-draft')).toBeDisabled();
   await expect(page.locator('#notice')).toContainText('cannot overlap'); await ready(page);
   expect((await contents(page)).root.flow_collection).toEqual(repeated.root.flow_collection);
   // Inject failure at publication, after replacement media has been registered.
@@ -114,10 +109,10 @@ test('playpen edits real TAMS media, preserves failed edits and restores the sou
       return realFetch(input, init);
     };
   });
-  await page.locator('.clip').nth(1).click(); await page.locator('#block-start').fill('20'); await page.locator('#move-block').click(); if (await page.locator('#save-draft').isEnabled()) await page.locator('#save-draft').click();
+  await page.locator('.clip').nth(1).click(); await page.locator('#block-start').fill('20'); await page.locator('#move-block').click(); await save(page, false);
   await expect(page.locator('#notice')).toContainText('Injected publication failure'); await ready(page);
   expect((await contents(page)).root.flow_collection).toEqual(repeated.root.flow_collection);
-  await page.locator('.clip').nth(1).click(); await page.locator('#block-start').fill('20'); await page.locator('#move-block').click(); if (await page.locator('#save-draft').isEnabled()) await page.locator('#save-draft').click();
+  await page.locator('.clip').nth(1).click(); await page.locator('#block-start').fill('20'); await page.locator('#move-block').click(); await save(page);
   await expect(page.locator('.clip').nth(1)).toHaveAttribute('aria-label', 'Orbit at 20.00 seconds', { timeout: 90000 }); await ready(page);
   await expect(page.locator('#preview-status')).toHaveText('Source ready · press play to preview');
   const moved = await contents(page);

@@ -3,7 +3,7 @@ import type { PreparedObject } from './ingest-worker';
 import { libraryBytes, mediaWorker } from './sample-library';
 import { abortable } from '../../core/browser/lifecycle';
 
-export type Sample = Omit<typeof sampleData[number], 'technical' | 'category'> & { imported?: boolean; category?: 'speech'; technical: Technical };
+export type Sample = Omit<typeof sampleData[number], 'technical' | 'category'> & { imported?: boolean; trackOffsetNs?: string; category?: 'speech'; technical: Technical };
 export const samples = sampleData as Sample[];
 export interface Technical {
   format: string; codec: string; container: string; avg_bit_rate?: number;
@@ -31,6 +31,9 @@ export interface RequestRecord extends RequestContext {
 export interface NarrativeEvent { position: number; title: string; detail: string; state: 'Pending' | 'Succeeded' | 'Failed' | 'Cancelled'; ms?: number }
 export interface FlowChange { laneId: string; oldId?: string; newId: string; state: 'creating' | 'created' | 'published' | 'failed' | 'unconfirmed'; retirement?: 'pending' | 'deleted' | 'failed'; error?: string }
 export interface ActionRecord { id: string; name: string; requests: RequestRecord[]; events?: NarrativeEvent[]; flows?: FlowChange[]; error?: string; pending: boolean; playback?: boolean }
+export class RequestError extends Error {
+  constructor(readonly record: RequestRecord, message: string) { super(message); }
+}
 interface RequestOptions extends RequestContext { signal?: AbortSignal; binary?: boolean; headers?: Record<string, string>; rawBody?: string }
 export interface IngestObject { segment: Segment; sample?: Sample; bytes: number; state: 'prepared' | 'allocated' | 'uploaded' | 'registered'; reused: boolean }
 export const PROFILE = 'mediabunny-1.58.0/mpegts/hls-2s/v1';
@@ -84,7 +87,8 @@ function restoredMedia(value: Partial<Sample> | undefined, flow: Flow): Sample |
       typeof value.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.sha256) ||
       typeof value.durationNs !== 'string' || !/^\d{1,14}$/.test(value.durationNs) || BigInt(value.durationNs) <= 0n ||
       typeof value.startNs !== 'string' || !/^\d{1,20}$/.test(value.startNs) || !Number.isSafeInteger(value.bytes) || value.bytes! <= 0) throw new Error('Invalid imported media metadata');
-  return { id: value.id, name: value.name, kind: value.kind!, sha256: value.sha256, durationNs: value.durationNs, startNs: value.startNs, bytes: value.bytes!,
+  if (value.trackOffsetNs !== undefined && (typeof value.trackOffsetNs !== 'string' || !/^\d{1,14}$/.test(value.trackOffsetNs))) throw new Error('Invalid imported track offset');
+  return { trackOffsetNs: value.trackOffsetNs, id: value.id, name: value.name, kind: value.kind!, sha256: value.sha256, durationNs: value.durationNs, startNs: value.startNs, bytes: value.bytes!,
     imported: true, file: '', color: value.kind === 'video' ? '#8c9bff' : '#5cd6b1',
     technical: { format: flow.format, codec: String(flow.codec), container: String(flow.container), avg_bit_rate: flow.avg_bit_rate as number | undefined, essence_parameters: flow.essence_parameters as Technical['essence_parameters'] } };
 }
@@ -148,9 +152,10 @@ export function editWorkspace(workspace: Workspace, change: EditChange): Workspa
 
 export interface MovingItem { laneId: string; key: string; segment?: { objectId: string; timerange: string } }
 export function planPlacement(workspace: Workspace, target: Lane, sample: Sample, raw: bigint, duration: bigint, pixelsPerSecond: number, segments: boolean, from?: MovingItem, exact = false) {
+  if (!from && sample.trackOffsetNs) raw += BigInt(sample.trackOffsetNs);
   const source = workspace.lanes.find(l => l.id === from?.laneId)?.blocks.find(b => b.key === from?.key);
-  const [a, b] = from?.segment ? bounds(from.segment.timerange) : source ? [source.start, blockEnd(source)] : [0n, 0n];
-  if (from?.laneId === target.id && (raw === a || !exact && raw >= a && raw < b)) return { start: a, invalid: false, noop: true, insert: false, snapped: undefined as bigint | undefined, error: undefined as string | undefined };
+  const origin = from?.segment ? bounds(from.segment.timerange)[0] : source?.start;
+  if (from?.laneId === target.id && raw === origin) return { start: raw, invalid: false, noop: true, insert: false, snapped: undefined as bigint | undefined, error: undefined as string | undefined };
   const remaining = from ? editWorkspace(workspace, { laneId: from.laneId, fromLaneId: from.laneId, key: from.key, segment: from.segment, remove: true }) : workspace;
   const hit = remaining.lanes.find(l => l.id === target.id)!.blocks.find(b => raw >= b.start && raw < blockEnd(b));
   if (!hit) return { ...(exact ? { start: raw, invalid: false, snapped: undefined as bigint | undefined } : snapPlacement(workspace, target, sample, raw, duration, pixelsPerSecond, segments, from)), insert: false, noop: false, error: undefined as string | undefined };
@@ -170,7 +175,9 @@ export function snapPlacement(workspace: Workspace, target: Lane, sample: Sample
   const compatible = target.kind === sample.kind && target.blocks.every(b => (b.segments.length ? b.segments.every(s => moving(target, b, s)) : moving(target, b)) || mediaFormat(b.sample) === mediaFormat(sample));
   const valid = (start: bigint) => compatible && start >= 0n && start + duration <= 86400n * NS &&
     !remaining.some(([a, b]) => start < b && a < start + duration);
-  let start = ((raw < 0n ? 0n : raw) + 20000000n) / 40000000n * 40000000n;
+  const offset = from ? 0n : BigInt(sample.trackOffsetNs ?? 0);
+  const anchor = raw - offset;
+  let start = ((anchor < 0n ? 0n : anchor) + 20000000n) / 40000000n * 40000000n + offset;
   let distance = Infinity, snapped: bigint | undefined;
   for (const lane of workspace.lanes) for (const block of lane.blocks) {
     const edges = segments && block.segments.length ? block.segments.filter(s => !moving(lane, block, s)).flatMap(s => bounds(s.timerange)) : moving(lane, block) ? [] : [block.start, blockEnd(block)];
@@ -232,14 +239,23 @@ export class WorkspaceStore extends EventTarget {
     if (!this.actions.includes(action)) this.actions.unshift(action);
     action.pending = true; this.counts.set(action, (this.counts.get(action) ?? 0) + 1);
     if (name !== 'Verify stored media') this.latestAction = action;
-    // Keep an active or inspected ingest available while preview reads arrive.
-    if (this.actions.length > 30) { const oldest = [...this.actions].reverse().find(a => !a.pending && a.id !== this.ingest?.actionId); if (oldest) this.actions.splice(this.actions.indexOf(oldest), 1); }
     this.changed();
     const pending = Promise.resolve().then(() => { this.abort.signal.throwIfAborted(); return work(action); });
     this.work.add(pending);
     try { return await pending; }
     catch (error) { action.error = error instanceof Error ? error.message : String(error); throw error; }
-    finally { this.work.delete(pending); this.counts.set(action, this.counts.get(action)! - 1); action.pending = !!this.counts.get(action); this.changed(); }
+    finally {
+      this.work.delete(pending);
+      this.counts.set(action, this.counts.get(action)! - 1);
+      action.pending = !!this.counts.get(action);
+      while (this.actions.length > 30) {
+        const eligible = [...this.actions].reverse().filter(a => !a.pending && a.id !== this.ingest?.actionId);
+        const oldest = eligible.find(a => a.playback || a.name === 'Read preview media' || a.name === 'Verify stored media') ?? eligible[0];
+        if (!oldest) break;
+        this.actions.splice(this.actions.indexOf(oldest), 1);
+      }
+      this.changed();
+    }
   }
   async stop() {
     this.abort.abort(new DOMException('Playpen reset', 'AbortError'));
@@ -257,6 +273,9 @@ export class WorkspaceStore extends EventTarget {
     finally { event.ms = Math.round(performance.now() - started); this.changed(); }
   }
   async request<T = any>(action: ActionRecord | undefined, path: string, method = 'GET', body?: unknown, upload?: { bytes: Blob; name: string; type: string }, options: RequestOptions = {}): Promise<T> {
+    return (await this.requestWithRecord<T>(action, path, method, body, upload, options)).value;
+  }
+  async requestWithRecord<T = any>(action: ActionRecord | undefined, path: string, method = 'GET', body?: unknown, upload?: { bytes: Blob; name: string; type: string }, options: RequestOptions = {}): Promise<{ value: T; record: RequestRecord }> {
     const url = new URL(path, this.apiUrl).href;
     const headers: Record<string, string> = options.headers ?? (upload ? { 'content-type': upload.type } : body === undefined ? {} : { 'content-type': 'application/json' });
     const { signal: requestedSignal, binary, headers: _headers, ...context } = options;
@@ -271,22 +290,22 @@ export class WorkspaceStore extends EventTarget {
       const response = await fetch(url, { method, headers, body: upload?.bytes ?? options.rawBody ?? (body === undefined ? undefined : JSON.stringify(body)), signal });
       record.status = response.status; record.responseHeaders = Object.fromEntries(response.headers);
       if (binary && response.ok) {
-        const bytes = await response.arrayBuffer(); record.response = { bytes: bytes.byteLength, contentType: response.headers.get('content-type') }; return bytes as T;
+        const bytes = await response.arrayBuffer(); record.response = { bytes: bytes.byteLength, contentType: response.headers.get('content-type') }; return { value: bytes as T, record };
       }
       const text = await response.text();
       try { record.response = text ? JSON.parse(text) : null; } catch { record.response = text; }
-      if (!response.ok) throw new Error(`${method} ${new URL(url).pathname}: ${response.status} ${(record.response as any)?.summary ?? text}`);
+      if (!response.ok) throw new RequestError(record, `${method} ${new URL(url).pathname}: ${response.status} ${(record.response as any)?.summary ?? text}`);
       if (Array.isArray((record.response as any)?.failed_segments) && (record.response as any).failed_segments.length) throw new Error(`Segment registration partially failed: ${JSON.stringify((record.response as any).failed_segments)}`);
-      return record.response as T;
+      return { value: record.response as T, record };
     } catch (error) { record.error = error instanceof Error ? error.message : String(error); throw error; }
     finally { record.ms = Math.round(performance.now() - started); this.changed(); }
   }
   async list<T>(action: ActionRecord | undefined, path: string, options?: RequestOptions): Promise<T[]> {
     const result: T[] = []; let next: string | undefined = path;
     while (next) {
-      const a: ActionRecord = action ?? { id: '', name: '', requests: [], pending: false };
-      result.push(...await this.request<T[]>(a, next, 'GET', undefined, undefined, options));
-      next = a.requests.at(-1)?.responseHeaders?.link?.match(/<([^>]+)>;\s*rel="next"/)?.[1];
+      const page: { value: T[]; record: RequestRecord } = await this.requestWithRecord<T[]>(action, next, 'GET', undefined, undefined, options);
+      result.push(...page.value);
+      next = page.record.responseHeaders?.link?.match(/<([^>]+)>;\s*rel="next"/)?.[1];
     }
     return result;
   }
@@ -308,6 +327,11 @@ export class WorkspaceStore extends EventTarget {
       // A pending deletion may remove segments before removing the flow itself.
       if (member.id === deletingFlowId) continue;
       const flow = await this.request<Flow>(action, `flows/${member.id}`);
+      const laneIds = flow.tags?.['tasm.playpen.lane'];
+      const id = laneIds?.[0];
+      if (laneIds?.length !== 1 || typeof id !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id) || lanes.some(l => l.id.toLowerCase() === id.toLowerCase())) {
+        throw new Error('Invalid or duplicate playpen lane ID.');
+      }
       const segments = await this.list<Segment>(action, `flows/${flow.id}/segments?include_object_timerange=true&limit=100`);
       const remaining = new Map(segments.map(s => [`${s.object_id}:${s.timerange}`, s]));
       const blocks: Block[] = [];
@@ -332,7 +356,7 @@ export class WorkspaceStore extends EventTarget {
         blocks.push({ sample, start: bounds(segment.timerange)[0], key: `${segment.object_id}:${segment.timerange}`, profile: 'legacy', checksum: sample.sha256, segments: [segment] });
       }
       blocks.sort((a, b) => a.start < b.start ? -1 : 1);
-      lanes.push({ id: tag(flow, 'lane')!, flow, kind: flow.format.endsWith(':audio') ? 'audio' : 'video', blocks, segments });
+      lanes.push({ id, flow, kind: flow.format.endsWith(':audio') ? 'audio' : 'video', blocks, segments });
     }
     return { root, lanes };
   }
@@ -341,7 +365,7 @@ export class WorkspaceStore extends EventTarget {
     return { ...(blocks[0]?.sample.technical ?? fallback ?? samples.find(s => s.kind === kind)!.technical), id: crypto.randomUUID(), source_id: crypto.randomUUID(), label,
       tags: { 'tasm.playpen.root': [root.id], 'tasm.playpen.lane': [laneId], [BLOCK_TAG]: blocks.map(b => JSON.stringify({ id: b.key, sample: b.sample.id, checksum: b.checksum, profile: b.profile,
         ...(b.partial ? { partial: true } : {}),
-        ...(b.sample.imported ? { media: { id: b.sample.id, name: b.sample.name, kind: b.sample.kind, sha256: b.sample.sha256, bytes: b.sample.bytes, startNs: b.sample.startNs, durationNs: b.sample.durationNs } } : {}),
+        ...(b.sample.imported ? { media: { id: b.sample.id, name: b.sample.name, kind: b.sample.kind, sha256: b.sample.sha256, bytes: b.sample.bytes, startNs: b.sample.startNs, trackOffsetNs: b.sample.trackOffsetNs, durationNs: b.sample.durationNs } } : {}),
         segments: b.segments.map(s => ({ object_id: s.object_id, timerange: s.timerange })) })) } };
   }
   async addLane(action: ActionRecord, rootId: string, kind: Kind, label: string) {
@@ -372,9 +396,7 @@ export class WorkspaceStore extends EventTarget {
   private async retire(action: ActionRecord | undefined, id: string, change?: FlowChange) {
     if (change) { change.retirement = 'pending'; this.changed(); }
     try {
-      const recorded = action ?? { id: '', name: 'Cleanup', requests: [], pending: false };
-      const job = await this.request(recorded, `flows/${id}`, 'DELETE', undefined, undefined, { stage: 'update', flowId: id });
-      const response = recorded.requests.at(-1)!;
+      const { value: job, record: response } = await this.requestWithRecord(action, `flows/${id}`, 'DELETE', undefined, undefined, { stage: 'update', flowId: id });
       const jobId = job?.id ?? response.responseHeaders?.location?.match(/\/flow-delete-requests\/([^/?#]+)/)?.[1];
       if (change && response.status !== 202) { change.retirement = 'deleted'; this.changed(); }
       if (jobId && response.status === 202) {

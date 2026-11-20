@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test';
 const external = process.env.TASM_PLAYPEN_URL && process.env.TASM_DEMO_URL;
 if (!!process.env.TASM_PLAYPEN_URL !== !!process.env.TASM_DEMO_URL) throw new Error('Set both TASM_PLAYPEN_URL and TASM_DEMO_URL.');
 export default defineConfig({
-  testDir: './tests/browser', timeout: 90000, workers: 1,
+  testDir: './tests/browser', timeout: 90000, workers: process.env.CI ? 2 : 1, retries: process.env.CI ? 1 : 0,
   fullyParallel: true, forbidOnly: !!process.env.CI,
   reporter: process.env.CI ? [['list'], ['github'], ['html', { open: 'never' }]] : [['list']],
   use: { headless: true, trace: { mode: 'retain-on-failure', screenshots: false }, screenshot: 'only-on-failure' },

@@ -76,11 +76,10 @@ export async function importMedia(file: File): Promise<ImportedTrack[]> {
       const source = kind === 'video' ? new EncodedVideoPacketSource('avc') : new EncodedAudioPacketSource('aac');
       if (source instanceof EncodedVideoPacketSource) output.addVideoTrack(source); else output.addAudioTrack(source);
       await output.start();
-      const origin = await track.getFirstTimestamp();
       let start = Infinity, end = -Infinity, minTicks = Infinity, maxTicks = 0, packets = 0;
       for await (const packet of new EncodedPacketSink(track).packets()) {
         if (!packets && kind === 'video' && packet.type !== 'key') throw new Error('Video must begin with a keyframe. Export an H.264 MP4 and try again.');
-        const time = packet.timestamp - origin, ticks = Math.round(packet.duration * 90000);
+        const time = packet.timestamp - first, ticks = Math.round(packet.duration * 90000);
         start = Math.min(start, time); end = Math.max(end, time + packet.duration);
         minTicks = Math.min(minTicks, ticks); maxTicks = Math.max(maxTicks, ticks); packets++;
         await source.add(packet.clone({ timestamp: time }), { decoderConfig } as never);
@@ -103,7 +102,7 @@ export async function importMedia(file: File): Promise<ImportedTrack[]> {
         : { format: 'urn:x-nmos:format:audio', codec: 'audio/aac', container: 'video/mp2t', avg_bit_rate: Math.ceil(stats.averageBitrate / 1000),
             essence_parameters: { sample_rate: await audio.getSampleRate(), channels: await audio.getNumberOfChannels() } };
       result.push({ bytes: media, sample: { id: `upload-${sha256.slice(0, 24)}-${kind}`, name: file.name.slice(0, 160), kind, imported: true,
-        color: kind === 'video' ? '#8c9bff' : '#5cd6b1', file: '', bytes: media.byteLength, sha256, startNs: measuredStart, durationNs, technical } });
+        color: kind === 'video' ? '#8c9bff' : '#5cd6b1', file: '', bytes: media.byteLength, sha256, startNs: measuredStart, trackOffsetNs: ns(start), durationNs, technical } });
     }
     return result;
   } catch (error) {

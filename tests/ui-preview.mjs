@@ -37,7 +37,7 @@ try {
     const base = await start(app);
     const html = await get(base + '/preview.html'), text = await html.text();
     assert.equal(html.headers.get('cache-control'), 'no-store');
-    for (const link of ['href="./preview.html"', './preview.css', './preview.js']) assert(text.includes(link), link);
+    for (const link of ['href="./preview.html"', './preview.css', './preview-bootstrap.js']) assert(text.includes(link), link);
     if (app === 'playpen') assert(text.includes('href="https://demo.example/"'));
     else assert(!text.includes('https://playpen.example/') && !text.includes('Open Playpen'));
     assert(!text.includes('__PEER_URL__'));
@@ -47,6 +47,7 @@ try {
     assert((await css.text()).includes('/* refreshed copy */'));
     const welcome = await get(base + '/preview-onboarding.css'); assert.equal(welcome.headers.get('cache-control'), 'no-store');
     assert((await welcome.text()).includes('.welcome-dialog'));
+    assert((await (await get(base + '/preview-bootstrap.js')).text()).includes('./preview.js'));
     const js = await get(base + '/preview.js'); assert.equal(js.headers.get('cache-control'), 'no-store'); assert((await js.text()).length > 0);
     const jsPath = join(source, 'apps', app, 'main.ts'), script = await readFile(jsPath, 'utf8');
     await writeFile(jsPath, script + '\nconst = ;'); await get(base + '/preview.js', 500);

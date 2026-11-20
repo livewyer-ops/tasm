@@ -1,23 +1,8 @@
+import { curlCommand } from '../../apps/playpen/terminal';
 import { test, expect as browserExpect } from './fixtures';
-import { curlCommand, parseCurl } from '../../apps/playpen/terminal';
 
 const expect = browserExpect.configure({ timeout: 30000 });
 test.setTimeout(180000);
-
-test('curl preserves quoted URLs, headers and bodies', () => {
-  const api = 'https://playpen.example/api/';
-  const record = {
-    method: 'POST', url: api + 'flows/example/segments?limit=1&offset=2',
-    headers: { 'content-type': 'application/json', 'x-label': "director's notes" },
-    body: [{ label: "It's called \"News\".", path: 'A\\B' }],
-  };
-  expect(parseCurl(curlCommand(record), api)).toMatchObject({
-    method: record.method, url: record.url, headers: record.headers, data: JSON.stringify(record.body),
-  });
-  expect(() => parseCurl('curl https://another.example/api/sources', api)).toThrow('Choose a URL');
-  expect(() => parseCurl("curl -d 'unfinished", api)).toThrow('quoted');
-  expect(() => parseCurl('curl -L /api/sources', api)).toThrow('Unsupported');
-});
 
 test('resource clicks, curl completion and live requests use the current workspace', async ({ page }) => {
   await page.goto('/');

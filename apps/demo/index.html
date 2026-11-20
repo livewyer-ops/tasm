@@ -36,7 +36,7 @@
           <div class="instruction">
             <p id="step-label" class="eyebrow">Step 1 of 8</p>
             <h2 id="step-title" tabindex="-1">Step 1. Create a source</h2>
-            <div id="description" tabindex="0" aria-label="Explanation"><p id="explanation">Start by creating a source for this sample video. A source identifies a piece of content, such as a recording. Its flows describe the media available for that content.</p><a id="tams-reference" href="https://github.com/bbc/tams/blob/34fb31b80cb8afb3194f28c8b787301379caacf8/README.md#sources" target="_blank" rel="noopener noreferrer">Read more in the TAMS reference</a></div>
+            <div id="description" role="region" tabindex="0" aria-label="Explanation"><p id="explanation">Start by creating a source for this sample video. A source identifies a piece of content, such as a recording. Its flows describe the media available for that content.</p><a id="tams-reference" href="https://github.com/bbc/tams/blob/34fb31b80cb8afb3194f28c8b787301379caacf8/README.md#sources" target="_blank" rel="noopener noreferrer">Read more in the TAMS reference</a></div>
             <pre id="api-result" tabindex="0" aria-label="API query and response" hidden></pre>
             <div class="actions"><button id="primary" class="primary" disabled>Create a source</button></div>
           </div>
@@ -91,6 +91,6 @@
   <dialog id="reset-dialog" aria-labelledby="reset-title" aria-describedby="reset-warning"><h2 id="reset-title">Reset Demo?</h2><p id="reset-warning">Stops active work and permanently clears all Demo data in this browser, including media, imported samples, preferences and cached app files. Close other Demo tabs first. A connection is needed to reload. This cannot be undone.</p><p id="reset-status" role="status" aria-live="polite"></p><div class="dialog-buttons"><button id="reset-cancel" autofocus>Cancel</button><button id="reset-confirm">Reset Demo</button></div></dialog>
   <dialog class="welcome-dialog" id="demo-about" aria-labelledby="demo-about-title"><form method="dialog"><button class="welcome-close" aria-label="Close" title="Close welcome">×</button><h2 id="demo-about-title">Welcome to TAMS in Practice</h2><p>TAMS (Time Addressable Media Store), developed by <a href="https://github.com/bbc/tams" target="_blank" rel="noopener noreferrer">BBC R&amp;D</a>, lets applications store and retrieve media by time via an API.</p><p>In this demo, you’ll store a short video, play a chosen time range and create an excerpt without making another copy of the media. Along the way, you’ll learn what sources, flows and segments mean in TAMS, and see the API calls behind each action.</p><p>The demo runs in your browser using TASM, a full TAMS implementation developed at LiveWyer and compiled to WebAssembly.</p><label class="result-tip-preference"><input id="show-result-tips" type="checkbox" checked> Show step explanations</label><div class="dialog-buttons"><button autofocus>Start demo</button></div></form></dialog>
   <script src="./startup.js"></script>
-  <script type="module">import('./demo.js').catch(error => window.tasmStartup.fail(error));</script>
+  <script type="module" src="./bootstrap.js"></script>
 </body>
 </html>

@@ -26,3 +26,5 @@ Choose the video and audio flows below Preview. Gaps play as black or silence. *
 Select a request or resource ID to open its curl command in **Terminal**. Running a command sends a real request to this browser's store. Writes change stored data.
 
 **Reset** deletes the Playpen's local media, drafts and settings. Close other Playpen tabs first.
+
+To move a selected clip or segment with the keyboard, choose its destination flow, enter a start time and activate **Move**. Delete and Backspace remove the selection when focus is on the timeline or its edit buttons. When placing both tracks of an imported file at the same time, Playpen preserves their relative audio and video start times.

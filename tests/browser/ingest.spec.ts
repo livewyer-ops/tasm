@@ -1,17 +1,6 @@
-import { test, expect as browserExpect } from './fixtures';
+import { test, expect as browserExpect, save, ready, named, savedWorkspace, recordWrites } from './fixtures';
 import type { Page } from '@playwright/test';
 const expect = browserExpect.configure({ timeout: 60000 });
-async function ready(page: Page) {
-  await expect(page.locator('body')).toHaveAttribute('data-ready', 'true', { timeout: 90000 });
-  await expect(page.locator('body')).not.toHaveClass(/busy/, { timeout: 90000 });
-}
-async function named(page: Page, button: string, label: string) {
-  await page.locator(button).click(); await page.locator('#entity-name').fill(label); await page.locator('#dialog-submit').click(); await expect(page.locator('#name-dialog')).not.toBeVisible();
-  if (button === '#new-source') await expect(page.locator('#source-title')).toHaveText(label);
-  else await expect(page.getByRole('button', { name: `Select ${label} flow`, exact: true })).toBeVisible();
-  if (button !== '#new-source') { await page.locator('#save-draft').click(); await ready(page); }
-  await ready(page);
-}
 async function open(page: Page) {
   await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto('/'); await ready(page);
   await named(page, '#new-source', 'Ingest laboratory'); await named(page, '#add-video', 'Picture');
@@ -19,23 +8,9 @@ async function open(page: Page) {
   await expect(page.locator('#storage-summary')).toHaveText('No objects stored yet.');
   await expect(page.locator('#ingest-stages')).toHaveCount(0);
   await page.locator('#ingest-controls > summary').click();
-  await page.evaluate(() => {
-    const realFetch = window.fetch; (window as any).writes = [];
-    window.fetch = async (input, init) => {
-      const response = await realFetch(input, init);
-      if (init?.method && init.method !== 'GET') (window as any).writes.push({ url: String(input), method: init.method, status: response.status, body: typeof init.body === 'string' ? JSON.parse(init.body) : null });
-      return response;
-    };
-  });
+  await recordWrites(page);
 }
-async function state(page: Page) {
-  return page.evaluate(async () => {
-    const roots = await (await fetch('/api/flows?tag.tasm.playpen.kind=source')).json();
-    const root = roots[0], flows = [];
-    for (const member of root.flow_collection) flows.push({ flow: await (await fetch(`/api/flows/${member.id}`)).json(), segments: await (await fetch(`/api/flows/${member.id}/segments?include_object_timerange=true`)).json() });
-    return { root, flows, writes: (window as any).writes };
-  });
-}
+async function state(page: Page) { return { ...await savedWorkspace(page, true), writes: await page.evaluate(() => (window as any).writes) }; }
 async function add(page: Page, id: string) { await page.locator(`[data-sample="${id}"]`).click(); await page.locator('#add-sample').click(); await page.locator('#save-draft').click(); }
 
 
@@ -89,7 +64,7 @@ test('step mode sends one write, groups real objects, reuses bytes and reads a b
   await page.locator('[data-request]').last().click();
   await expect(page.locator('.clip.selected')).toHaveCount(1);
   await expect(page.locator('#objects tr.selected [data-object]')).toHaveAttribute('data-object', ids[0]);
-  await page.locator('.clip').click(); await page.locator('#block-start').fill('2'); await page.locator('#move-block').click(); if (await page.locator('#save-draft').isEnabled()) await page.locator('#save-draft').click(); await ready(page);
+  await page.locator('.clip').click(); await page.locator('#block-start').fill('2'); await page.locator('#move-block').click(); await save(page); await ready(page);
   await expect(page.locator('#ingest-summary')).toContainText('4 reused · 0 bytes uploaded');
   const moved = await state(page);
   expect(moved.flows[0].segments.map((s: any) => s.object_id)).toEqual(ids);
@@ -110,8 +85,7 @@ test('step mode sends one write, groups real objects, reuses bytes and reads a b
     .some(t => Math.abs(t - 4.5) <= 0.04))).toBe(true);
   const stopped = await page.locator('video').evaluate((v: HTMLVideoElement) => v.currentTime);
   expect(Math.abs(stopped - 4.5)).toBeLessThanOrEqual(0.04);
-  await page.waitForTimeout(200);
-  expect(await page.locator('video').evaluate((v: HTMLVideoElement) => v.currentTime)).toBeCloseTo(stopped, 2);
+  expect(await page.locator('video').evaluate((v: HTMLVideoElement) => v.paused)).toBe(true);
   await page.locator('#range-end').fill('5'); await expect(page.locator('#play-range')).toBeDisabled();
   const storedSummary = await page.locator('#storage-summary').textContent();
   await page.evaluate(() => {
@@ -191,7 +165,7 @@ test('cancel and registration failure preserve the published source; lost public
       return result;
     };
   }, recovered.root.id);
-  await page.locator('.clip').click(); await page.locator('#block-start').fill('4'); await page.locator('#move-block').click(); if (await page.locator('#save-draft').isEnabled()) await page.locator('#save-draft').click();
+  await page.locator('.clip').click(); await page.locator('#block-start').fill('4'); await page.locator('#move-block').click(); await save(page, false);
   await expect(page.locator('#notice')).toContainText('Injected collection read failure'); await ready(page);
   await expect(page.locator('.flow-transition')).toContainText('Publication unconfirmed');
   expect(await page.evaluate(() => (window as any).unconfirmedDeletes)).toEqual([]);

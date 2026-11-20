@@ -1,4 +1,5 @@
-import { WorkspaceStore, samples, seconds, blockEnd, bounds, parseTimestamp, planPlacement, reusableSample, addDraftLane, editWorkspace, laneSnapshot, type DraftWorkspace, type MovingItem, type ActionRecord, type Block, type Flow, type Kind, type Lane, type Sample, type Workspace } from '../shared/workspace-store';
+import { onFrame, setText } from '../shared/render';
+import { WorkspaceStore, RequestError, samples, seconds, blockEnd, bounds, parseTimestamp, planPlacement, reusableSample, addDraftLane, editWorkspace, laneSnapshot, type DraftWorkspace, type MovingItem, type ActionRecord, type Block, type Flow, type Kind, type Lane, type Sample, type Workspace } from '../shared/workspace-store';
 import { Preview, sourceEnd } from '../shared/player';
 import { librarySamples, saveLibrarySamples, removeLibrarySample, mediaWorker, libraryDraft, saveLibraryDraft } from '../shared/sample-library';
 import { escape, requestDetails, resourceButton, wireReview } from './api-review';
@@ -24,7 +25,7 @@ let filter = 'all', zoom = 1, busy = true, selectedAction = '', selectedRequest 
 let view: 'flows' | 'segments' = 'flows', selectedSegment = -1, previewBusy = false, previewVersion = 0, workspaceVersion = 0;
 let noticeTimer: ReturnType<typeof setTimeout>;
 let followRequests = true, retryAction: (() => void) | undefined;
-let detailKey = '', detailHtml = '', selectedObject = '', ingestId = '';
+let historyHtml = '', detailKey = '', detailHtml = '', selectedObject = '', ingestId = '';
 let inspectIngest = false, rangeReady = false;
 const storageChecks = new Map<string, { state: string; bytes?: number }>();
 let checkingStorage = false;
@@ -39,35 +40,55 @@ function scheduleNoticeDismissal() {
   clearTimeout(noticeTimer);
   if (!$('notice').hidden && !$('notice').classList.contains('error')) noticeTimer = setTimeout(() => $('notice').hidden = true, 4000);
 }
-function notify(message: string, error = false) {
-  if (resetting) return;
+function notify(message: string, error = false, retry?: () => void) {
+  if (resetting || reloadRequired) return;
+  showNotice(message, error, retry);
+}
+function showNotice(message: string, error: boolean, retry?: () => void) {
+  retryAction = retry;
   $('notice-text').textContent = message; $('notice').classList.toggle('error', error); $('notice').hidden = false;
   $('retry-action').hidden = !error || !retryAction;
   scheduleNoticeDismissal();
 }
+let reloadRequired = false;
+async function withBusy<T>(work: () => Promise<T>): Promise<T> {
+  busy = true; controls();
+  try { return await work(); }
+  finally { busy = resetting || reloadRequired; controls(); }
+}
+async function reloadAfterSave(work: () => Promise<void>): Promise<boolean> {
+  reloadRequired = true;
+  try { await work(); reloadRequired = false; return true; }
+  catch (error) {
+    if (resetting) return false;
+    $('runtime-status').textContent = 'Saved · reload required';
+    showNotice(`Saved, but the workspace could not reload: ${(error as Error).message}`, true, () => void withBusy(() => reloadAfterSave(work)));
+    return false;
+  }
+}
 function controls() {
   if (resetting) { busy = true; $('runtime-status').textContent = 'Resetting Playpen...'; return; }
-  if (!busy && store) $('runtime-status').textContent = 'Browser store ready';
+  if (!busy && store) setText($('runtime-status'), 'Browser store ready');
   const disable = (id: string, value: boolean) => { const element = $<HTMLButtonElement>(id); if (element) element.disabled = value; };
   disable('save-draft', busy || libraryBusy || !draft); disable('discard-draft', busy || libraryBusy || !draft);
   $('draft-status').textContent = draft ? draftError ? 'Unsaved changes · local storage failed' : draftPending ? 'Unsaved changes · storing locally…' : 'Unsaved changes · stored locally' : 'All changes saved';
   const savedMedia = publishedWorkspace?.lanes.some(lane => lane.blocks.length);
   const draftMedia = draft?.workspace.lanes.some(lane => lane.blocks.length);
-  $('preview-caption').textContent = draft ? savedMedia ? 'Preview shows the saved arrangement. Save to preview your edits.' : draftMedia ? 'Save your arrangement to preview these clips.' : 'Add clips, then Save to prepare playback.'
-    : previewBusy ? 'Preparing the saved arrangement for playback...' : savedMedia ? preview?.loaded ? 'Preview is up to date. Gaps play as black or silence.' : 'The arrangement is saved. Preview is unavailable; use Retry to load it.' : 'Add clips to an arrangement to preview them.';
+  $('preview-caption').textContent = draft ? 'Preview shows the saved arrangement. Save to preview your edits.'
+    : previewBusy ? 'Preparing the saved arrangement for playback...' : preview?.loaded ? 'Preview is up to date. Gaps play as black or silence.' : 'The arrangement is saved. Preview is unavailable; use Retry to load it.';
   $('preview-caption').classList.toggle('draft-preview', !!draft);
   $('preview-caption').hidden = !savedMedia;
   $('preview-empty').querySelector('strong')!.textContent = draftMedia ? 'Clips are ready to save' : 'No media yet';
   $('preview-empty').querySelector('p')!.textContent = draftMedia ? 'Save your arrangement to preview these clips.' : 'Add a flow, then place a sample on its timeline.';
   disable('rename-source', busy || libraryBusy || !!draft || !workspace);
-  disable('new-source', busy); disable('empty-create', busy);
+  disable('empty-create', busy || libraryBusy);
   for (const id of ['add-video', 'add-audio']) disable(id, busy || libraryBusy || !workspace);
   for (const id of ['import-media', 'media-file']) disable(id, !libraryReady || libraryBusy);
   $('library-section').setAttribute('aria-busy', String(libraryBusy));
   $('import-cancel').hidden = !importing;
   document.querySelectorAll<HTMLButtonElement>('[data-remove-sample]').forEach(button => button.disabled = busy || libraryBusy);
   disable('add-sample', busy || libraryBusy || !workspace?.lanes.some(l => l.id === selectedLane && l.kind === library.find(s => s.id === selectedSample)?.kind));
-  for (const id of ['preview-video', 'preview-audio', 'sources', 'block-start']) ($<HTMLSelectElement>(id)).disabled = busy || !workspace;
+  for (const id of ['preview-video', 'preview-audio', 'block-target', 'block-start']) ($<HTMLSelectElement>(id)).disabled = busy || !workspace;
   disable('new-source', busy || libraryBusy); disable('sources', busy || libraryBusy || !workspace);
   disable('read-range', busy || !workspace || !sourceEnd(publishedWorkspace)); disable('play-range', busy || previewBusy || !rangeReady);
   for (const id of ['seek-button', 'seek-time']) disable(id, busy || previewBusy || !workspace);
@@ -82,7 +103,7 @@ function controls() {
 function waveform(sample: Sample, label = '') {
   const values = sample.waveform ?? [], peak = Math.max(...values, 0.001);
   return `<svg viewBox="0 0 256 48" preserveAspectRatio="none" ${label ? `role="img" aria-label="${escape(label)}"` : 'aria-hidden="true"'}>${values.map((v, i) => {
-    const height = Math.max(2, v / peak * 40); return `<rect x="${i * 4}" y="${24 - height / 2}" width="2" height="${height}" rx="1" fill="${sample.color}"/>`;
+    const height = Math.max(2, v / peak * 40); return `<rect x="${i * 4}" y="${24 - height / 2}" width="2" height="${height}" rx="1" fill="${escape(sample.color)}"/>`;
   }).join('')}</svg>`;
 }
 function flowFormat(lane: Lane) {
@@ -99,12 +120,12 @@ function clipMarkup(lane: Lane, block: Block, index?: number) {
   const [start, end] = segment ? bounds(segment.timerange) : [block.start, blockEnd(block)];
   const selected = selectedLane === lane.id && selectedBlock === block.key && (index === undefined || index === Math.max(0, selectedSegment));
   const name = `${block.sample.name}${index === undefined ? '' : ` · ${index + 1}`}`;
-  return `<button class="clip ${lane.kind} ${segment ? 'segment-clip' : ''} ${!block.segments.length ? 'draft-clip' : ''} ${selected ? 'selected' : ''}" data-block="${escape(block.key)}" data-block-lane="${lane.id}" ${index === undefined ? '' : `data-edit-segment-index="${index}" data-object-id="${escape(segment!.object_id)}"`} style="left:${seconds(start) * pixels()}px;width:${seconds(end - start) * pixels()}px;--clip-color:${block.sample.color}" aria-label="${escape(name)} at ${seconds(start).toFixed(2)} seconds" title="${escape(name)} · ${fmt(seconds(start))} → ${fmt(seconds(end))}${!block.segments.length ? ' · Unsaved clip; Save to see its segments' : ''}">${segment ? '' : segmentMarks(block)}${block.sample.thumbnail ? `<img src="./samples/${block.sample.thumbnail}" draggable="false" alt="">` : waveform(block.sample)}<span class="clip-name">${escape(name)}</span><span class="clip-duration">${seconds(end - start).toFixed(2)}s</span></button>`;
+  return `<button class="clip ${lane.kind} ${segment ? 'segment-clip' : ''} ${!block.segments.length ? 'draft-clip' : ''} ${selected ? 'selected' : ''}" data-block="${escape(block.key)}" data-block-lane="${escape(lane.id)}" ${index === undefined ? '' : `data-edit-segment-index="${index}" data-object-id="${escape(segment!.object_id)}"`} style="left:${seconds(start) * pixels()}px;width:${seconds(end - start) * pixels()}px;--clip-color:${escape(block.sample.color)}" aria-label="${escape(name)} at ${seconds(start).toFixed(2)} seconds" title="${escape(name)} · ${fmt(seconds(start))} → ${fmt(seconds(end))}${!block.segments.length ? ' · Unsaved clip; Save to see its segments' : ''}">${segment ? '' : segmentMarks(block)}${block.sample.thumbnail ? `<img src="./samples/${escape(block.sample.thumbnail)}" draggable="false" alt="">` : waveform(block.sample)}<span class="clip-name">${escape(name)}</span><span class="clip-duration">${seconds(end - start).toFixed(2)}s</span></button>`;
 }
 function renderTransitions() {
   if (!store) return;
   const focusedResource = $('flow-identifiers').querySelector<HTMLElement>(':focus')?.dataset.resource;
-  $('flow-identifiers').innerHTML = (workspace?.lanes ?? []).map(lane => `<div class="flow-identifier" data-lane-id="${lane.id}"><strong>${escape(lane.flow.label)}</strong> ${lane.flow.id ? resourceButton('flows', lane.flow.id, shortFlowId(lane.flow.id)) : '<span class="flow-id">Unsaved flow</span>'}<small class="flow-transition" data-transition="${lane.id}"></small></div>`).join('');
+  $('flow-identifiers').innerHTML = (workspace?.lanes ?? []).map(lane => `<div class="flow-identifier" data-lane-id="${escape(lane.id)}"><strong>${escape(lane.flow.label)}</strong> ${lane.flow.id ? resourceButton('flows', lane.flow.id, shortFlowId(lane.flow.id)) : '<span class="flow-id">Unsaved flow</span>'}<small class="flow-transition" data-transition="${escape(lane.id)}"></small></div>`).join('');
   if (focusedResource) $('flow-identifiers').querySelector<HTMLButtonElement>(`[data-resource="${CSS.escape(focusedResource)}"]`)?.focus({ preventScroll: true });
   for (const element of document.querySelectorAll<HTMLElement>('[data-transition]')) {
     const change = store.actions.flatMap(a => a.flows ?? []).find(f => f.laneId === element.dataset.transition);
@@ -123,16 +144,17 @@ function fillResource(path: string) {
 function renderSamples() {
   const focused = (document.activeElement as HTMLElement)?.dataset.sample;
   $('sample-count').textContent = String(library.length);
-  $('samples').innerHTML = library.filter(s => filter === 'all' || (filter === 'speech' ? s.category === 'speech' : s.kind === filter)).map(sample => `<div class="sample-entry"><button class="sample-card ${selectedSample === sample.id ? 'selected' : ''}" data-sample="${escape(sample.id)}" aria-label="Select ${escape(sample.name)} ${sample.kind} sample" aria-pressed="${selectedSample === sample.id}"><span class="sample-art">${sample.imported ? `<span class="sample-icon" aria-hidden="true">${sample.kind === 'video' ? '▷' : '♫'}</span>` : sample.thumbnail ? `<img src="./samples/${sample.thumbnail}" alt="" draggable="false">` : waveform(sample)}</span><span class="sample-info"><strong>${escape(sample.name)}</strong><small>${escape(sample.kind)} · ${seconds(BigInt(sample.durationNs)).toFixed(2)} s</small></span><span aria-hidden="true">⠿</span></button>${sample.imported ? `<button class="remove-sample" data-remove-sample="${escape(sample.id)}" aria-label="Remove ${escape(sample.name)} ${sample.kind} from library">Remove from library</button>` : ''}</div>`).join('');
+  $('samples').innerHTML = library.filter(s => filter === 'all' || (filter === 'speech' ? s.category === 'speech' : s.kind === filter)).map(sample => `<div class="sample-entry"><button class="sample-card ${selectedSample === sample.id ? 'selected' : ''}" data-sample="${escape(sample.id)}" aria-label="Select ${escape(sample.name)} ${escape(sample.kind)} sample" aria-pressed="${selectedSample === sample.id}"><span class="sample-art">${sample.imported ? `<span class="sample-icon" aria-hidden="true">${sample.kind === 'video' ? '▷' : '♫'}</span>` : sample.thumbnail ? `<img src="./samples/${escape(sample.thumbnail)}" alt="" draggable="false">` : waveform(sample)}</span><span class="sample-info"><strong>${escape(sample.name)}</strong><small>${escape(sample.kind)} · ${seconds(BigInt(sample.durationNs)).toFixed(2)} s</small></span><span aria-hidden="true">⠿</span></button>${sample.imported ? `<button class="remove-sample" data-remove-sample="${escape(sample.id)}" aria-label="Remove ${escape(sample.name)} ${escape(sample.kind)} from library">Remove from library</button>` : ''}</div>`).join('');
   if (focused) document.querySelector<HTMLButtonElement>(`[data-sample="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
 }
 function renderSources() {
-  $('sources').innerHTML = sources.length ? sources.map(source => `<option value="${source.id}" ${workspace?.root.id === source.id ? 'selected' : ''}>${escape(source.label ?? 'Untitled source')}</option>`).join('') : '<option value="">No source yet</option>';
+  $('sources').innerHTML = sources.length ? sources.map(source => `<option value="${escape(source.id)}" ${workspace?.root.id === source.id ? 'selected' : ''}>${escape(source.label ?? 'Untitled source')}</option>`).join('') : '<option value="">No source yet</option>';
   $('source-title').textContent = workspace?.root.label ?? 'No source yet';
   $('source-id').innerHTML = workspace ? `Source ID ${resourceButton('sources', workspace.root.source_id)}` : '';
   $('rename-source').hidden = !workspace;
 }
 function renderTimeline() {
+  $('timeline').dataset.pxPerSecond = String(pixels());
   const focused = (document.activeElement as HTMLElement)?.dataset;
   const focusSelector = focused?.block ? `[data-block="${CSS.escape(focused.block)}"]${focused.editSegmentIndex !== undefined ? `[data-edit-segment-index="${focused.editSegmentIndex}"]` : ''}` : focused?.selectLane ? `[data-select-lane="${CSS.escape(focused.selectLane)}"]` : undefined;
   const lanes = workspace?.lanes ?? [];
@@ -151,7 +173,7 @@ function renderTimeline() {
   $('timeline').style.width = `${width + 156}px`;
   $('timeline').style.setProperty('--grid-size', `${pixels() * (zoom < 1 ? 5 : 2)}px`);
   const tick = zoom < 1 ? 5 : zoom < 2 ? 2 : 1;
-  $('timeline').innerHTML = `<div class="ruler" aria-label="Seek on the timeline">${Array.from({ length: Math.ceil(span / tick) }, (_, i) => `<span class="ruler-label" style="left:${i * tick * pixels()}px">${fmt(i * tick).slice(0, 5)}</span>`).join('')}</div><div class="ruler-corner">${view.toUpperCase()} / SECONDS</div>${lanes.map(lane => `<div class="lane" data-lane="${lane.id}"><button class="lane-header ${selectedLane === lane.id ? 'active' : ''}" data-select-lane="${lane.id}" title="Flow ${lane.flow.id}" aria-label="Select ${escape(lane.flow.label)} flow" aria-description="FLOW ID ${lane.flow.id}" aria-pressed="${selectedLane === lane.id}"><span class="lane-icon" aria-hidden="true">${lane.kind === 'video' ? '▷' : '♫'}</span><span><strong>${escape(lane.flow.label)}</strong><small>${escape(flowFormat(lane))}</small>${preview?.selection[lane.kind] === lane.id ? '<small class="preview-badge">In preview</small>' : ''}</span></button><div class="lane-track ${selectedLane === lane.id ? 'active' : ''}" data-track="${lane.id}">${lane.blocks.map(block => view === 'flows' || !block.segments.length ? clipMarkup(lane, block) : block.segments.map((_, i) => clipMarkup(lane, block, i)).join('')).join('')}</div></div>`).join('')}<div class="end-marker" style="left:${156 + sourceEnd(workspace) * pixels()}px"><span>END</span></div><div id="playhead" class="playhead"></div>`;
+  $('timeline').innerHTML = `<div class="ruler" aria-label="Seek on the timeline">${Array.from({ length: Math.ceil(span / tick) }, (_, i) => `<span class="ruler-label" style="left:${i * tick * pixels()}px">${fmt(i * tick).slice(0, 5)}</span>`).join('')}</div><div class="ruler-corner">${view.toUpperCase()} / SECONDS</div>${lanes.map(lane => `<div class="lane" data-lane="${escape(lane.id)}"><button class="lane-header ${selectedLane === lane.id ? 'active' : ''}" data-select-lane="${escape(lane.id)}" title="Flow ${escape(lane.flow.id)}" aria-label="Select ${escape(lane.flow.label)} flow" aria-description="FLOW ID ${escape(lane.flow.id)}" aria-pressed="${selectedLane === lane.id}"><span class="lane-icon" aria-hidden="true">${lane.kind === 'video' ? '▷' : '♫'}</span><span><strong>${escape(lane.flow.label)}</strong><small>${escape(flowFormat(lane))}</small>${preview?.selection[lane.kind] === lane.id ? '<small class="preview-badge">In preview</small>' : ''}</span></button><div class="lane-track ${selectedLane === lane.id ? 'active' : ''}" data-track="${escape(lane.id)}">${lane.blocks.map(block => view === 'flows' || !block.segments.length ? clipMarkup(lane, block) : block.segments.map((_, i) => clipMarkup(lane, block, i)).join('')).join('')}</div></div>`).join('')}<div class="end-marker" style="left:${156 + sourceEnd(workspace) * pixels()}px"><span>END</span></div><div id="playhead" class="playhead"></div>`;
   renderPending(); renderTransitions(); updatePlayhead(); updateSelection(); renderObjects(); controls();
   if (focusSelector) document.querySelector<HTMLButtonElement>(focusSelector)?.focus({ preventScroll: true });
 }
@@ -177,7 +199,9 @@ function updateSelection() {
   $('selection-label').closest<HTMLElement>('.selection-bar')!.hidden = !activeIngest && !selection;
   $('selection-label').textContent = activeIngest ? 'Saving draft · provisional objects · preview uses the saved source' : selection?.block.sample.name ?? '';
   if (selection) {
-    const { block } = selection;
+    const { block, lane } = selection;
+    const target = $<HTMLSelectElement>('block-target');
+    target.replaceChildren(...workspace!.lanes.filter(l => l.kind === lane.kind).map(l => new Option(l.flow.label ?? l.id, l.id, false, l.id === lane.id)));
     $<HTMLInputElement>('block-start').value = String(block.start / 1000000000n) + '.' + String(block.start % 1000000000n).padStart(9, '0');
     $('block-bounds').textContent = `End ${fmt(seconds(blockEnd(block)))} · Duration ${seconds(blockEnd(block) - block.start).toFixed(3)}s`;
   }
@@ -203,12 +227,28 @@ function renderRequests() {
   $('activity-summary').textContent = `${action.name} · ${state}`;
   $('follow-requests').textContent = followRequests ? 'Following live' : 'Resume live';
   $('follow-requests').setAttribute('aria-pressed', String(followRequests));
-  $('action-history').innerHTML = store.actions.map(a => `<option value="${a.id}" ${a.id === action.id ? 'selected' : ''}>${escape(a.name)}${a.pending ? ' …' : a.error ? ' · failed' : ''}</option>`).join('');
+  const history = store.actions.map(a => `<option value="${a.id}" ${a.id === action.id ? 'selected' : ''}>${escape(a.name)}${a.pending ? ' …' : a.error ? ' · failed' : ''}</option>`).join('');
+  if (history !== historyHtml) { $('action-history').innerHTML = history; historyHtml = history; }
   $('request-count').textContent = String(action.requests.length);
   const index = selectedRequest < 0 ? action.requests.length - 1 : Math.min(selectedRequest, action.requests.length - 1);
-  const focusedRequest = (document.activeElement as HTMLElement)?.dataset.request;
-  $('requests').innerHTML = action.requests.map((r, i) => `<button class="request-row ${i === index ? 'selected' : ''} ${r.error ? 'error' : ''} ${selectedObject && (r.objectId === selectedObject || r.objectIds?.includes(selectedObject)) ? 'related' : ''}" data-request="${i}" aria-pressed="${i === index}" title="${escape(r.url)}"><span class="method">${r.method}</span><span class="path">${escape(new URL(r.url).pathname.replace(new URL(store.apiUrl).pathname.replace(/\/$/, ''), ''))}</span><span>${r.status ?? '…'}</span><small>${r.ms === undefined ? 'Pending' : `${r.ms} ms`}${r.error ? ' · failed' : ''}</small></button>`).join('');
-  if (focusedRequest) $('requests').querySelector<HTMLButtonElement>(`[data-request="${CSS.escape(focusedRequest)}"]`)?.focus({ preventScroll: true });
+  const rows = $('requests');
+  if (rows.dataset.action !== action.id) { rows.replaceChildren(); rows.dataset.action = action.id; }
+  action.requests.forEach((r, i) => {
+    let row = rows.children[i] as HTMLButtonElement | undefined;
+    if (!row) {
+      row = document.createElement('button');
+      row.className = 'request-row'; row.dataset.request = String(i); row.title = r.url;
+      row.innerHTML = '<span class="method"></span><span class="path"></span><span></span><small></small>';
+      row.children[0].textContent = r.method;
+      row.children[1].textContent = new URL(r.url).pathname.replace(new URL(store.apiUrl).pathname.replace(/\/$/, ''), '');
+      rows.append(row);
+    }
+    row.classList.toggle('selected', i === index); row.classList.toggle('error', !!r.error);
+    row.classList.toggle('related', !!selectedObject && (r.objectId === selectedObject || !!r.objectIds?.includes(selectedObject)));
+    row.setAttribute('aria-pressed', String(i === index));
+    setText(row.children[2], String(r.status ?? '…'));
+    setText(row.children[3], r.ms === undefined ? 'Pending' : `${r.ms} ms${r.error ? ' · failed' : ''}`);
+  });
   const record = action.requests[index];
   $<HTMLButtonElement>('copy-request').disabled = !record;
   if (!record) { detailKey = ''; $('request-detail').innerHTML = '<p class="api-empty">No requests recorded yet.</p>'; return; }
@@ -230,7 +270,7 @@ async function updatePreview(resume = false) {
   const choices = preview.choices(publishedWorkspace);
   for (const kind of ['video', 'audio'] as const) {
     const select = $<HTMLSelectElement>(`preview-${kind}`);
-    select.innerHTML = `<option value="">None · ${kind === 'video' ? 'black' : 'silence'}</option>` + (publishedWorkspace?.lanes.filter(l => l.kind === kind).map(l => `<option value="${l.id}">${escape(l.flow.label)}</option>`).join('') ?? '');
+    select.innerHTML = `<option value="">None · ${kind === 'video' ? 'black' : 'silence'}</option>` + (publishedWorkspace?.lanes.filter(l => l.kind === kind).map(l => `<option value="${escape(l.id)}">${escape(l.flow.label)}</option>`).join('') ?? '');
     select.value = choices[kind];
   }
   const hasBlocks = publishedWorkspace?.lanes.some(l => l.blocks.length);
@@ -241,7 +281,7 @@ async function updatePreview(resume = false) {
     await preview.update(publishedWorkspace, resume);
     if (version !== previewVersion || resetting) return;
     $('preview-status').textContent = hasBlocks ? 'Source ready · press play to preview' : 'Waiting for media';
-  } catch (error) { if (version !== previewVersion || resetting) return; retryAction = () => void updatePreview(); $('preview-status').textContent = 'Preview could not load'; notify(`Preview could not load: ${(error as Error).message}`, true); }
+  } catch (error) { if (version !== previewVersion || resetting) return; $('preview-status').textContent = 'Preview could not load'; notify(`Preview could not load: ${(error as Error).message}`, true, () => void updatePreview()); }
   finally { if (version === previewVersion) { previewBusy = false; controls(); } }
 }
 async function refresh(rootId = workspace?.root.id, afterTerminalWrite = false) {
@@ -265,14 +305,19 @@ async function refresh(rootId = workspace?.root.id, afterTerminalWrite = false) 
 async function run(name: string, work: (action: ActionRecord) => Promise<void>, action?: ActionRecord) {
   if (busy) return;
   retryAction = undefined; $('notice').hidden = true;
-  let committed = false;
-  busy = true; preview.pause(); controls(); $('runtime-status').textContent = 'Saving…';
-  try { await store.action(name, work, action); committed = true; pendingPlacement = undefined; $('runtime-status').textContent = 'Saved · loading arrangement…'; await refresh(); }
-  catch (error) { pendingPlacement = undefined; retryAction = committed ? () => void refresh().catch(e => notify(e.message, true)) : () => void run(name, work); notify(`${committed ? 'Saved, but the workspace could not reload: ' : ''}${(error as Error).message}`, true); try { await refresh(); } catch { /* retain last visible state */ } }
-  finally { busy = false; if (!resetting) $('runtime-status').textContent = 'Browser store ready'; controls(); }
+  await withBusy(async () => {
+    preview.pause(); $('runtime-status').textContent = 'Saving…';
+    try { await store.action(name, work, action); }
+    catch (error) {
+      notify((error as Error).message, true, () => void run(name, work));
+      try { await refresh(); } catch { /* retain last visible state */ }
+      return;
+    } finally { pendingPlacement = undefined; }
+    await reloadAfterSave(() => refresh());
+  });
 }
 function changeDraft(next: Workspace, name: string) {
-  if (!publishedWorkspace || resetting) return;
+  if (!publishedWorkspace || resetting || reloadRequired) return;
   const same = next.lanes.length === publishedWorkspace.lanes.length && next.lanes.every((lane, i) => lane.id === publishedWorkspace!.lanes[i].id && laneSnapshot(lane) === laneSnapshot(publishedWorkspace!.lanes[i]));
   draft = same ? undefined : { base: draft?.base ?? structuredClone(publishedWorkspace), workspace: next };
   workspace = next;
@@ -290,36 +335,34 @@ async function saveDraft(stepThrough = $<HTMLInputElement>('step-through').check
   if (busy || libraryBusy || !draft) return !draft;
   $<HTMLDetailsElement>('storage').open = true;
   const saving = structuredClone(draft);
-  busy = true; retryAction = undefined; $('notice').hidden = true; preview.pause(); controls();
-  let published = false;
+  retryAction = undefined; $('notice').hidden = true; preview.pause();
   const finish = async () => {
     await saveLibraryDraft(draftKey(saving.base.root.id), undefined, draftAbort.signal);
     draft = undefined; draftError = false;
     await refresh(saving.base.root.id);
   };
-  try {
-    await draftWrites;
-    await store.action('Save draft', a => store.saveDraft(a, saving, stepThrough));
-    published = true;
-    await finish();
+  return withBusy(async () => {
+    try {
+      await draftWrites;
+      await store.action('Save draft', a => store.saveDraft(a, saving, stepThrough));
+    } catch (error) {
+      notify(`Draft retained. ${(error as Error).message}`, true, () => void saveDraft());
+      return false;
+    }
+    if (!await reloadAfterSave(finish)) return false;
     notify('Saved. Preview now uses this arrangement.');
     return true;
-  } catch (error) {
-    if (published) { previewBusy = true; $('preview-status').textContent = 'Saved · reload required'; }
-    retryAction = published ? () => {
-      busy = true; controls();
-      void finish().catch(error => notify(`Saved, but the workspace could not reload: ${error.message}`, true)).finally(() => { busy = false; controls(); });
-    } : () => void saveDraft();
-    notify(`${published ? 'Saved, but the workspace could not reload: ' : 'Draft retained. '}${(error as Error).message}`, true);
-    return false;
-  } finally { busy = false; $('runtime-status').textContent = 'Browser store ready'; controls(); }
+  });
 }
 async function discardDraft() {
   if (busy || !draft) return;
-  busy = true; retryAction = undefined; controls();
-  try { await draftWrites; await saveLibraryDraft(draftKey(draft.base.root.id), undefined, draftAbort.signal); draft = undefined; draftError = false; workspace = publishedWorkspace; selectedBlock = ''; renderTimeline(); await refresh(); }
-  catch (error) { retryAction = draft ? () => void discardDraft() : () => void refresh().catch(error => notify(error.message, true)); notify(`Could not discard draft: ${(error as Error).message}`, true); }
-  finally { busy = false; controls(); }
+  await withBusy(async () => {
+    try {
+      await draftWrites; await saveLibraryDraft(draftKey(draft!.base.root.id), undefined, draftAbort.signal);
+      draft = undefined; draftError = false; workspace = publishedWorkspace; selectedBlock = ''; renderTimeline();
+      await reloadAfterSave(() => refresh());
+    } catch (error) { notify(`Could not discard draft: ${(error as Error).message}`, true, () => void discardDraft()); }
+  });
 }
 async function leaveDraft(): Promise<boolean> {
   if (!draft) return true;
@@ -327,7 +370,7 @@ async function leaveDraft(): Promise<boolean> {
   dialog.returnValue = ''; dialog.showModal();
   const choice = await new Promise<string>(resolve => dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true }));
   if (choice === 'save') return saveDraft();
-  if (choice === 'discard') { await discardDraft(); return !draft; }
+  if (choice === 'discard') { await discardDraft(); return !draft && !reloadRequired; }
   return false;
 }
 async function askName(title: string, submit: string, value = '', hint = 'A source groups related media, such as video and audio from the same recording.'): Promise<string | undefined> {
@@ -363,20 +406,23 @@ async function place(sample: Sample, laneId: string, raw: bigint, from?: MovingI
   const duration = from?.segment ? bounds(from.segment.timerange)[1] - bounds(from.segment.timerange)[0] : original ? blockEnd(original) - original.start : BigInt(sample.durationNs);
   const placement = planPlacement(workspace, target, sample, raw, duration, pixels(), view === 'segments', from, !pointer);
   if (placement.noop) return false;
-  if (placement.invalid && placement.error) { notify(placement.error, true); return false; }
+  if (placement.invalid) { notify(placement.error ?? 'Cannot place here. Choose an empty part of a compatible flow.', true); return false; }
   selectedLane = laneId; selectedBlock = from?.key ?? ''; selectedSample = sample.id;
-  busy = true; pendingPlacement = { laneId, start: placement.start, sample, duration }; renderPending(); controls();
-  try {
-    const boundaries = !from && !reusableSample(workspace.lanes.flatMap(l => l.blocks), sample) ? await store.segmentBoundaries(sample, draftAbort.signal) : undefined;
-    if (resetting) return false;
-    const next = editWorkspace(workspace, { laneId, start: placement.start, sample: from ? undefined : sample, fromLaneId: from?.laneId, key: from?.key, segment: from?.segment, insert: placement.insert, boundaries });
-    selectedBlock = next.lanes.find(l => l.id === laneId)?.blocks.find(b => b.start === placement.start && b.sample.id === sample.id)?.key ?? from?.key ?? '';
-    selectedSegment = from?.segment ? 0 : -1; inspectIngest = false;
-    changeDraft(next, `Draft: ${placement.insert ? 'insert' : from ? 'move' : 'place'} ${sample.name}`); renderSamples();
-    if (placement.insert) notify(`Inserted at ${fmt(seconds(placement.start))}. Later media in this flow moved by ${seconds(duration).toFixed(3)} s. Save to preview.`);
-    return true;
-  } catch (error) { notify((error as Error).message, true); return false; }
-  finally { busy = false; pendingPlacement = undefined; renderPending(); controls(); }
+  const current = workspace;
+  return withBusy(async () => {
+    pendingPlacement = { laneId, start: placement.start, sample, duration }; renderPending(); controls();
+    try {
+      const boundaries = !from && !reusableSample(current.lanes.flatMap(l => l.blocks), sample) ? await store.segmentBoundaries(sample, draftAbort.signal) : undefined;
+      if (resetting) return false;
+      const next = editWorkspace(current, { laneId, start: placement.start, sample: from ? undefined : sample, fromLaneId: from?.laneId, key: from?.key, segment: from?.segment, insert: placement.insert, boundaries });
+      selectedBlock = next.lanes.find(l => l.id === laneId)?.blocks.find(b => b.start === placement.start && b.sample.id === sample.id)?.key ?? from?.key ?? '';
+      selectedSegment = from?.segment ? 0 : -1; inspectIngest = false;
+      changeDraft(next, `Draft: ${placement.insert ? 'insert' : from ? 'move' : 'place'} ${sample.name}`); renderSamples();
+      if (placement.insert) notify(`Inserted at ${fmt(seconds(placement.start))}. Later media in this flow moved by ${seconds(duration).toFixed(3)} s. Save to preview.`);
+      return true;
+    } catch (error) { notify((error as Error).message, true); return false; }
+    finally { pendingPlacement = undefined; renderPending(); }
+  });
 }
 function libraryNotice(message: string, error = false) {
   $('library-status').textContent = message; $('library-status').classList.toggle('error', error);
@@ -493,22 +539,22 @@ function wire() {
     if (!await leaveDraft()) return;
     tour.stop(false);
     retryAction = undefined; $('notice').hidden = true;
-    busy = true; controls(); selectedLane = ''; selectedBlock = '';
-    try { await store.action('Open source', async a => { await store.recover(id, a); workspace = await store.load(id, a); }); if (resetting) return; localStorage.setItem(dataKey, id); await refresh(id); }
-    catch (error) { notify((error as Error).message, true); }
-    finally { busy = false; controls(); }
+    await withBusy(async () => {
+      selectedLane = ''; selectedBlock = '';
+      try { await store.action('Open source', async a => { await store.recover(id, a); workspace = await store.load(id, a); }); if (resetting) return; localStorage.setItem(dataKey, id); await refresh(id); }
+      catch (error) { notify((error as Error).message, true); }
+    });
   };
   for (const kind of ['video', 'audio'] as const) $(`preview-${kind}`).onchange = async () => {
     if (!publishedWorkspace) return;
     tour.stop(false); rangeReady = false; preview.stopRange();
     preview.select(publishedWorkspace, kind, $<HTMLSelectElement>(`preview-${kind}`).value);
-    busy = true; controls();
-    try { await updatePreview(true); renderTimeline(); } finally { busy = false; controls(); }
+    await withBusy(async () => { await updatePreview(true); renderTimeline(); });
   };
   $('seek-button').onclick = () => { try { void preview.seek(seconds(nsInput($<HTMLInputElement>('seek-time').value))).catch(e => notify(e.message, true)); } catch (error) { notify((error as Error).message, true); } };
   $('seek-time').onkeydown = event => { if (event.key === 'Enter') $('seek-button').click(); };
-  $('dismiss-notice').onclick = () => { $('notice').hidden = true; };
-  $('retry-action').onclick = () => { $('notice').hidden = true; retryAction?.(); };
+  $('dismiss-notice').onclick = () => { if (!reloadRequired) { retryAction = undefined; $('notice').hidden = true; } };
+  $('retry-action').onclick = () => { $('notice').hidden = true; const retry = retryAction; retryAction = undefined; retry?.(); };
   $('follow-requests').onclick = () => { followRequests = true; selectedAction = store.actions[0]?.id; selectedRequest = -1; renderRequests(); };
   document.querySelectorAll<HTMLButtonElement>('[data-filter]').forEach(button => button.onclick = () => {
     filter = button.dataset.filter!; document.querySelectorAll('[data-filter]').forEach(b => { b.classList.toggle('active', b === button); b.setAttribute('aria-pressed', String(b === button)); }); renderSamples();
@@ -541,7 +587,7 @@ function wire() {
   $('zoom-in').onclick = () => { zoom = Math.min(6, zoom * 1.5); renderTimeline(); };
   $('move-block').onclick = () => {
     const current = currentBlock(); if (!current) return;
-    try { void place(current.block.sample, current.lane.id, nsInput($<HTMLInputElement>('block-start').value), movingItem(current.lane, current.block, view === 'segments' ? Math.max(0, selectedSegment) : undefined)); }
+    try { void place(current.block.sample, $<HTMLSelectElement>('block-target').value, nsInput($<HTMLInputElement>('block-start').value), movingItem(current.lane, current.block, view === 'segments' ? Math.max(0, selectedSegment) : undefined)); }
     catch (error) { notify((error as Error).message, true); }
   };
   $('block-start').onkeydown = event => { if (event.key === 'Enter') $('move-block').click(); };
@@ -579,7 +625,7 @@ function wire() {
     if (record) try { await navigator.clipboard.writeText(`${record.method} ${record.url}\n${Object.entries(record.headers).map(([k, v]) => `${k}: ${v}`).join('\n')}${record.body === undefined ? '' : '\n\n' + JSON.stringify(record.body, null, 2)}`); notify('Request copied.'); } catch { notify('Clipboard access was unavailable.', true); }
   };
   document.addEventListener('keydown', event => {
-    if (event.key === 'Delete' && !document.querySelector('dialog[open]') && !(event.target instanceof HTMLInputElement) && !busy && currentBlock()) { event.preventDefault(); tour.stop(false); $('remove-block').click(); }
+    if (['Delete', 'Backspace'].includes(event.key) && event.target instanceof HTMLElement && !!event.target.closest('#timeline-scroll,#block-controls') && !event.target.closest('select,textarea,[contenteditable=true]') && !document.querySelector('dialog[open]') && !(event.target instanceof HTMLInputElement) && !busy && currentBlock()) { event.preventDefault(); tour.stop(false); $('remove-block').click(); }
   });
   $('ingest-next').onclick = () => store.ingest?.next();
   $('ingest-run').onclick = () => store.ingest?.runRemaining();
@@ -607,23 +653,27 @@ function wire() {
 
 }
 async function readRange(): Promise<ActionRecord | undefined> {
-    if (!publishedWorkspace || busy) return;
+  const saved = publishedWorkspace;
+  if (!saved || busy) return;
+  return withBusy(async () => {
     try {
       const start = nsInput($<HTMLInputElement>('range-start').value), end = nsInput($<HTMLInputElement>('range-end').value);
-      if (end <= start || seconds(end) > sourceEnd(publishedWorkspace)) throw new Error('Choose a range inside the saved source duration, with the end after the start.');
-      busy = true; rangeReady = false; preview.pause(); followRequests = true; controls();
+      if (end <= start || seconds(end) > sourceEnd(saved)) throw new Error('Choose a range inside the saved source duration, with the end after the start.');
+      rangeReady = false; preview.pause(); followRequests = true; controls();
       const queryAction = store.beginAction('Read time range');
-      const result = await store.action(queryAction.name, a => store.readRange(a, publishedWorkspace!, preview.selection, start, end), queryAction);
+      const result = await store.action(queryAction.name, a => store.readRange(a, saved, preview.selection, start, end), queryAction);
       rangeReady = true;
       $('range-result').innerHTML = `<p>${result.segments.length} segments · ${result.objects} unique objects · ${result.bytes.toLocaleString()} bytes read from the saved source. Playback uses ${fmt(seconds(start))}–${fmt(seconds(end))}.</p><details open><summary>Matching flows, segments and media objects</summary><div class="range-results"><table><thead><tr><th>Flow</th><th>Segment range</th><th>Object ID</th><th>Bytes read</th></tr></thead><tbody>${result.flows.flatMap(flow => flow.segments.length ? flow.segments.map(segment => `<tr><td>${escape(flow.label)}<br>${resourceButton('flows', flow.id, shortFlowId(flow.id))}</td><td>${escape(segment.timerange)}</td><td>${resourceButton('objects', segment.object_id)}</td><td>${result.objectBytes.get(segment.object_id)?.toLocaleString()} B</td></tr>`) : [`<tr><td>${escape(flow.label)}</td><td colspan="3">No matching segments</td></tr>`]).join('')}</tbody></table></div></details><button id="range-api">Inspect query API</button>`;
+      setText($('range-status'), $('range-result').querySelector('p')!.textContent!);
       $('range-api').onclick = () => { followRequests = false; selectedAction = queryAction.id; selectedRequest = -1; renderRequests(); $('review-requests').click(); };
       return queryAction;
     } catch (error) { notify((error as Error).message, true); }
-    finally { busy = false; controls(); }
-  }
+  });
+}
 
+let dragPointer: number | undefined;
 function beginDrag(event: PointerEvent) {
-  if (busy || libraryBusy || event.button !== 0) return;
+  if (busy || libraryBusy || !event.isPrimary || event.button !== 0 || dragPointer !== undefined) return;
   const element = (event.target as HTMLElement).closest<HTMLElement>('[data-sample],[data-block]');
   if (!element) return;
   const lane = workspace?.lanes.find(l => l.id === element.dataset.blockLane);
@@ -634,6 +684,7 @@ function beginDrag(event: PointerEvent) {
   const from = original && lane ? movingItem(lane, original, index) : undefined;
   const sample = block?.sample ?? library.find(s => s.id === element.dataset.sample);
   if (!sample) return;
+  dragPointer = event.pointerId;
   // Keep the timeline at the same screen coordinates until the pointer is released.
   clearTimeout(noticeTimer);
   const offset = block ? event.clientX - element.getBoundingClientRect().left : 0;
@@ -651,8 +702,9 @@ function beginDrag(event: PointerEvent) {
       }
     });
   };
-  const cleanup = () => { scheduleNoticeDismissal(); clearShift(); clearInterval(scrollTimer); ghost?.remove(); drop?.remove(); guide?.remove(); document.body.classList.remove('dragging'); document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', end); document.removeEventListener('pointercancel', cancel); document.removeEventListener('keydown', escapeDrag); };
+  const cleanup = () => { dragPointer = undefined; scheduleNoticeDismissal(); clearShift(); clearInterval(scrollTimer); ghost?.remove(); drop?.remove(); guide?.remove(); document.body.classList.remove('dragging'); document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', end); document.removeEventListener('pointercancel', cancel); document.removeEventListener('keydown', escapeDrag); window.removeEventListener('blur', cleanup); document.removeEventListener('visibilitychange', visibility); };
   const move = (e: PointerEvent) => {
+    if (e.pointerId !== event.pointerId) return;
     lastPointer = e;
     if (!dragging && Math.hypot(e.clientX - event.clientX, e.clientY - event.clientY) < 6) return;
     e.preventDefault();
@@ -702,7 +754,8 @@ function beginDrag(event: PointerEvent) {
     }
 
   };
-  const end = () => {
+  const end = (e: PointerEvent) => {
+    if (e.pointerId !== event.pointerId) return;
     cleanup();
     if (!dragging) return;
     const suppressClick = (e: MouseEvent) => { e.stopImmediatePropagation(); e.preventDefault(); };
@@ -711,17 +764,19 @@ function beginDrag(event: PointerEvent) {
     if (targetLane) void place(sample, targetLane.id, raw, from, true);
     else notify(workspace?.lanes.length ? 'Drop the sample onto a compatible flow.' : 'Create a source and add a flow first.');
   };
-  const cancel = () => cleanup();
+  const cancel = (e: PointerEvent) => { if (e.pointerId === event.pointerId) cleanup(); };
+  const visibility = () => { if (document.hidden) cleanup(); };
   const escapeDrag = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); cleanup(); } };
+  window.addEventListener('blur', cleanup); document.addEventListener('visibilitychange', visibility);
   document.addEventListener('keydown', escapeDrag);
-  document.addEventListener('pointermove', move, { passive: false }); document.addEventListener('pointerup', end, { once: true }); document.addEventListener('pointercancel', cancel, { once: true });
+  document.addEventListener('pointermove', move, { passive: false }); document.addEventListener('pointerup', end); document.addEventListener('pointercancel', cancel);
 }
 
 function renderPending() {
   document.querySelector('.pending-placement')?.remove();
   if (!pendingPlacement) return;
   const { laneId, start, sample, duration, importing } = pendingPlacement;
-  const track = document.querySelector(`[data-track="${laneId}"]`);
+  const track = document.querySelector(`[data-track="${CSS.escape(laneId)}"]`);
   if (!track) return;
   const pending = document.createElement('div'); pending.className = 'drop-preview pending-placement';
   pending.style.left = `${seconds(start) * pixels()}px`; pending.style.width = `${seconds(duration ?? BigInt(sample.durationNs)) * pixels()}px`;
@@ -753,7 +808,7 @@ function renderIngest() {
   const planned = session.pending;
   if (followRequests && planned?.objectId && session.objects.some(o => o.segment.object_id === planned.objectId)) selectedObject = planned.objectId;
   $('planned-request').hidden = !planned;
-  if (planned) $('planned-request').innerHTML = `<strong>Next operation · not sent</strong><p>${planned.method} ${escape(new URL(planned.url).pathname)}</p><pre>${escape(JSON.stringify(planned.body ?? '(no body)', null, 2))}</pre>`;
+  if (planned) $('planned-request').innerHTML = `<strong>Next operation · not sent</strong><p>${escape(planned.method)} ${escape(new URL(planned.url).pathname)}</p><pre>${escape(JSON.stringify(planned.body ?? '(no body)', null, 2))}</pre>`;
   renderObjects(); updateSelection();
 }
 function mediaObjects() {
@@ -776,12 +831,12 @@ async function verifyStorage() {
         const url = refs[0].segment.get_urls?.[0]?.url;
         if (!url) { storageChecks.set(id, { state: 'unknown' }); continue; }
         try {
-          await store.request(action, url, 'HEAD', undefined, undefined, { objectId: id, signal: AbortSignal.timeout(10000) });
+          const { record } = await store.requestWithRecord(action, url, 'HEAD', undefined, undefined, { objectId: id, signal: AbortSignal.timeout(10000) });
           if (resetting || version !== workspaceVersion) return;
-          const length = action.requests.at(-1)?.responseHeaders?.['content-length'];
+          const length = record.responseHeaders?.['content-length'];
           const bytes = length && /^\d+$/.test(length) ? Number(length) : NaN;
           storageChecks.set(id, Number.isSafeInteger(bytes) ? { state: 'stored', bytes } : { state: 'unknown' });
-        } catch { if (!resetting && version === workspaceVersion) storageChecks.set(id, { state: action.requests.at(-1)?.status === 404 ? 'missing' : 'unknown' }); }
+        } catch (error) { if (!resetting && version === workspaceVersion) storageChecks.set(id, { state: error instanceof RequestError && error.record.status === 404 ? 'missing' : 'unknown' }); }
       }
     });
   } catch (error) { if (!resetting) notify(`Storage check could not finish: ${(error as Error).message}`, true); }
@@ -836,8 +891,8 @@ async function persistExampleDraft() {
 }
 async function createExample() {
   await persistExampleDraft();
-  busy = true; controls(); preview.pause();
-  try {
+  await withBusy(async () => {
+    preview.pause();
     if (!example.root) {
       sources = await store.sources();
       let number = 1;
@@ -847,7 +902,7 @@ async function createExample() {
     }
     localStorage.setItem(dataKey, example.id);
     await refresh(example.id);
-  } finally { busy = false; controls(); }
+  });
 }
 async function placeExample(id: string, time: bigint) {
   const sample = exampleSample(id), lane = exampleLane(sample.kind as Kind), key = `${id}:${time}`;
@@ -862,8 +917,7 @@ async function saveExample() {
   exampleLane('video');
   const before = new Set(publishedWorkspace?.lanes.flatMap(lane => lane.blocks.flatMap(block => block.segments.map(segment => segment.object_id))) ?? []);
   if (!draft) {
-    busy = true; controls();
-    try { await refresh(example.id); } finally { busy = false; controls(); }
+    await withBusy(() => refresh(example.id));
   } else {
     // The guided Save runs to completion; ordinary editing retains its chosen mode.
     if (!await saveDraft(false)) throw new Error($('notice-text').textContent || 'Save failed. Your draft is retained.');
@@ -960,29 +1014,28 @@ async function executeCurl(command: CurlRequest, file?: File): Promise<RequestRe
     headers: command.headers, rawBody: command.data,
     binary: command.method === 'GET' && new URL(command.url).pathname.startsWith(new URL('../media/', store.apiUrl).pathname),
   }), action);
-  if (write) {
-    tour.stop(false);
+  const execute = async () => {
+    try {
+      if (write && rootId) await store.locked(rootId, send);
+      else await send();
+    } catch (error) {
+      if (!action.requests[0]?.error) throw error;
+    }
+  };
+  if (write) await withBusy(async () => {
+    tour.stop(false); preview.pause();
     const path = new URL(command.url).pathname;
     if ((command.method === 'PUT' && path.startsWith(new URL('../media/', store.apiUrl).pathname)) ||
         (command.method === 'POST' && /\/flows\/[^/]+\/segments$/.test(path))) {
       $<HTMLDetailsElement>('storage').open = true;
     }
-    busy = true; preview.pause(); controls();
-  }
-  try {
-    if (write && rootId) await store.locked(rootId, send);
-    else await send();
-  } catch (error) {
-    if (!action.requests[0]?.error) throw error;
-  } finally {
-    if (write) {
-      try {
-        await draftWrites;
-        if (!resetting) await refresh(rootId, true);
-      } catch (error) { notify('Could not reload the workspace: ' + (error as Error).message, true); }
-      finally { busy = false; controls(); }
+    try { await execute(); }
+    finally {
+      try { await draftWrites; if (!resetting) await refresh(rootId, true); }
+      catch (error) { notify('Could not reload the workspace: ' + (error as Error).message, true); }
     }
-  }
+  });
+  else await execute();
   return action.requests[0];
 }
 
@@ -1021,12 +1074,12 @@ const updateReview = wireReview(() => store?.actions ?? [], () => $<HTMLSelectEl
 renderSamples(); wire(); renderSources(); renderTimeline();
 try {
   const client = await window.tasmStartup.wait((window as unknown as { tasmReady: Promise<TasmClient> }).tasmReady);
-  store = new WorkspaceStore(client.apiUrl); store.addEventListener('requests', () => { if (resetting) return; renderRequests(); if (busy) { const request = store.actions[0]?.requests.at(-1); $('runtime-status').textContent = store.actions[0]?.playback ? 'Preparing preview…' : request?.method === 'PUT' && request.url.includes('/media/') && request.ms === undefined ? 'Uploading…' : 'Saving…'; } });
+  store = new WorkspaceStore(client.apiUrl); store.addEventListener('requests', onFrame(() => { if (resetting) return; renderRequests(); if (busy && !reloadRequired) { const request = store.actions[0]?.requests.at(-1); setText($('runtime-status'), store.actions[0]?.playback ? 'Preparing preview…' : request?.method === 'PUT' && request.url.includes('/media/') && request.ms === undefined ? 'Uploading…' : 'Saving…'); } }));
   store.addEventListener('ingest', () => { const session = store.ingest!; if (session.actionId !== ingestId) { ingestId = session.actionId; inspectIngest = true; selectedObject = ''; followRequests = true; } renderIngest(); renderRequests(); renderPending(); });
   preview = new Preview(store); preview.addEventListener('time', updatePlayhead);
   preview.addEventListener('error', event => {
-    retryAction = () => void updatePreview(); $('preview-status').textContent = 'Preview could not play';
-    notify(`Playback failed: ${(event as CustomEvent<string>).detail}`, true);
+    $('preview-status').textContent = 'Preview could not play';
+    notify(`Playback failed: ${(event as CustomEvent<string>).detail}`, true, () => void updatePreview());
   });
   window.addEventListener('tasm-reset', () => {
     if (resetting) return;

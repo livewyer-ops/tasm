@@ -1,6 +1,7 @@
+import { onFrame, setText } from '../shared/render';
 import { startTasm } from '../../core/browser/index';
 import type { TasmClient } from '../../core/browser/public.d.ts';
-import { WorkspaceStore, samples, bounds, seconds, type Workspace, type ActionRecord, type RequestRecord, type Flow, type Lane, type Segment } from '../shared/workspace-store';
+import { WorkspaceStore, RequestError, samples, bounds, seconds, type Workspace, type ActionRecord, type RequestRecord, type Flow, type Lane, type Segment } from '../shared/workspace-store';
 import { Preview, sourceEnd } from '../shared/player';
 import { ChromingTheme } from '@byomakase/omakase-player';
 import type {} from '../shared/startup';
@@ -17,6 +18,7 @@ const queried = new Set<number>();
 const titles = ['Create a source', 'Add a video flow', 'Store the sample media', 'Play a time range', 'Find the available video flows', 'Inspect the flow’s segments', 'Create a four-second excerpt', 'Delete the original flow'];
 const deletedText = 'The original flow has been deleted. The four-second excerpt is still playable using the same two media objects. Two unused media objects were removed from storage.';
 let retry: (() => void) | undefined;
+let rangePendingOrFailed = false;
 let rangeResult: Awaited<ReturnType<WorkspaceStore['readRange']>> | undefined;
 let selectedFlow = '';
 let description: { title: string; text?: string; query?: ActionRecord } | undefined;
@@ -46,7 +48,7 @@ const resultTips = createResultTips(() => render());
 let recoveringDeletion = false;
 const backgroundAction = (action: ActionRecord) => action.playback || ['Read preview media', 'Verify stored media'].includes(action.name);
 function mediaObjects() {
-  return [...new Map([...videoLanes().flatMap(l => l.segments), ...visibleSegments(), ...(deletion?.accepted ? deletion.objects : [])].map(s => [s.object_id, s])).values()];
+  return [...new Map([...visibleSegments(), ...(deletion?.accepted ? deletion.objects : []), ...videoLanes().flatMap(l => l.segments)].map(s => [s.object_id, s])).values()];
 }
 function objectLabels() {
   const ids = mediaObjects().map(s => s.object_id);
@@ -113,14 +115,14 @@ async function verifyStorage() {
       for (const segment of objects) {
         const id = segment.object_id;
         const url = segment.get_urls?.[0]?.url ?? store.actions.flatMap(a => a.requests).find(r => r.objectId === id && r.stage === 'upload')?.url;
-        if (!url) continue;
+        if (!url) { storageChecks.set(id, { state: 'unknown' }); continue; }
         try {
-          await store.request(action, url, 'HEAD', undefined, undefined, { objectId: id, signal: AbortSignal.timeout(30000) });
-          const length = action.requests.at(-1)?.responseHeaders?.['content-length'];
+          const { record } = await store.requestWithRecord(action, url, 'HEAD', undefined, undefined, { objectId: id, signal: AbortSignal.timeout(30000) });
+          const length = record.responseHeaders?.['content-length'];
           const bytes = length && /^\d+$/.test(length) ? Number(length) : NaN;
           storageChecks.set(id, Number.isSafeInteger(bytes) ? { state: 'stored', bytes } : { state: 'unknown' });
-        } catch {
-          storageChecks.set(id, { state: action.requests.at(-1)?.status === 404 ? 'missing' : 'unknown' });
+        } catch (error) {
+          storageChecks.set(id, { state: error instanceof RequestError && error.record.status === 404 ? 'missing' : 'unknown' });
         }
         renderStorage();
       }
@@ -150,7 +152,7 @@ function render() {
   $('primary').classList.toggle('start-hint', ready && !busy && nextStep === 1 && !workspace);
   ($('restart') as HTMLButtonElement).disabled = busy || !ready;
   ($('retry') as HTMLButtonElement).disabled = busy;
-  $('range-result').hidden = !rangeResult;
+  $('range-result').hidden = !rangeResult && !rangePendingOrFailed;
   $('playback-controls').hidden = !ready || !prepared();
   ($('pause') as HTMLButtonElement).disabled = busy || !preview?.loaded;
   ($('replay') as HTMLButtonElement).disabled = busy || !played || !prepared();
@@ -194,7 +196,7 @@ function updatePlayhead() {
 }
 async function selectFlow(value: Lane) {
   resultTips.clear();
-  selectedFlow = value.flow.id; rangeResult = undefined;
+  selectedFlow = value.flow.id; rangeResult = undefined; rangePendingOrFailed = false;
   preview!.pause(); preview!.select(playbackWorkspace()!, 'video', value.id);
   if (preview!.loaded) await preview!.update(playbackWorkspace());
   render();
@@ -336,7 +338,7 @@ function renderRequests() {
       item.innerHTML = '<summary></summary><p class="action-outcome"></p><p class="preparation" hidden></p><ol class="operations"></ol><details class="supporting" hidden><summary></summary><ol class="operations"></ol></details>';
       item.open = action.id === selectedAction; container.prepend(item);
     }
-    item.querySelector(':scope > summary')!.textContent = action.name + (action.pending ? ' · Working' : action.error ? ' · Failed' : ' · Done');
+    setText(item.querySelector(':scope > summary')!, action.name + (action.pending ? ' · Working' : action.error ? ' · Failed' : ' · Done'));
     const outcome = item.querySelector<HTMLElement>('.action-outcome')!;
     outcome.textContent = outcomes.get(action.id) ?? (action.error ? 'Retry to continue.' : '');
     outcome.hidden = !outcome.textContent;
@@ -367,8 +369,8 @@ function renderRequests() {
       const state = record.error ? 'failed' : record.ms === undefined ? 'working' : 'done';
       row.dataset.state = state; row.dataset.object = requestObject(record) ?? '';
       row.classList.toggle('related', !!selectedObject && requestObject(record) === selectedObject);
-      row.querySelector('summary')!.textContent = (state === 'working' ? 'Working' : state === 'failed' ? 'Failed' : 'Done') + ' · ' + requestLabel(record);
-      row.querySelector('pre')!.textContent = JSON.stringify(record, null, 2);
+      setText(row.querySelector('summary')!, (state === 'working' ? 'Working' : state === 'failed' ? 'Failed' : 'Done') + ' · ' + requestLabel(record));
+      setText(row.querySelector('pre')!, JSON.stringify(record, null, 2));
     });
     supporting.hidden = supportCount === 0;
     supporting.querySelector('summary')!.textContent = 'Supporting reads and cleanup (' + supportCount + ')';
@@ -394,7 +396,7 @@ async function perform(label: string, work: () => Promise<void>) {
     $('error-message').textContent = label + ' failed. Retry to continue.';
     $('error-detail').textContent = error instanceof Error ? error.message : String(error);
     $('error').hidden = false; status('');
-    if (step === 4 && !rangeResult) $('range-result').textContent = 'The section could not be read. Retry to continue.';
+    if (rangePendingOrFailed && !rangeResult) $('range-result').textContent = 'The section could not be read. Retry to continue.';
     retry = window.tasmStartup.signal.aborted ? () => location.reload() : () => void perform(label, work);
   } finally { busy = false; render(); renderRequests(); }
 }
@@ -424,7 +426,12 @@ async function buildStep(value: number) {
     if (!reused) await store.edit(record, root.id, { laneId: lane()!.id, sample, start: 0n });
     workspace = await store.load(root.id, record); render();
     return reused ? 'Using stored media.' : segments().length + ' segments stored and ready to play.';
-  })).finally(async () => { if (value === 3) await verifyStorage(); });
+  })).catch(async error => {
+    // The storage action records its own error. Keep the step failure available for Retry.
+    if (value === 3) await verifyStorage().catch(() => {});
+    throw error;
+  });
+  if (value === 3) await verifyStorage();
   if (resetting) return;
   if (value === 3) { status('Preparing playback...'); await preview!.update(playbackWorkspace()); }
   nextStep = value + 1;
@@ -432,13 +439,14 @@ async function buildStep(value: number) {
   status(outcome);
 }
 async function readSection() {
-  preview!.pause(); rangeResult = undefined; render();
+  preview!.pause(); rangeResult = undefined; rangePendingOrFailed = true; render();
   $('range-result').textContent = 'Reading selected range...';
   const [start, end] = interval();
   const outcome = await action('Read selected section', async record => {
     rangeResult = await store.readRange(record, playbackWorkspace()!, preview!.choices(playbackWorkspace()), BigInt(Math.round(start * 1e9)), BigInt(Math.round(end * 1e9)));
     return fmt(start) + ' to ' + fmt(end) + ' · ' + rangeResult.objects + ' stored ' + (rangeResult.objects === 1 ? 'object read' : 'objects read') + ' (' + rangeResult.bytes.toLocaleString() + ' bytes).';
   });
+  rangePendingOrFailed = false;
   $('range-result').textContent = outcome + ' Outline: selected range. Shading: objects read.';
   renderTimeline(); status('Selected range ready.');
 }
@@ -468,7 +476,7 @@ async function createExcerpt() {
     const flow: Flow = staged[0] ?? { ...sample.technical, id: crypto.randomUUID(), source_id: previous.flow.source_id, label: 'Orbit excerpt', tags: {
       'tasm.playpen.root': [workspace.root.id], 'tasm.playpen.lane': [crypto.randomUUID()], 'tasm.demo.role': ['excerpt'],
       'tasm.playpen.blocks.v1': [JSON.stringify({ id: crypto.randomUUID(), sample: sample.id, checksum: sample.sha256,
-        profile: previous.blocks[0].profile, segments: parts.map(({ object_id, timerange }) => ({ object_id, timerange })) })],
+        profile: previous.blocks[0].profile, partial: true, segments: parts.map(({ object_id, timerange }) => ({ object_id, timerange })) })],
     } };
     if (!staged.length) await store.request(record, `flows/${flow.id}`, 'PUT', flow, undefined, { stage: 'segment', flowId: flow.id });
     const registered = await store.list<Segment>(record, `flows/${flow.id}/segments`);
@@ -497,7 +505,8 @@ function saveDeletion() {
     if (saved && typeof saved === 'object' && !Array.isArray(saved)) preferences = saved;
   } catch { /* replace malformed preferences */ }
   if (deletion) preferences.demoDeletion = deletion; else delete preferences.demoDeletion;
-  localStorage.setItem(key, JSON.stringify(preferences));
+  try { localStorage.setItem(key, JSON.stringify(preferences)); }
+  catch { if (deletion && !deletion.accepted) { deletion = undefined; throw new Error('Allow local storage to save deletion progress, then retry.'); } }
 }
 async function deletePrevious() {
   description = { title: 'Delete the original flow', text: 'Delete the original flow and keep the excerpt. The excerpt still references the first two media objects, so those stay available. The other two objects are removed after background cleanup confirms they are no longer used.' };
@@ -521,14 +530,16 @@ async function deletePrevious() {
         if (!kept || kept.segments.length !== 2 || !previous.segments.slice(0, 2).every((s, i) => s.object_id === kept.segments[i].object_id && s.timerange === kept.segments[i].timerange)) {
           throw new Error('The excerpt changed. Reload before requesting deletion.');
         }
-        const response = await store.request<DeleteRequest | null>(record, `flows/${deletion.flowId}`, 'DELETE', undefined, undefined, { stage: 'update', flowId: deletion.flowId });
-        const location = record.requests.at(-1)!.responseHeaders?.location;
+        const { value: response, record: deletionRecord } = await store.requestWithRecord<DeleteRequest | null>(record, `flows/${deletion.flowId}`, 'DELETE', undefined, undefined, { stage: 'update', flowId: deletion.flowId });
+        const location = deletionRecord.responseHeaders?.location;
         deletion.requestId = location?.match(/\/flow-delete-requests\/([^/?#]+)$/)?.[1] ?? response?.id;
       }
     }
-    deletion.accepted = true; saveDeletion(); rangeResult = undefined;
-    selectedFlow = excerpt()!.flow.id; render();
-    await selectFlow(excerpt()!);
+    deletion.accepted = true; saveDeletion(); rangeResult = undefined; rangePendingOrFailed = false;
+    const kept = excerpt();
+    if (!kept) throw new Error('The excerpt is unavailable. Reload to check the saved flows.');
+    selectedFlow = kept.flow.id; render();
+    await selectFlow(kept);
     const deadline = Date.now() + 60000;
     let removed = false;
     while (Date.now() < deadline) {
@@ -542,9 +553,8 @@ async function deletePrevious() {
           if (!url) throw new Error('The deleted object has no storage URL to verify.');
           try { await store.request(record, url, 'HEAD', undefined, undefined, { objectId: object.object_id, signal }); }
           catch (error) {
-            const request = record.requests.at(-1)!;
-            if (request.status !== 404) throw error;
-            delete request.error; missing++;
+            if (!(error instanceof RequestError) || error.record.status !== 404) throw error;
+            delete error.record.error; missing++;
           }
         }
         if (missing === deletion.objects.length) { removed = true; break; }
@@ -564,12 +574,12 @@ async function boot() {
   resultTips.restart();
   ready = false; preview?.destroy(); client?.close(); preview = undefined; workspace = undefined;
   step = nextStep = 1; played = introPlaying = deleted = false; queried.clear();
-  selectedObject = ''; selectedAction = ''; selectedFlow = ''; description = undefined; deletion = undefined; rangeResult = undefined; outcomes.clear(); storageChecks.clear();
+  selectedObject = ''; selectedAction = ''; selectedFlow = ''; description = undefined; deletion = undefined; rangeResult = undefined; rangePendingOrFailed = false; outcomes.clear(); storageChecks.clear();
   $('requests').innerHTML = '<p class="muted">No actions yet.</p>'; $('background-requests').replaceChildren();
   $('range-result').textContent = 'Choose a range to see which stored objects it reads.';
   client = await startTasm({ basePath: '/', signal: window.tasmStartup.signal });
   store = new WorkspaceStore(client.apiUrl); preview = new Preview(store, ChromingTheme.CHROMELESS);
-  store.addEventListener('requests', () => { renderRequests(); renderStorage(); });
+  store.addEventListener('requests', onFrame(() => { renderRequests(); renderStorage(); }));
   store.addEventListener('ingest', () => {
     renderTimeline(); renderRequests();
     const ingest = store.ingest;
@@ -727,7 +737,7 @@ async function restartWalkthrough() {
   resultTips.restart();
   preview?.pause(); if (preview?.loaded) await preview.seek(0);
   played = introPlaying = false; queried.clear();
-  selectedObject = ''; preset = 'whole'; rangeResult = undefined;
+  selectedObject = ''; preset = 'whole'; rangeResult = undefined; rangePendingOrFailed = false;
   $('range-result').textContent = 'Choose a range to see which stored objects it reads.';
   showStep(1); status('Walkthrough restarted. Stored media retained.');
 }

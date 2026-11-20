@@ -1,8 +1,8 @@
-import { test, expect, browserEnv } from './fixtures';
+import { test, expect, browserEnv, listen, closeServer } from './fixtures';
 import { createServer, get } from 'node:http';
 import { get as getHTTPS } from 'node:https';
 
-test('failed uploads stay unpublished and webhook retries survive browser restart', async ({ page, context, playwright, browserName, profile, baseURL }) => {
+test('failed uploads stay unpublished and webhook retries survive browser restart', { tag: '@pr' }, async ({ page, context, playwright, browserName, profile, baseURL }) => {
   test.setTimeout(browserName === 'webkit' ? 150000 : 90000);
   // Stop the asset server to test real network loss. WebKit's emulated
   // offline mode can abort navigation before the service worker runs.
@@ -12,8 +12,8 @@ test('failed uploads stay unpublished and webhook retries survive browser restar
       response.writeHead(upstream.statusCode!, upstream.headers); upstream.pipe(response);
     }).on('error', () => response.destroy());
   });
-  await new Promise<void>(resolve => assets.listen(0, '127.0.0.1', resolve));
-  const host = `http://127.0.0.1:${(assets.address() as any).port}/`;
+  const assetsURL = await listen(assets);
+  const host = assetsURL.href;
   const deliveries: { id: string | string[] | undefined; body: any }[] = [];
   const receiver = createServer((request, response) => {
     response.setHeader('access-control-allow-origin', '*');
@@ -26,7 +26,7 @@ test('failed uploads stay unpublished and webhook retries survive browser restar
       response.writeHead(deliveries.length === 1 ? 503 : 204).end();
     });
   });
-  await new Promise<void>(resolve => receiver.listen(0, '127.0.0.1', resolve));
+  const receiverURL = await listen(receiver);
   let reopened;
   try {
     await page.goto(host); await page.evaluate(() => (window as any).tasmReady);
@@ -67,7 +67,7 @@ test('failed uploads stay unpublished and webhook retries survive browser restar
       await call(`flows/${eventFlow}`, 'PUT', { ...flow, id: eventFlow, source_id: crypto.randomUUID() });
       return { flow: id, url: put.url, bad: bad.status, unpublished: unpublished.status, overwrite: overwritten.status,
         size: head.headers.get('content-length'), suffix: await suffix.text(), badRange: badRange.status, conditional: conditional.status, conditionalHeads, pageLength: prefix.length };
-    }, (receiver.address() as any).port);
+    }, Number(receiverURL.port));
     expect(result).toMatchObject({ bad: 400, unpublished: 404, overwrite: 409, size: String(2 * 1024 * 1024 + 3), suffix: 'aaz', badRange: 416, conditional: 304, conditionalHeads: [412, 200, 412, 304, 200, 304], pageLength: 1 });
     await expect.poll(() => deliveries.length, { timeout: 15000 }).toBe(1);
     // API work is serialized after the worker's retry-state commit.
@@ -84,20 +84,20 @@ test('failed uploads stay unpublished and webhook retries survive browser restar
     })).toBe(false);
     await expect.poll(() => deliveries.length, { timeout: 45000, intervals: [500, 1000] }).toBe(2);
     expect(deliveries[1]).toEqual(deliveries[0]);
-    const stopped = new Promise<void>(resolve => assets.close(() => resolve()));
-    assets.closeAllConnections(); await stopped;
+    await closeServer(assets);
     await restored.reload(); await restored.evaluate(() => (window as any).tasmReady);
     expect(await restored.evaluate(async url => (await fetch(url, { headers: { range: 'bytes=-1' } })).text(), result.url)).toBe('z');
   } finally {
     await reopened?.close();
-    assets.closeAllConnections(); await new Promise<void>(resolve => assets.close(() => resolve()));
-    await new Promise<void>(resolve => receiver.close(() => resolve()));
+    await closeServer(assets);
+    await closeServer(receiver);
   }
 });
 
-test('quota failure and object reuse cannot publish stale bytes', async ({ page }) => {
+test('quota failure and object reuse cannot publish stale bytes', { tag: '@pr' }, async ({ page }) => {
   const { readFile } = await import('node:fs/promises');
   const worker = await readFile(`${process.env.TASM_DIST ?? 'dist'}/core/worker.js`, 'utf8');
+  expect(worker).toContain('import.meta.url');
   const injected = `
     const nativeTimeout = globalThis.setTimeout;
     globalThis.setTimeout = (callback, delay, ...args) => nativeTimeout(callback, delay === 1000 ? 60000 : delay, ...args);

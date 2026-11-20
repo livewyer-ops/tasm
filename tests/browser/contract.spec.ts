@@ -1,5 +1,5 @@
 import { type Page } from '@playwright/test';
-import { test, expect as browserExpect } from './fixtures';
+import { test, expect as browserExpect, listen, closeServer } from './fixtures';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -17,7 +17,7 @@ const audio = { format: 'urn:x-nmos:format:audio', codec: 'audio/aac', container
   essence_parameters: { sample_rate: 48000, channels: 2 } };
 
 async function start(page: Page) {
-  await page.route('**/', route => route.fulfill({ contentType: 'text/html', body:
+  await page.context().route('**/', route => route.fulfill({ contentType: 'text/html', body:
     `<script type="module">import {startTasm} from './index.js'; window.tasmReady=startTasm(${JSON.stringify({ basePath: '/', backends })});</script>` }));
   await page.goto('/');
   await page.evaluate(() => (window as any).tasmReady);
@@ -58,7 +58,7 @@ function client(page: Page) {
   return { call, get, covered };
 }
 
-test('all TAMS 8.2 operations, response schemas and durable workers', async ({ page, context, browserName }) => {
+test('all TAMS 8.2 operations, response schemas and durable workers', { tag: '@pr' }, async ({ page, context, browserName }) => {
   test.setTimeout(browserName === 'webkit' ? 240000 : 120000);
   const deliveries: any[] = [];
   const receiver = createServer((request, response) => {
@@ -69,7 +69,7 @@ test('all TAMS 8.2 operations, response schemas and durable workers', async ({ p
     let body = ''; request.on('data', chunk => body += chunk);
     request.on('end', () => { deliveries.push(JSON.parse(body)); response.writeHead(204).end(); });
   });
-  await new Promise<void>(resolve => receiver.listen(0, '127.0.0.1', resolve));
+  const receiverURL = await listen(receiver);
   try {
     await start(page);
     const { call, get, covered } = client(page);
@@ -81,7 +81,7 @@ test('all TAMS 8.2 operations, response schemas and durable workers', async ({ p
     await call(`/service/profiles/${profile}`, 'POST', { id: profile, label: 'AAC', flow_metadata: audio }, 201);
     await get('/service/profiles'); await get(`/service/profiles/${profile}`);
     const hook = await call('/service/webhooks', 'POST', {
-      url: `http://127.0.0.1:${(receiver.address() as any).port}/events`, events: ['flows/created'] }, 201);
+      url: new URL('/events', receiverURL).href, events: ['flows/created'] }, 201);
     const webhookId = hook.value.id;
     await get('/service/webhooks'); await get(`/service/webhooks/${webhookId}`);
     const flow = randomUUID(), source = randomUUID(), other = randomUUID();
@@ -161,5 +161,5 @@ test('all TAMS 8.2 operations, response schemas and durable workers', async ({ p
     const expected = Object.entries(spec.paths).flatMap(([path, methods]: [string, any]) =>
       Object.keys(methods).filter(m => ['get', 'head', 'put', 'post', 'delete'].includes(m)).map(m => `${m.toUpperCase()} ${path}`));
     expect([...covered].sort()).toEqual(expected.sort());
-  } finally { await new Promise<void>(resolve => receiver.close(() => resolve())); }
+  } finally { await closeServer(receiver); }
 });

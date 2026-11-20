@@ -1,9 +1,9 @@
-import { test, expect } from './fixtures';
+import { test, expect, listen, closeServer } from './fixtures';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, resolve } from 'node:path';
 
-for (const prefix of ['/tasm/', '/']) test(`standalone core works at ${prefix} without either website`, async ({ page }) => {
+for (const prefix of ['/tasm/', '/']) test(`standalone core works at ${prefix} without either website`, { tag: '@pr' }, async ({ page }) => {
   let offline = false;
   const types: Record<string, string> = { '.js': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json' };
   const server = createServer(async (request, response) => {
@@ -22,8 +22,8 @@ for (const prefix of ['/tasm/', '/']) test(`standalone core works at ${prefix} w
       response.writeHead(200, { 'content-type': types[extname(file)] ?? 'application/octet-stream' }).end(bytes);
     } catch { response.writeHead(404).end(); }
   });
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-  const origin = `http://127.0.0.1:${(server.address() as any).port}`;
+  const serverURL = await listen(server);
+  const origin = serverURL.origin;
   try {
     await page.goto(origin + prefix);
     expect(await page.evaluate(async () => (await (window as any).tasmReady).apiUrl)).toBe(origin + prefix + 'api/');
@@ -48,6 +48,6 @@ for (const prefix of ['/tasm/', '/']) test(`standalone core works at ${prefix} w
     expect(cached.some(path => /demo|playpen|branding|samples/.test(path))).toBe(false);
   } finally {
     await page.goto('about:blank');
-    server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+    await closeServer(server);
   }
 });

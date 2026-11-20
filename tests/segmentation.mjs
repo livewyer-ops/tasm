@@ -73,3 +73,23 @@ const shortObjects = await segmentMedia(short.bytes, 'audio');
 assert.deepEqual(short.sample.technical.essence_parameters, { sample_rate: 48000, channels: 1 });
 assert.equal(short.sample.durationNs, String(BigInt(shortObjects.at(-1).end) - BigInt(shortObjects[0].start)));
 assert.ok(BigInt(short.sample.durationNs) < 1000000000n);
+
+// Import both elementary streams on a common clock, with audio starting half a second later.
+const target = new BufferTarget(), output = new Output({ format: new Mp4OutputFormat(), target });
+const picture = new EncodedVideoPacketSource('avc'), sound = new EncodedAudioPacketSource('aac');
+output.addVideoTrack(picture); output.addAudioTrack(sound);
+await output.start();
+await Promise.all([[picture, 'video', 0], [sound, 'audio', 0.5]].map(async ([source, kind, offset]) => {
+  const file = samples.find(s => s.kind === kind).file;
+  const input = new Input({ source: new BufferSource(await readFile('apps/shared/samples/' + file)), formats: [MPEG_TS] });
+  try {
+    const track = (await input.getTracks())[0], decoderConfig = await track.getDecoderConfig(), origin = await track.getFirstTimestamp();
+    for await (const packet of new EncodedPacketSink(track).packets()) {
+      await source.add(packet.clone({ timestamp: packet.timestamp - origin + offset }), { decoderConfig });
+    }
+    source.close();
+  } finally { input.dispose(); }
+}));
+await output.finalize();
+const tracks = await importMedia(new File([target.buffer], 'offset.mp4'));
+assert.deepEqual(tracks.map(t => t.sample.trackOffsetNs), ['0', '500000000']);

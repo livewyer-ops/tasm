@@ -8,25 +8,30 @@ const root = resolve(process.env.TASM_DIST ?? 'dist', app);
 const preview = process.argv.includes('--ui-preview');
 const port = Number(process.env.PORT ?? (app === 'demo' ? 4174 : 4173));
 const address = process.env.TASM_BIND_ADDRESS ?? '127.0.0.1';
+// Use the production policy for every local response, including live preview.
+const globalHeaders = (await readFile(new URL('../deploy/_headers', import.meta.url), 'utf8')).split('\n/')[0].trim().split('\n').slice(1)
+  .map(line => { const i = line.indexOf(':'); return [line.slice(0, i).trim(), line.slice(i + 1).trim()]; });
 let bundle;
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.otf': 'font/otf', '.ttf': 'font/ttf', '.ts': 'video/mp2t', '.wasm': 'application/wasm', '.json': 'application/json', '.map': 'application/json' };
 const server = createServer(async (req, res) => {
+  for (const [name, value] of globalHeaders) res.setHeader(name, value);
   const url = new URL(req.url, 'http://localhost');
   if (!['GET', 'HEAD'].includes(req.method)) { res.writeHead(405).end(); return; }
   // Live UI bypasses the worker cache; all runtime files still use the built release.
   const live = url.pathname.match(/^\/preview\.(html|css|js)$/);
-  if (live || url.pathname === '/preview-onboarding.css' || (preview && url.pathname === '/startup.js')) {
+  if (live || url.pathname === '/preview-bootstrap.js' || url.pathname === '/preview-onboarding.css' || (preview && url.pathname === '/startup.js')) {
     if (!preview) { res.writeHead(404).end(); return; }
     try {
       let bytes;
       if (url.pathname === '/preview-onboarding.css') bytes = await readFile('apps/shared/onboarding.css');
+      else if (url.pathname === '/preview-bootstrap.js') bytes = (await readFile(`apps/${app}/bootstrap.js`, 'utf8')).replace(`./${app}.js`, './preview.js');
       else if (url.pathname === '/startup.js') {
         const { build } = await import('esbuild');
         bytes = (await build({ entryPoints: ['apps/shared/startup.ts'], bundle: true, format: 'iife', target: 'es2022', write: false })).outputFiles[0].contents;
       } else if (live[1] === 'html') {
         bytes = appHTML(await readFile(`apps/${app}/index.html`, 'utf8'), app)
           .replace('href="./"', 'href="./preview.html"').replaceAll(`./${app}.css`, './preview.css')
-          .replaceAll('./onboarding.css', './preview-onboarding.css').replaceAll(`./${app}.js`, './preview.js');
+          .replaceAll('./onboarding.css', './preview-onboarding.css').replace('./bootstrap.js', './preview-bootstrap.js');
       } else if (live[1] === 'css') bytes = await readFile(`apps/${app}/style.css`);
       else {
         bundle ??= import('esbuild').then(({ context }) => context({ entryPoints: [`apps/${app}/main.ts`], bundle: true, format: 'esm', target: 'es2022', sourcemap: 'inline', write: false }));

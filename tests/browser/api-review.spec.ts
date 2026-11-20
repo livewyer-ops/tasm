@@ -1,48 +1,6 @@
 import { test, expect } from './fixtures';
 import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
-import { describeRequest, requestDetails, walkthrough } from '../../apps/playpen/api-review';
-import type { RequestRecord } from '../../apps/shared/workspace-store';
-
-const record = (path: string, method = 'GET', body?: unknown): RequestRecord => ({ url: `http://localhost/${path}`, method, body, headers: {}, status: 200, ms: 12 });
-
-test('review explains recorded endpoints and does not infer a successful result', () => {
-  for (const [request, title] of [
-    [record('api/flows/root', 'PUT', { format: 'urn:x-nmos:format:multi' }), 'Create source collection'],
-    [record('api/flows/video', 'PUT', { format: 'urn:x-nmos:format:video' }), 'Create media flow'],
-    [{ ...record('api/flows/video', 'PUT'), stage: 'segment' }, 'Prepare replacement flow'],
-    [record('api/flows/video/storage', 'POST', { object_ids: ['object-1'] }), 'Allocate media storage'],
-    [record('media/object-1', 'PUT', { file: 'clip.ts', bytes: 1024 }), 'Upload media bytes'],
-    [record('api/flows/video/segments', 'POST', { object_id: 'object-1', timerange: '[2:0_4:0)' }), 'Register a segment'],
-    [record('api/flows/root/flow_collection', 'PUT', []), 'Publish flow collection'],
-    [{ ...record('api/flows/old', 'DELETE'), stage: 'update' }, 'Retire a flow'],
-    [record('api/flows/video/segments?timerange=%5B2%3A0_4%3A0)'), 'Query a time range'],
-    [record('api/flows/video/segments'), 'Read flow segments'],
-    [record('media/object-1'), 'Read media bytes'],
-    [record('media/object-1', 'HEAD'), 'Check stored object'],
-    [record('api/flows/video/label', 'PUT', 'New name'), 'Rename source or flow'],
-    [record('api/flows/video'), 'Read source or flow metadata'],
-    [record('api/sources?limit=100'), 'Read source or flow metadata'],
-    [record('api/unknown', 'PATCH'), 'API request'],
-  ] as [RequestRecord, string][]) expect(describeRequest(request).title).toBe(title);
-  const upload = record('media/object-1', 'PUT', { file: 'clip.ts', bytes: 1024 });
-  expect(describeRequest(upload).context).toContainEqual(['Bytes sent', '1024']);
-  expect(describeRequest({ ...upload, ms: undefined }).state).toBe('Pending');
-  expect(describeRequest({ ...upload, ms: undefined }).outcome).not.toContain('were stored');
-  expect(describeRequest({ ...upload, status: 503, error: 'Write failed' }).outcome).toContain('Do not assume');
-  expect(describeRequest({ ...upload, status: undefined }).state).toBe('Unknown');
-  const query = { ...record('api/flows/video/segments?timerange=%5B2%3A0_4%3A0)'), response: [{ object_id: 'object-1' }] };
-  expect(describeRequest(query).context).toContainEqual(['Requested time range', '[2:0_4:0)']);
-  expect(describeRequest(query).outcome).toContain('1 segment reference was');
-  expect(requestDetails({ ...upload, body: '<img src=x onerror=alert(1)>', response: null, status: 204 })).toContain('&lt;img');
-  expect(requestDetails({ ...upload, response: null, status: 204 })).toContain('(empty)');
-  const partial = { ...record('api/flows/video/segments', 'POST', [{ object_id: 'object-1' }]), response: { failed_segments: [{ object_id: 'object-1' }] } };
-  expect(describeRequest(partial).state).toBe('Failed');
-  expect(describeRequest({ ...record('api/flows/old', 'DELETE'), status: 202 }).outcome).toContain('pending');
-  const stages = walkthrough({ id: 'move', name: 'Move media', pending: false, requests: [record('api/flows/root'), record('api/flows/video/segments'), partial], events: [{ position: 2, title: 'Reuse stored media', detail: 'Reuse 4 objects.', state: 'Succeeded', ms: 1 }] });
-  expect(stages.map(s => s.title)).toEqual(['Read current arrangement', 'Reuse stored media', 'Register segments']);
-  expect(stages[0].records).toHaveLength(2); expect(stages[2].state).toBe('Failed');
-});
 
 test('review retains its position, focus and data while calls arrive or history expires', async ({ page }) => {
   const html = (await readFile('apps/playpen/index.html', 'utf8')).replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '');

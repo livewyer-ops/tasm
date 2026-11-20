@@ -1,4 +1,4 @@
-import { test, expect } from './fixtures';
+import { test, expect, save, ready as waitForApp, named, savedWorkspace, dragToTime } from './fixtures';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -18,18 +18,12 @@ test.beforeAll(async () => {
 test.afterAll(async () => { if (directory) await rm(directory, { recursive: true, force: true }); });
 const clipName = 'My <clip>.mp4';
 async function ready(page: Page) {
-  await expect(page.locator('body')).toHaveAttribute('data-ready', 'true', { timeout: 90000 });
-  await expect(page.locator('body')).not.toHaveClass(/busy/, { timeout: 90000 });
+  await waitForApp(page);
   await expect(page.locator('#library-section')).toHaveAttribute('aria-busy', 'false');
 }
 async function open(page: Page) {
   await page.setViewportSize({ width: 1440, height: 1400 }); await page.goto('/'); await ready(page);
   await expect(page.locator('#import-media')).toBeEnabled();
-}
-async function named(page: Page, button: string, name: string) {
-  await page.locator(button).click(); await page.locator('#entity-name').fill(name);
-  await page.locator('#dialog-submit').click(); await ready(page);
-  if (button !== '#new-source') { await page.locator('#save-draft').click(); await ready(page); }
 }
 async function importClip(page: Page) {
   await page.locator('#media-file').setInputFiles({ name: clipName, mimeType: 'video/mp4', buffer: video });
@@ -103,21 +97,15 @@ test('files drop directly into both timeline views and leave unmatched tracks in
   expect((await state(page))[0].segments).toHaveLength(4);
   await page.reload(); await ready(page); await expect(page.locator('.clip')).toHaveCount(2);
 });
-async function state(page: Page) {
-  return page.evaluate(async () => {
-    const id = (document.getElementById('sources') as HTMLSelectElement).value;
-    if (!id) return [];
-    const root = await (await fetch(`/api/flows/${id}`)).json();
-    return Promise.all(root.flow_collection.map(async ({ id }: { id: string }) => ({
-      flow: await (await fetch(`/api/flows/${id}`)).json(), segments: await (await fetch(`/api/flows/${id}/segments`)).json(),
-    })));
-  });
-}
+const state = async (page: Page) => (await savedWorkspace(page)).flows;
 async function watchApi(page: Page) {
   await page.evaluate(() => {
     const real = window.fetch; (window as any).apiCalls = [];
     window.fetch = (input, init) => {
-      if (/\/tasm\/(api|media)\//.test(String(input))) (window as any).apiCalls.push({ url: String(input), method: init?.method ?? 'GET' });
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href).href;
+      if (['api/', 'media/'].some(prefix => url.startsWith(new URL(prefix, location.href).href))) {
+        (window as any).apiCalls.push({ url, method: init?.method ?? (input instanceof Request ? input.method : 'GET') });
+      }
       return real(input, init);
     };
   });
@@ -136,9 +124,7 @@ async function dragVideo(page: Page, start: number) {
   const sample = card(page, 'video'), track = page.locator('.lane-track').first();
   await sample.scrollIntoViewIfNeeded(); await track.scrollIntoViewIfNeeded();
   await page.locator('#timeline-scroll').evaluate(el => el.scrollLeft = 0);
-  const from = await sample.boundingBox(), to = await track.boundingBox();
-  await page.mouse.move(from!.x + 20, from!.y + 20); await page.mouse.down();
-  await page.mouse.move(to!.x + start * 26, to!.y + 35, { steps: 12 }); await page.mouse.up(); if (await page.locator('#save-draft').isEnabled()) await page.locator('#save-draft').click();
+  await dragToTime(page, sample, track, start); await save(page);
   await ready(page);
 }
 
@@ -179,7 +165,12 @@ test('library imports stay separate and persistent until dragged or added to a f
   expect(picture.flow.essence_parameters.frame_rate.numerator / picture.flow.essence_parameters.frame_rate.denominator).toBe(30);
   expect(sound.flow.essence_parameters).toEqual({ sample_rate: 44100, channels: 1 });
   expect(picture.segments[0].timerange).toBe('[2:0_4:0)');
-  expect(sound.segments[0].timerange).toMatch(/^\[0:0_/);
+  const probe = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,start_time', '-of', 'json', join(directory, 'clip.mp4')], { encoding: 'utf8' });
+  const streams: { codec_type: string; start_time: string }[] = JSON.parse(probe).streams;
+  const offset = Number(streams.find(s => s.codec_type === 'audio')!.start_time) - Number(streams.find(s => s.codec_type === 'video')!.start_time);
+  const [, seconds, nanos] = /^\[(\d+):(\d+)_/.exec(sound.segments[0].timerange)!;
+  expect(offset).toBeGreaterThan(0);
+  expect(Math.abs(Number(seconds) + Number(nanos) / 1e9 - offset)).toBeLessThan(2 / 90000);
   await page.locator('video').evaluate((v: HTMLVideoElement) => { v.muted = true; v.playbackRate = 4; });
   await page.locator('omakase-play-button').click();
   await expect.poll(() => page.locator('video').evaluate((v: HTMLVideoElement) => v.currentTime), { timeout: 20000 }).toBeGreaterThan(2.5);
@@ -191,6 +182,7 @@ test('library imports stay separate and persistent until dragged or added to a f
   expect(repeated.segments.map((s: any) => s.object_id)).toEqual([...picture.segments, ...picture.segments].map((s: any) => s.object_id));
   expect(await page.evaluate(() => (window as any).apiCalls.filter((c: any) => c.method === 'PUT' && c.url.includes('/media/')))).toEqual([]);
   await expect(page.locator('#objects tr[data-state="stored"]')).toHaveCount(picture.segments.length + sound.segments.length);
+  expect(await page.evaluate(() => (window as any).apiCalls.length)).toBeGreaterThan(0);
   const beforeRemoval = await state(page);
   await page.evaluate(() => { (window as any).apiCalls = []; });
   await page.getByRole('button', { name: `Remove ${clipName} video from library`, exact: true }).click();
@@ -198,7 +190,7 @@ test('library imports stay separate and persistent until dragged or added to a f
   expect(await page.evaluate(() => (window as any).apiCalls)).toEqual([]);
   expect(await state(page)).toEqual(beforeRemoval);
   await page.reload(); await ready(page); await expect(page.locator('.clip')).toHaveCount(3);
-  await page.locator('.clip.video').first().click(); await page.locator('#block-start').fill('1'); await page.locator('#move-block').click(); if (await page.locator('#save-draft').isEnabled()) await page.locator('#save-draft').click(); await ready(page);
+  await page.locator('.clip.video').first().click(); await page.locator('#block-start').fill('1'); await page.locator('#move-block').click(); await save(page); await ready(page);
   const moved = (await state(page)).find((s: any) => s.flow.format.endsWith(':video'));
   expect(moved.segments[0].object_id).toBe(picture.segments[0].object_id);
   expect(moved.segments[0].timerange).toBe('[1:0_3:0)');
@@ -207,7 +199,7 @@ test('library imports stay separate and persistent until dragged or added to a f
   await expect(page.locator('#storage-count')).toHaveText('0 objects');
 });
 
-test('invalid, cancelled and quota-failed imports leave the library and TAMS unchanged', async ({ page }) => {
+test('invalid, cancelled and quota-failed imports leave the library and TAMS unchanged', { tag: '@pr' }, async ({ page }) => {
   await open(page); await watchApi(page);
   for (const buffer of [Buffer.alloc(0), Buffer.from('not a media file')]) {
     await page.locator('#media-file').setInputFiles({ name: 'invalid.mp4', mimeType: 'video/mp4', buffer });
@@ -218,7 +210,7 @@ test('invalid, cancelled and quota-failed imports leave the library and TAMS unc
     const real = Worker.prototype.postMessage;
     Worker.prototype.postMessage = function (message, transfer) {
       if (message.file) { Worker.prototype.postMessage = real; return; }
-      real.call(this, message, transfer as Transferable[]);
+      Reflect.apply(real, this, [message, transfer]);
     };
   });
   await page.locator('#media-file').setInputFiles({ name: clipName, mimeType: 'video/mp4', buffer: video });
