@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -35,9 +35,8 @@ try {
     await cp(path, join(source, path), { recursive: true });
   }
   await symlink(resolve('node_modules'), join(source, 'node_modules'));
-  // Share the compiler cache; generated website assets and source edits stay isolated.
-  await symlink(resolve('target'), join(source, 'target'));
-  const env = { ...process.env, TASM_DIST: join(source, 'dist'), DEMO_URL: 'https://demo.example/', PLAYPEN_URL: 'https://playpen.example/',
+  const cargoTarget = join(source, 'cargo output');
+  const env = { ...process.env, CARGO_TARGET_DIR: cargoTarget, TASM_DIST: join(source, 'dist'), DEMO_URL: 'https://demo.example/', PLAYPEN_URL: 'https://playpen.example/',
     WASM_BINDGEN: process.env.WASM_BINDGEN ?? (existsSync('.local/bin/wasm-bindgen') ? resolve('.local/bin/wasm-bindgen') : 'wasm-bindgen') };
   for (const invalid of ['.', 'apps']) assert.throws(() => execFileSync(process.execPath, ['scripts/build.mjs', 'demo'],
     { cwd: source, env: { ...env, TASM_DIST: invalid }, stdio: 'pipe' }), /Build output must be outside source directories/);
@@ -54,6 +53,20 @@ try {
   }
   const rebuild = target => execFileSync(process.execPath, ['scripts/build.mjs', target], { cwd: source, env, stdio: 'inherit' });
   rebuild('all');
+  // Leave the previous modules in Cargo's default directory while rebuilding elsewhere.
+  const release = 'wasm32-unknown-unknown/release';
+  await mkdir(join(source, 'target', release), { recursive: true });
+  for (const adapter of ['browser', 'cloudflare']) {
+    const file = `tasm_${adapter}.wasm`;
+    await cp(join(cargoTarget, release, file), join(source, 'target', release, file));
+    await appendFile(join(source, 'core', adapter, 'rust/src/lib.rs'),
+      '\n#[wasm_bindgen::prelude::wasm_bindgen]\npub fn package_revision_probe() -> u32 { 2 }\n');
+  }
+  rebuild('all');
+  for (const file of ['core/tasm_bg.wasm', 'cloudflare/api/tasm.wasm']) {
+    const module = await WebAssembly.compile(await readFile(join(source, 'dist', file)));
+    assert(WebAssembly.Module.exports(module).some(entry => entry.name === 'package_revision_probe'), `Stale module in ${file}`);
+  }
   const hashes = {};
   for (const target of ['demo', 'playpen']) hashes[target] = await digest(join(source, 'dist', target));
   const core = await readdir(join(source, 'dist/core'));

@@ -39,7 +39,7 @@ fn not_found() -> ApiError {
     ApiError::not_found("The requested Webhook ID in the path is invalid.")
 }
 fn id(value: &str) -> Result<Uuid, ApiError> {
-    value.parse().map_err(|_| not_found())
+    model::parse_uuid(value).map_err(|_| not_found())
 }
 
 async fn list(
@@ -107,7 +107,7 @@ fn strings(map: &Map<String, Value>, name: &str, uuids: bool) -> Result<(), ApiE
     for value in values {
         let value = value.as_str().ok_or_else(invalid)?;
         if uuids {
-            value.parse::<Uuid>().map_err(|_| invalid())?;
+            model::parse_uuid(value).map_err(|_| invalid())?;
         }
     }
     Ok(())

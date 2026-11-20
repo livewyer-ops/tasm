@@ -38,12 +38,24 @@ pub fn object(value: Value) -> Result<Map<String, Value>, ValidationError> {
     value.as_object().cloned().ok_or(ValidationError)
 }
 
+/// UUID spelling accepted by the TAMS wire schemas.
+pub fn parse_uuid(value: &str) -> Result<Uuid, ValidationError> {
+    let id = Uuid::try_parse(value).map_err(|_| ValidationError)?;
+    if !(1..=5).contains(&id.get_version_num())
+        || id.get_variant() != uuid::Variant::RFC4122
+        || id.hyphenated().encode_lower(&mut Uuid::encode_buffer()) != value
+    {
+        return Err(ValidationError);
+    }
+    Ok(id)
+}
+
 pub fn uuid_field(map: &Map<String, Value>, name: &str) -> Result<Uuid, ValidationError> {
-    map.get(name)
-        .and_then(Value::as_str)
-        .ok_or(ValidationError)?
-        .parse()
-        .map_err(|_| ValidationError)
+    parse_uuid(
+        map.get(name)
+            .and_then(Value::as_str)
+            .ok_or(ValidationError)?,
+    )
 }
 
 pub fn optional_uuid_field(
@@ -53,7 +65,7 @@ pub fn optional_uuid_field(
     match map.get(name) {
         None => Ok(None),
         Some(Value::String(value)) if value.is_empty() => Ok(None),
-        Some(Value::String(value)) => value.parse().map(Some).map_err(|_| ValidationError),
+        Some(Value::String(value)) => parse_uuid(value).map(Some),
         Some(_) => Err(ValidationError),
     }
 }
@@ -220,4 +232,32 @@ pub fn flow_data(record: &mut Value) -> &mut Map<String, Value> {
         outer.insert("data".into(), json!({}));
     }
     outer.get_mut("data").unwrap().as_object_mut().unwrap()
+}
+
+#[cfg(test)]
+mod uuid_tests {
+    use super::parse_uuid;
+
+    #[test]
+    fn matches_the_wire_schema() {
+        let id = "abcdef12-3456-4abc-89ab-0123456789ab";
+        for version in 1..=5 {
+            for variant in ['8', '9', 'a', 'b'] {
+                let valid = format!("abcdef12-3456-{version}abc-{variant}9ab-0123456789ab");
+                assert_eq!(parse_uuid(&valid).unwrap().to_string(), valid);
+            }
+        }
+        for invalid in [
+            id.to_uppercase(),
+            id.replace('-', ""),
+            format!("urn:uuid:{id}"),
+            format!("{{{id}}}"),
+            id.replace("-4abc", "-0abc"),
+            id.replace("-4abc", "-6abc"),
+            id.replace("-89ab", "-79ab"),
+            id.replace("-89ab", "-c9ab"),
+        ] {
+            assert!(parse_uuid(&invalid).is_err(), "{invalid}");
+        }
+    }
 }

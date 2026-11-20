@@ -6,9 +6,18 @@ import { build } from 'esbuild';
 import { writeCoreNotices } from './notices.mjs';
 
 export function buildWasm(crate, directory, name) {
-  execFileSync('cargo', ['build', '-p', crate, '--locked', '--release', '--target', 'wasm32-unknown-unknown'], { stdio: 'inherit' });
+  const manifest = resolve('core', directory, 'rust', 'Cargo.toml');
+  const output = execFileSync('cargo', ['build', '-p', crate, '--lib', '--locked', '--release',
+    '--target', 'wasm32-unknown-unknown', '--message-format=json-render-diagnostics'], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 16 * 1024 * 1024,
+  });
+  const modules = output.trimEnd().split('\n').map(line => JSON.parse(line))
+    .filter(message => message.reason === 'compiler-artifact' && message.manifest_path === manifest &&
+      message.target.crate_types.includes('cdylib'))
+    .flatMap(message => message.filenames.filter(path => path.endsWith('.wasm')));
+  if (modules.length !== 1) throw new Error(`Expected one Wasm artefact for ${crate}, found ${modules.length}.`);
   const bindgen = process.env.WASM_BINDGEN ?? (existsSync('.local/bin/wasm-bindgen') ? '.local/bin/wasm-bindgen' : 'wasm-bindgen');
-  execFileSync(bindgen, [`target/wasm32-unknown-unknown/release/${crate.replaceAll('-', '_')}.wasm`,
+  execFileSync(bindgen, [modules[0],
     '--target', 'web', '--out-name', name, '--out-dir', `pkg/${directory}`], { stdio: 'inherit' });
 }
 

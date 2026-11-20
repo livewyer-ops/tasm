@@ -2,15 +2,7 @@ pub use tasm_core::http::*;
 #[path = "../../../../rust/src/routes/mod.rs"]
 pub mod routes;
 mod service_endpoints;
-use error::ApiError;
-use uuid::Uuid;
 pub const MAX_JSON_BODY_BYTES: usize = 4 * 1024 * 1024;
-pub fn path_uuid(value: &str) -> Result<Uuid, ApiError> {
-    value
-        .parse()
-        .map_err(|_| ApiError::not_found("The requested resource identifier is invalid."))
-}
-
 use crate::{config::Settings, db::Database, storage::StorageFactory};
 use axum::{Extension, Router, middleware::from_fn};
 use std::sync::Arc;

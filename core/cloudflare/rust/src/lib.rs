@@ -31,6 +31,8 @@ impl RequestIdentity for Identity {
 pub struct Tasm {
     router: Router,
     worker: worker::Worker,
+    #[wasm_bindgen(readonly, js_name = queueRetentionSeconds)]
+    pub queue_retention_seconds: u64,
 }
 #[wasm_bindgen]
 impl Tasm {
@@ -41,6 +43,7 @@ impl Tasm {
             Arc::new(serde_json::from_str::<config::Settings>(&configuration).map_err(js_error)?);
         Ok(Self {
             router: http::router(database.clone(), settings.clone()),
+            queue_retention_seconds: settings.worker_queue_retention_seconds,
             worker: worker::Worker::new(database, settings),
         })
     }

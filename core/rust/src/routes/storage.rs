@@ -66,12 +66,8 @@ async fn allocate(
     Extension(factory): Extension<StorageFactory>,
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
-    let flow_id: Uuid = request
-        .uri()
-        .path()
-        .split('/')
-        .nth(2)
-        .map_or_else(|| crate::http::path_uuid(""), crate::http::path_uuid)?;
+    let raw = request.uri().path().split('/').nth(2).unwrap_or_default();
+    let flow_id = crate::http::path_uuid(&crate::http::lenient_decode_path(raw))?;
     let content_type_header = request
         .headers()
         .get(axum::http::header::CONTENT_TYPE)
@@ -211,10 +207,7 @@ async fn allocate(
         Some(value) => {
             factory
                 .backend(
-                    value
-                        .as_str()
-                        .ok_or_else(invalid)?
-                        .parse()
+                    crate::domain::model::parse_uuid(value.as_str().ok_or_else(invalid)?)
                         .map_err(|_| invalid())?,
                 )
                 .await

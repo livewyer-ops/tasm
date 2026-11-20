@@ -164,9 +164,7 @@ async fn get_object(
     let verbose = params.bool("verbose_storage")?.unwrap_or(false);
     let presigned = params.bool("presigned")?;
     let accepted_labels = params.csv_set("accept_get_urls")?;
-    let accepted_storage = params
-        .uuid_set("accept_storage_ids")?
-        .filter(|values| !values.is_empty());
+    let accepted_storage = params.uuid_list("accept_storage_ids")?;
     let storage_tag_values = params.dynamic_csv("storage_backend_tag.")?;
     let storage_tag_exists = params.dynamic_bool("storage_backend_tag_exists.")?;
     let limit = params.integer("limit")?;
@@ -444,10 +442,7 @@ async fn post_instance(
     let storage_id = fields
         .get("storage_id")
         .map(|value| {
-            value
-                .as_str()
-                .ok_or_else(invalid_instance_json)?
-                .parse::<Uuid>()
+            crate::domain::model::parse_uuid(value.as_str().ok_or_else(invalid_instance_json)?)
                 .map_err(|_| invalid_instance_json())
         })
         .transpose()?;
@@ -566,7 +561,11 @@ async fn delete_instance(
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
     let params = query(&request, &["storage_id", "label"], &[])?;
-    let storage_id = params.uuid("storage_id")?;
+    // DELETE declares this selector as a string; the registration body uses the UUID schema.
+    let storage_id = params
+        .last("storage_id")
+        .map(|value| value.parse::<Uuid>().map_err(|_| invalid_query()))
+        .transpose()?;
     let label = params.last("label");
     if storage_id.is_some() == label.is_some() {
         return Err(invalid_query());

@@ -14,6 +14,7 @@ export interface Bindings {
   R2_ACCESS_KEY_ID: string;
   R2_SECRET_ACCESS_KEY: string;
   WEBHOOK_ALLOWED_HOSTS?: string;
+  WORKER_QUEUE_RETENTION_SECONDS?: string | number;
   MEDIA: R2Bucket;
   MEDIA_SECONDARY: R2Bucket;
   BASIC_AUTH_USERNAME: string;

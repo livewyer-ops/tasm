@@ -204,8 +204,14 @@ export class Runtime {
   }
   stopPolling(): void { this.stopped = true; clearTimeout(this.timer); }
   async close(): Promise<void> {
-    this.stopPolling(); await this.serial(async () => {}); await this.sqlHost.drained(); await this.db.close();
-    this.releaseStore?.();
+    this.stopPolling();
+    try {
+      await this.serial(async () => {});
+      await this.sqlHost?.drained();
+      await this.db?.close();
+    } finally {
+      this.releaseStore?.();
+    }
   }
   private async fileRow(backend: string, id: string, current = false): Promise<FileRow | undefined> {
     return (await this.db.query<FileRow>(`SELECT f.* FROM tasm_files f WHERE backend=$1 AND object_id=$2

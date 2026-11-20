@@ -143,9 +143,6 @@ async fn list(
     )?;
     for (key, value) in q.last_values() {
         match key {
-            "source_id" | "profile_id" => {
-                value.parse::<Uuid>().map_err(|_| invalid_query())?;
-            }
             "include_timerange" | "reverse_order" | "init_segments" => {
                 crate::http::query::parse_bool(value)?;
             }
@@ -183,11 +180,6 @@ async fn list(
                 } =>
             {
                 return Err(invalid_query());
-            }
-            "collected_by_ids" if !value.is_empty() => {
-                for value in value.split(',') {
-                    value.parse::<Uuid>().map_err(|_| invalid_query())?;
-                }
             }
             "timerange" => {
                 timerange::parse(value).map_err(|_| invalid_query())?;
@@ -234,11 +226,7 @@ async fn list(
             .transpose()
             .map_err(|_| invalid_query())?,
         label: q.last("label").map(str::to_owned),
-        collected_by_ids: collected
-            .filter(|value| !value.is_empty())
-            .map(|value| value.split(',').map(str::parse).collect::<Result<_, _>>())
-            .transpose()
-            .map_err(|_| invalid_query())?,
+        collected_by_ids: q.uuid_list("collected_by_ids")?,
         top_level_only: collected == Some(""),
         timerange_start: range.start,
         timerange_end: range.end,
@@ -435,11 +423,7 @@ async fn put_flow(
             "Changing read_only requires administrator scope.",
         ));
     }
-    let body_id = map
-        .get("id")
-        .and_then(Value::as_str)
-        .and_then(|value| value.parse::<Uuid>().ok())
-        .ok_or_else(invalid_flow)?;
+    let body_id = model::uuid_field(&map, "id").map_err(|_| invalid_flow())?;
     if body_id != flow_id {
         return Err(ApiError::not_found(
             "The requested Flow ID in the path is invalid.",
@@ -485,7 +469,7 @@ async fn put_flow(
             }
             rules::validate_direct(&payload).map_err(|_| invalid_flow())?;
         } else {
-            let requested: Uuid = value.parse().map_err(|_| invalid_flow())?;
+            let requested = model::parse_uuid(value).map_err(|_| invalid_flow())?;
             if existing
                 .as_ref()
                 .is_some_and(|old| old.profile_id.is_none() || old.profile_id != Some(requested))

@@ -3,14 +3,25 @@ import { initSync, Tasm } from "../../pkg/cloudflare/tasm_cloudflare.js";
 import module from "../../pkg/cloudflare/tasm_cloudflare_bg.wasm";
 import openapi from "../../pkg/cloudflare/openapi.json";
 import schema from "./schema.sql";
+import uuidSchema from "../../contracts/tams/api/schemas/uuid.json";
 import type { Bindings } from "./worker.ts";
 import { presign } from "./signing.ts";
 
 initSync({ module });
+const storageUuid = new RegExp(uuidSchema.pattern);
 
 type Backend = { storage_id: string; bucket_name: string; label: string; default_storage: boolean; tags?: Record<string, string[]> };
 type Transaction = { finish(): void; rollback(): void; promise: Promise<void> };
 type HostPayload = { sql: string; params: SqlStorageValue[]; backend: string; id: string; source: string; destination: string; allocationId: string; method: string; presigned: boolean; contentType: string; allocations: { allocation_id: string; not_before: number }[]; webhook: { url: string; api_key_name?: string; api_key_value?: string }; payload_json: string; timeout: number };
+
+function queueRetentionSeconds(value: Bindings["WORKER_QUEUE_RETENTION_SECONDS"]): number | undefined {
+  if (value === undefined) return undefined;
+  const seconds = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
+  if (typeof seconds !== "number" || !Number.isSafeInteger(seconds) || seconds < 0) {
+    throw new Error("WORKER_QUEUE_RETENTION_SECONDS must be a non-negative whole number of seconds.");
+  }
+  return seconds;
+}
 
 /** A FIFO lock whose holder can step aside while it waits on unrelated I/O. */
 class Lock {
@@ -41,7 +52,7 @@ export class WasmStore extends DurableObject<Bindings> {
     for (const [, backend] of entries) if (typeof backend.storage_id === "string") backend.storage_id = backend.storage_id.toLowerCase();
     if (!entries.length || entries.filter(([, b]) => b.default_storage === true).length !== 1 ||
         ["storage_id", "bucket_name", "label"].some(field => new Set(entries.map(([, b]) => b[field as keyof Backend])).size !== entries.length) ||
-        entries.some(([binding, b]) => !/^[A-Z][A-Z0-9_]*$/.test(binding) || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(b.storage_id) || !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(b.bucket_name) || !b.label?.trim() || typeof b.default_storage !== "boolean" || !(env[binding as keyof Bindings] as R2Bucket)?.head)) {
+        entries.some(([binding, b]) => !/^[A-Z][A-Z0-9_]*$/.test(binding) || !storageUuid.test(b.storage_id) || !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(b.bucket_name) || !b.label?.trim() || typeof b.default_storage !== "boolean" || !(env[binding as keyof Bindings] as R2Bucket)?.head)) {
       throw new Error("Invalid storage backend configuration");
     }
     const endpoint = new URL(env.R2_ENDPOINT);
@@ -63,6 +74,10 @@ export class WasmStore extends DurableObject<Bindings> {
         ctx.storage.sql.exec("INSERT INTO tamoss_flow_collection_members(parent_id,position,child_id) SELECT flow.id, member.key, member.value FROM tamoss_flows AS flow, json_each(flow.flow_collection_ids) AS member");
         ctx.storage.sql.exec("INSERT INTO wasm_schema_versions VALUES (3)");
       }
+      if (!ctx.storage.sql.exec("SELECT version FROM wasm_schema_versions WHERE version=4").toArray().length) {
+        ctx.storage.sql.exec(schema);
+        ctx.storage.sql.exec("INSERT INTO wasm_schema_versions VALUES (4)");
+      }
       for (const old of ctx.storage.sql.exec<{ id: string; bucket_name: string; endpoint_url: string }>("SELECT id,bucket_name,endpoint_url FROM tamoss_storage_backends").toArray()) {
         if (this.#backends.get(old.id)?.bucket_name !== old.bucket_name || old.endpoint_url !== endpoint.origin) throw new Error("Existing storage identities cannot be removed or remapped");
       }
@@ -72,7 +87,7 @@ export class WasmStore extends DurableObject<Bindings> {
         ctx.storage.sql.exec("INSERT INTO tamoss_storage_backends(id,label,provider,region,store_product,store_type,default_storage,bucket_name,endpoint_url,tags,record) VALUES(?,?,'cloudflare','auto','r2','http_object_store',?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET label=excluded.label,default_storage=excluded.default_storage,tags=excluded.tags,record=excluded.record", b.storage_id, b.label, Number(b.default_storage), b.bucket_name, endpoint.origin, JSON.stringify(b.tags ?? {}), JSON.stringify(record));
       }
     });
-    this.#core = new Tasm(async (operation: string, payload: string) => JSON.stringify(await this.#call(operation, JSON.parse(payload))), JSON.stringify({ webhook_allowed_hosts: JSON.parse(env.WEBHOOK_ALLOWED_HOSTS ?? "[]") }));
+    this.#core = new Tasm(async (operation: string, payload: string) => JSON.stringify(await this.#call(operation, JSON.parse(payload))), JSON.stringify({ webhook_allowed_hosts: JSON.parse(env.WEBHOOK_ALLOWED_HOSTS ?? "[]"), worker_queue_retention_seconds: queueRetentionSeconds(env.WORKER_QUEUE_RETENTION_SECONDS) }));
   }
 
   #key(allocation: string): string {
@@ -219,9 +234,21 @@ export class WasmStore extends DurableObject<Bindings> {
       const due = this.ctx.storage.sql.exec<{ due: number | null }>(query).one().due;
       if (due !== null) next = Math.min(next, due);
     }
+    let deadline = next * 1000;
+    const retention = Number(this.#core.queueRetentionSeconds);
+    if (retention > 0) {
+      const oldest = this.ctx.storage.sql.exec<{ updated: string | null }>(`SELECT MIN(updated) AS updated FROM (
+        SELECT MIN(updated_at) AS updated FROM tamoss_delete_requests WHERE status='done'
+        UNION ALL SELECT MIN(updated_at) FROM tamoss_object_copies WHERE status='done'
+        UNION ALL SELECT MIN(updated_at) FROM tamoss_object_cleanups WHERE status='done'
+        UNION ALL SELECT MIN(updated_at) FROM tamoss_webhook_deliveries WHERE status IN ('done','dead')
+      )`).one().updated;
+      // Purges use updated_at < cutoff. SQLite's clock advances in milliseconds.
+      if (oldest !== null) deadline = Math.min(deadline, Date.parse(oldest) + retention * 1000 + 1);
+    }
     const current = await this.ctx.storage.getAlarm();
-    if (Number.isFinite(next)) {
-      const due = Math.max(Date.now()+1000,next*1000);
+    if (Number.isFinite(deadline)) {
+      const due = Math.max(Date.now() + 1000, deadline);
       if (current === null || due < current) await this.ctx.storage.setAlarm(due);
     } else if (current !== null) await this.ctx.storage.deleteAlarm();
   }

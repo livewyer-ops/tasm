@@ -30,9 +30,7 @@ pub fn router() -> Router<MetadataState> {
 }
 
 fn profile_id(value: &str) -> Result<Uuid, ApiError> {
-    value
-        .parse()
-        .map_err(|_| ApiError::not_found("The requested Profile does not exist."))
+    model::parse_uuid(value).map_err(|_| missing())
 }
 fn missing() -> ApiError {
     ApiError::not_found("The requested Profile does not exist.")

@@ -1,6 +1,11 @@
-import { apiConfigPath } from "./test-installation.ts";
+import { apiConfig, apiConfigPath } from "./test-installation.ts";
 import assert from "node:assert/strict";
+import { checkUuidFilters } from "../../tests/contract/uuid-filters.ts";
 import { readFileSync } from "node:fs";
+import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import type { WasmStore } from "./store.ts";
 import { after, before, test } from "node:test";
 import { ReadableStream } from "node:stream/web";
 import { createTestHarness } from "wrangler";
@@ -61,6 +66,14 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     const unsupported = await request("/service", { method: "PUT", body: "{}" });
     assert.equal(unsupported.status, 405);
     assert.equal((await unsupported.json() as { type: string }).type, "method_not_allowed");
+  });
+
+  await t.test("UUID filters follow the TAMS wire format", async () => {
+    const videoFlow = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    await checkUuidFilters(async (method, path, body) => {
+      const response = await request(path, { method, body: JSON.stringify(body) });
+      return { status: response.status, body: await response.text() };
+    }, videoFlow);
   });
 
   await t.test("Each Wasm instance uses its own SQLite host", async () => {
@@ -734,4 +747,102 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     assert.equal((await api.fetch(origin + "/service")).status, 503);
     assert.equal((await api.fetch(origin + "/healthz")).status, 200);
   });
+
+  await t.test("Configured storage IDs must be usable by UUID filters", async () => {
+    for (const id of ["abcdef12-3456-7abc-89ab-0123456789ab", "abcdef12-3456-4abc-c9ab-0123456789ab"]) {
+      const backends = JSON.parse(apiConfig.vars.STORAGE_BACKENDS);
+      backends.MEDIA.storage_id = id;
+      await server.update(() => ({ workers: [{ configPath: apiConfigPath,
+        vars: { STORAGE_BACKENDS: JSON.stringify(backends) } }] }));
+      const env = await api.getEnv();
+      const wire = JSON.stringify({ method: "GET", url: origin + "/service/storage-backends", headers: {}, body: null, actor: { subject: username, scopes: ["tams-api/admin"] } });
+      await assert.rejects(async () => await env.STORE.getByName(id).request(wire), /Invalid storage backend configuration/);
+    }
+  });
+});
+
+test("idle Durable Object alarms expire terminal queues and respect earlier retries", async t => {
+  // Wrap the shipped class to inspect the alarm and record each real invocation.
+  const directory = await mkdtemp(join(tmpdir(), "tasm-alarm-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await cp(dirname(apiConfigPath), directory, { recursive: true });
+  const main = join(directory, "alarm-test.mjs");
+  await writeFile(main, `
+    import { WasmStore as Store } from './worker.mjs';
+    export { default } from './worker.mjs';
+    export class WasmStore extends Store {
+      history = [];
+      constructor(ctx, env) {
+        const settings = { disabled: 0, invalid: '1.5' };
+        super(ctx, ctx.id.name in settings ? { ...env, WORKER_QUEUE_RETENTION_SECONDS: settings[ctx.id.name] } : env);
+      }
+      async alarms() { return { next: await this.ctx.storage.getAlarm(), history: this.history }; }
+      async alarm() {
+        await super.alarm();
+        this.history.push(this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM tamoss_webhook_deliveries").one().n);
+      }
+    }`);
+  const retention = 10;
+  const harness = createTestHarness({ workers: [{ config: { ...apiConfig, main, base_dir: directory, no_bundle: false,
+    vars: { ...apiConfig.vars, WORKER_QUEUE_RETENTION_SECONDS: String(retention) } } }] });
+  t.after(() => harness.close());
+  await harness.listen();
+  type ObservedStore = WasmStore & { alarms(): Promise<{ next: number | null; history: number[] }> };
+  const worker = harness.getWorker<Omit<Bindings, "STORE"> & { STORE: DurableObjectNamespace<ObservedStore> }>(apiConfig.name);
+  const env = await worker.getEnv();
+  const wire = JSON.stringify({ method: "GET", url: origin + "/service", headers: {}, body: null, actor: { subject: username, scopes: ["tams-api/admin"] } });
+  await assert.rejects(async () => await env.STORE.getByName("invalid").request(wire), /WORKER_QUEUE_RETENTION_SECONDS/);
+  const timestamp = (ms: number) => new Date(ms).toISOString().replace("Z", "000000Z");
+  const sql = await worker.getDurableObjectStorage("STORE", { name: "idle" });
+  const store = env.STORE.getByName("idle");
+  const lastExpiry = Date.now() + 6000;
+  await sql.exec("INSERT INTO tamoss_webhook_deliveries(id,webhook_id,status,record,updated_at) VALUES('last','hook','dead','{}',?)", timestamp(lastExpiry - retention * 1000));
+  await store.request(wire);
+  assert.equal((await store.alarms()).next, lastExpiry + 1, "equality at the cutoff must survive");
+  const old = timestamp(Date.now() - 60_000);
+  await sql.exec(`WITH RECURSIVE ids(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM ids WHERE n<1001)
+    INSERT INTO tamoss_webhook_deliveries(id,webhook_id,status,record,updated_at)
+    SELECT n,'hook',CASE WHEN n%2=1 THEN 'done' ELSE 'dead' END,'{}',? FROM ids`, old);
+  await sql.exec("INSERT INTO tamoss_delete_requests(id,flow_id,status,record,updated,updated_at) VALUES('d','f','done','{}',?,?)", old, old);
+  await sql.exec("INSERT INTO tamoss_object_copies(id,object_id,source_storage_backend_id,destination_storage_backend_id,status,record,updated,updated_at) VALUES('c','o','s','d','done','{}',?,?)", old, old);
+  await sql.exec("INSERT INTO tamoss_object_cleanups(id,object_id,storage_backend_id,status,record,updated,updated_at) VALUES('c','o','s','done','{}',?,?)", old, old);
+  await store.request(wire);
+  // From this point only the alarm handler schedules further work.
+  const waitForRuns = async (count: number) => {
+    const limit = Date.now() + 15_000;
+    let alarms = await store.alarms();
+    while (alarms.history.length < count && Date.now() < limit) {
+      await new Promise(resolve => setTimeout(resolve, 75));
+      alarms = await store.alarms();
+    }
+    assert.equal(alarms.history.length, count);
+    return alarms;
+  };
+  const drained = await waitForRuns(2);
+  assert.deepEqual(drained.history, [2, 1]);
+  assert.equal(drained.next, lastExpiry + 1);
+  for (const table of ["tamoss_delete_requests", "tamoss_object_copies", "tamoss_object_cleanups"]) {
+    assert.deepEqual(await sql.exec(`SELECT id FROM ${table}`), []);
+  }
+  assert.deepEqual(await sql.exec("SELECT id FROM tamoss_webhook_deliveries"), [{ id: "last" }]);
+  const idle = await waitForRuns(3);
+  assert.equal(idle.next, null);
+  assert.deepEqual(idle.history, [2, 1, 0]);
+  for (const name of ["retry", "disabled"]) {
+    const queues = await worker.getDurableObjectStorage("STORE", { name });
+    const instance = env.STORE.getByName(name);
+    await queues.exec("INSERT INTO tamoss_webhook_deliveries(id,webhook_id,status,record) VALUES('keep','hook','done','{}')");
+    await instance.request(wire);
+    if (name === "disabled") {
+      assert.equal((await instance.alarms()).next, null);
+      continue;
+    }
+    const retry = Math.ceil(Date.now() / 1000) * 1000 + 2000;
+    const id = crypto.randomUUID();
+    await queues.exec("INSERT INTO tamoss_webhook_deliveries(id,webhook_id,status,record,next_attempt_at) VALUES(?,?,'pending','{}',?)", id, crypto.randomUUID(), timestamp(retry));
+    await instance.request(wire);
+    assert.equal((await instance.alarms()).next, retry);
+    for (let i = 0; i < 100 && !(await instance.alarms()).history.length; i++) await new Promise(resolve => setTimeout(resolve, 75));
+    assert.deepEqual(await queues.exec("SELECT status FROM tamoss_webhook_deliveries WHERE id=?", id), [{ status: "dead" }]);
+  }
 });
