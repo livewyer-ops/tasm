@@ -1,0 +1,75 @@
+{
+  "name": "@tasm/browser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "tsc --noEmit && tsc -p core/cloudflare/tsconfig.json && tsc -p core/cloudflare/auth/tsconfig.json",
+    "test": "npm run build && npm run test:worker && npm run test:segments && playwright test",
+    "test:browser": "playwright test",
+    "serve": "node scripts/serve.mjs",
+    "demo:preview": "node scripts/serve.mjs --app=demo --ui-preview",
+    "ui:preview": "node scripts/serve.mjs --ui-preview",
+    "ui:check": "tsc --noEmit",
+    "demo:check": "tsc --noEmit",
+    "test:segments": "node tests/segmentation.mjs",
+    "build:core": "node scripts/build.mjs core",
+    "build:demo": "node scripts/build.mjs demo",
+    "build:playpen": "node scripts/build.mjs playpen",
+    "serve:demo": "node scripts/serve.mjs --app=demo",
+    "serve:playpen": "node scripts/serve.mjs --app=playpen",
+    "playpen:preview": "node scripts/serve.mjs --app=playpen --ui-preview",
+    "test:preview": "node tests/ui-preview.mjs",
+    "test:artifacts": "node tests/artifacts.mjs",
+    "deploy:demo": "npm run build:demo && node scripts/deploy.mjs demo",
+    "deploy:playpen": "npm run build:playpen && node scripts/deploy.mjs playpen",
+    "check:cloudflare": "node scripts/deploy.mjs demo --dry-run && node scripts/deploy.mjs playpen --dry-run",
+    "test:cloudflare": "node tests/cloudflare.mjs",
+    "build:cloudflare": "node scripts/build.mjs cloudflare",
+    "package:cloudflare": "npm run build:cloudflare && node scripts/package-cloudflare.mjs",
+    "test:worker": "node --experimental-strip-types --test core/cloudflare/worker.test.ts core/cloudflare/oauth.test.ts core/cloudflare/auth/auth.test.ts"
+  },
+  "dependencies": {
+    "@better-auth/oauth-provider": "1.7.27",
+    "@byomakase/omakase-player": "1.2.1",
+    "@electric-sql/pglite": "0.5.16",
+    "@noble/hashes": "2.4.0",
+    "better-auth": "1.7.27",
+    "hls.js": "1.6.17",
+    "jose": "6.2.12",
+    "mediabunny": "1.58.0",
+    "rxjs": "7.8.2"
+  },
+  "devDependencies": {
+    "@apidevtools/json-schema-ref-parser": "16.0.6",
+    "@playwright/test": "1.65.0",
+    "@types/node": "22.20.4",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "wrangler": "4.164.0",
+    "yaml": "2.9.1"
+  },
+  "overrides": {
+    "@byomakase/omakase-player": {
+      "hls.js": "$hls.js"
+    },
+    "xml2js": "0.6.2"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/livewyer-ops/tasm.git"
+  }
+}
