@@ -1,0 +1,12 @@
+/target/
+/node_modules/
+/dist/
+/pkg/
+/test-results/
+/playwright-report/
+/.local/
+.wrangler/
+.env
+.env.*
+.dev.vars
+.dev.vars.*

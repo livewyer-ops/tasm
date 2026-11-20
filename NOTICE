@@ -1,0 +1,102 @@
+TASM (browser-local Time Addressable Media Store)
+Distributed under Apache License 2.0.
+
+Upstream notices follow. Historical paths and features in those notices refer
+to their respective upstream distributions. TASM provenance is recorded in
+contracts/provenance.json.
+
+TAMOSS (Time Addressable Media Open Source Store)
+Copyright 2026 Livewyer Ltd
+
+This Rust implementation is derived from and modifies/reimplements portions of
+TAMOSS 8.2.0-oss1-rc2, commit 6431efcb5b7a6d5e0d0091508549dc27a1a0a19e,
+licensed under the Apache License, Version 2.0.
+
+The following upstream BBC attribution block is reproduced verbatim:
+
+This product includes or is derived from the following third-party software:
+
+------------------------------------------------------------------------
+BBC Time-addressable Media Store API Specification
+https://github.com/bbc/tams
+------------------------------------------------------------------------
+
+Copyright BBC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+This product implements the BBC TAMS API specification and includes it
+as a git submodule under src/vendor/bbc-tams/.
+
+This distribution does not contain that upstream git submodule; it vendors the
+frozen `assets/openapi.json` contract and SQL/migration provenance described
+below.
+
+Modification notice (2026-08-20): Livewyer Ltd rewrote the API, worker, health,
+and migration runtime in Rust; added the static Alpine multi-architecture image,
+operator-compatible argv dispatcher, conformance/validation scripts, and
+operational rollback documentation; and retained the frozen contract and SQL
+migration assets with their upstream provenance. `assets/openapi.json` is the
+unchanged frozen packaged BBC contract; runtime code changes only its three
+advertised version fields in memory. Dependency licenses are reported by the
+repository's cargo-deny/source-archive inventory.
+
+TASM modification notice (2026-09-18):
+The Rust HTTP handlers, domain models, PostgreSQL repositories and background
+jobs have been adapted from rust-tams-api commit
+58c73d8add60a819605c1009661872f676c2769d for browser WebAssembly execution.
+Native server, authentication, console and infrastructure components are omitted.
+The PostgreSQL adapter uses PGlite, and browser storage uses IndexedDB and OPFS.
+Timestamp arithmetic and encoded object identity handling have been changed.
+
+Canonical JSON code is adapted from the ibc-cnm-demo-1 workspace, licensed
+under Apache-2.0 (git base 56f6986e56407d26938bde90011e0e23a3cd3907).
+The exact source file hash is recorded in contracts/provenance.json.
+The TAMS 8.2 API specification and documentation are vendored in contracts/tams/
+at commit 34fb31b80cb8afb3194f28c8b787301379caacf8. The notices above describe
+upstream distributions; paths in this distribution are listed in
+contracts/provenance.json.
+
+JavaScript dependencies: PGlite (Apache-2.0), @noble/hashes (MIT),
+Omakase Player (Apache-2.0), RxJS (Apache-2.0), hls.js (Apache-2.0),
+and Mediabunny (MPL-2.0).
+Omakase Player: Copyright 2026 ByOmakase, LLC (https://byomakase.org).
+Omakase and Mediabunny are used without source modifications.
+Mediabunny: Copyright Vanilagy and contributors. Source for version 1.58.0:
+https://github.com/Vanilagy/mediabunny/tree/v1.58.0
+Its Mozilla Public License 2.0 is distributed as mediabunny-LICENSE.
+Generated browser bundles retain third-party legal comments. Rust and npm
+dependency versions are pinned in Cargo.lock and package-lock.json.
+
+Demo branding assets:
+LiveWyer logo: https://livewyer.io/img/logo.svg
+Techex logo: https://techex.tv/techex-black.svg
+Logos remain the property of their respective owners; the software license
+does not grant rights to their trademarks. Artwork is included unmodified.
+Light-theme reference: https://livewyer.io/ and
+https://livewyer.io/pdf/tamoss-datasheet.pdf (retrieved 2026-09-20).
+HK Grotesk (400, 700 and 900) and Fira Code Regular are distributed from
+https://livewyer.io/fonts/ under SIL Open Font License 1.1.
+Font copyright notices and licenses are included in branding/HKGrotesk-OFL.txt
+and branding/FiraCode-OFL.txt. Fonts are included without modification.
+
+TAMS favicon assets are distributed unchanged from https://tams.org/assets/img/
+(favicon.svg, tams-icon-32.png and tams-icon-16.png).
+Brand guidelines and usage: https://tams.org/brand/
+
+
+TASM sample library:
+The supplied speech recordings and silent newsreader footage were provided by
+a project co-author for redistribution with TASM. The Voice A and Voice B
+tracks combine the supplied speech, and the offset clip and thumbnails derive
+from the supplied video. The same permission covers the supplied branding for
+use with TASM. Logo and trademark rights remain with their owners.
+
+Redistributed software:
+Each build includes THIRD_PARTY.txt for the browser runtime, Rust crates and
+PostgreSQL. The Demo and Playpen also include PLAYER-LICENSES.txt with notices
+for the media libraries and the components bundled in Omakase Player.

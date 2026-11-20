@@ -1,0 +1,59 @@
+[
+    {
+        "id": "2aa143ac-0ab7-4d75-bc32-5c00c13d186f",
+        "format": "urn:x-nmos:format:video",
+        "label": "bbb",
+        "description": "Big Buck Bunny video",
+        "created_by": "tams-dev",
+        "updated_by": "tams-dev",
+        "created": "2008-05-27T18:51:00Z",
+        "updated": "2008-05-27T18:51:00Z",
+        "collected_by": [
+            "86761f3a-5998-4cfe-9a89-8459bcb8ea52"
+        ]
+    },
+    {
+        "id": "86761f3a-5998-4cfe-9a89-8459bcb8ea52",
+        "format": "urn:x-nmos:format:multi",
+        "label": "bbb",
+        "description": "Big Buck Bunny",
+        "created_by": "tams-dev",
+        "updated_by": "tams-dev",
+        "created": "2008-05-27T18:51:00Z",
+        "updated": "2008-05-27T18:51:00Z",
+        "source_collection": [
+            {
+                "id": "2aa143ac-0ab7-4d75-bc32-5c00c13d186f"
+            },
+            {
+                "id": "7ba3fed1-3fd3-4f0e-8488-92c4ffe13838"
+            }
+        ]
+    },
+    {
+        "id": "7ba3fed1-3fd3-4f0e-8488-92c4ffe13838",
+        "format": "urn:x-nmos:format:audio",
+        "description": "Big Buck Bunny audio",
+        "created": "2008-05-27T18:51:00Z",
+        "updated": "2008-05-27T18:51:00Z",
+        "collected_by": [
+            "86761f3a-5998-4cfe-9a89-8459bcb8ea52"
+        ]
+    },
+    {
+        "id": "a0456629-b25d-4c4b-b631-0861621f67c7",
+        "created": "2008-05-27T18:53:00Z",
+        "updated": "2023-09-14T09:45:26Z",
+        "description": "OB Truck A cleanfeed video",
+        "label": "SRT Feed 3",
+        "format": "urn:x-nmos:format:video",
+        "created_by": "ob-truck-a",
+        "updated_by": "ob-truck-a",
+        "tags": {
+            "editorial_purpose": "cleanfeed"
+        },
+        "collected_by": [
+            "a77d0061-0878-4e8a-a114-772d03f952c1"
+        ]
+    }
+]
