@@ -477,7 +477,7 @@ pub async fn segment_summary(
     f: &SegmentFilters,
 ) -> Result<SegmentSummary, DbError> {
     let mut q = QueryBuilder::<Sqlite>::new(
-        "SELECT COUNT(*),MIN(timerange_start),MAX(timerange_end),MIN(timerange) FROM tamoss_segments WHERE flow_id=",
+        "SELECT COUNT(*) AS count,MIN(timerange_start) AS start_ns,MAX(timerange_end) AS end_ns,MIN(timerange) AS first_timerange FROM tamoss_segments WHERE flow_id=",
     );
     push_segment_filters(&mut q, flow_id, f);
     let row = q.build().fetch_one(pool).await?;

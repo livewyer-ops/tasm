@@ -18,7 +18,7 @@ COPY contracts/tams/api/ contracts/tams/api/
 COPY deploy/_headers deploy/_headers
 COPY licenses/ licenses/
 COPY tests/browser/ tests/browser/
-COPY tests/app-logic.test.ts tests/
+COPY tests/app-logic.test.ts tests/pglite-core.test.ts tests/
 COPY scripts/build.mjs scripts/cloudflare.mjs scripts/package-cloudflare.mjs scripts/bundle-options.mjs scripts/apps.mjs scripts/deploy.mjs scripts/notices.mjs scripts/
 RUN npm run build && npm run check
 
@@ -30,6 +30,7 @@ RUN cargo test --locked \
     && cargo clippy --locked --all-targets -- -D warnings \
     && npm run test:segments \
     && npm run test:logic \
+    && npm run test:pglite \
     && npm run test:preview \
     && npm run test:artifacts \
     && npm run check:cloudflare \

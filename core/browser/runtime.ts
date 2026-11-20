@@ -7,6 +7,7 @@ import schema from './migrations/001.sql';
 import operations from '../../pkg/operations.json';
 import * as validators from '../../pkg/validators.js';
 import type { TasmOptions } from './public.d.ts';
+import { SqlHost, createSchema, pgliteParsers } from './sql-host';
 
 export interface BrowserRequest { method: string; url: string; headers: Record<string, string> }
 export interface BrowserResponse { status: number; headers: Record<string, string>; body: string | Blob | null }
@@ -37,10 +38,9 @@ export class Runtime {
   private readonly lock = new Lock();
   private releaseStore?: () => void;
   private polling = false;
-  private sqlQueue: Promise<unknown> = Promise.resolve();
+  private sqlHost!: SqlHost;
   private timer?: ReturnType<typeof setTimeout>;
   private stopped = false;
-  private inTransaction = false;
   readonly api: string;
   readonly media: string;
   constructor(readonly base: string) { this.api = `${base}api/`; this.media = `${base}media/`; }
@@ -64,7 +64,7 @@ export class Runtime {
       fetch(new URL('pglite.data', this.base)).then(r => r.blob()),
     ]);
     this.db = await PGlite.create({ dataDir: `idb://tasm-${encodeURIComponent(new URL(this.base).pathname)}`, relaxedDurability: false,
-      parsers: { 1700: value => value, 20: value => value },
+      parsers: pgliteParsers,
       pgliteWasmModule, initdbWasmModule, fsBundle });
     const root = await navigator.storage.getDirectory();
     this.files = await root.getDirectoryHandle(`tasm-${encodeURIComponent(new URL(this.base).pathname)}`, { create: true });
@@ -73,19 +73,7 @@ export class Runtime {
       const version = await this.db.query<{ version: number }>('SELECT version FROM tasm_schema');
       if (version.rows.length !== 1 || version.rows[0].version !== 1) throw new Error('Unsupported TASM database version.');
     } else {
-      await this.db.transaction(async tx => {
-        await tx.exec(schema);
-        await tx.exec(`CREATE TABLE tasm_schema (version integer PRIMARY KEY);
-          INSERT INTO tasm_schema VALUES (1);
-          CREATE TABLE tasm_files (backend uuid NOT NULL, object_id text NOT NULL, name text NOT NULL UNIQUE,
-            incarnation text NOT NULL, size bigint NOT NULL, content_type text NOT NULL, checksum text NOT NULL,
-            md5 text NOT NULL, PRIMARY KEY(backend, object_id));`);
-        for (const [i, b] of backends.entries()) {
-          await tx.query(`INSERT INTO tamoss_storage_backends
-            (id,label,provider,region,store_product,store_type,default_storage,record)
-            VALUES ($1,$2,'browser','local','tasm-opfs','http_object_store',$3,'{}')`, [b.id, b.label, i === 0]);
-        }
-      });
+      await createSchema(this.db, schema, backends);
     }
     // Every OPFS filename is generated internally. Unpublished files can be
     // removed after a crash because their SQL publication never committed.
@@ -95,6 +83,7 @@ export class Runtime {
       UPDATE tamoss_delete_requests SET status='created',claimed_by=NULL,claim_expires_at=NULL WHERE status='started';
       UPDATE tamoss_object_copies SET status='pending',claimed_by=NULL,claim_expires_at=NULL WHERE status='started';
       UPDATE tamoss_object_cleanups SET status='pending',claimed_by=NULL,claim_expires_at=NULL WHERE status='started';`);
+    this.sqlHost = new SqlHost(this.db);
     await init({ module_or_path: new URL('tasm_bg.wasm', this.base) });
     this.core = new Tasm((op: string, payload: string) => this.bridge(op, JSON.parse(payload)).then(stringify), this.media);
     this.schedule();
@@ -105,34 +94,14 @@ export class Runtime {
     await this.lock.acquire();
     try { return await run(); } finally { this.lock.release(); }
   }
-  private sql<T>(run: () => Promise<T>): Promise<T> {
-    const next = this.sqlQueue.then(run);
-    this.sqlQueue = next.catch(() => {});
-    return next;
-  }
   private async bridge(op: string, p: any): Promise<unknown> {
+    if (this.sqlHost.handles(op)) return this.sqlHost.call(op, p);
     switch (op) {
-      case 'begin':
-      case 'commit': return this.sql(async () => {
-        await this.db.exec(op === 'begin' ? 'BEGIN' : 'COMMIT');
-        this.inTransaction = op === 'begin';
-        return null;
-      });
       case 'url': {
         const url = new URL(p.backend, this.media);
         url.searchParams.set('object_id', p.id);
         return url.href;
       }
-      case 'sql': return this.sql(async () => {
-        const sql = p.sql.replace(/\$(\d+)\b/g, (_: string, n: string) => `$${n}::${p.params[Number(n) - 1].type}`);
-        // Preserve integers embedded in JSONB until Rust decodes them.
-        const result = await this.db.query(sql, p.params.map((v: any) => v.value), {
-          parsers: { 114: value => value, 3802: value => value },
-        });
-        return { affectedRows: result.affectedRows ?? 0,
-          rows: result.rows.map(row => result.fields.map(field => (row as Record<string, unknown>)[field.name])) };
-      });
-      case 'rollback': return this.sql(async () => { if (this.inTransaction) await this.db.exec('ROLLBACK'); this.inTransaction = false; return null; });
       case 'head': {
         const row = await this.fileRow(p.backend, p.id, true);
         if (!row) return null;
@@ -186,7 +155,7 @@ export class Runtime {
         // The Rust worker delivers one webhook at a time (process_webhooks) with no
         // transaction open, so API requests can use the store while a slow
         // receiver answers. Concurrent deliveries would release the lock twice.
-        if (!this.polling || this.inTransaction) return send();
+        if (!this.polling || this.sqlHost.inTransaction) return send();
         this.lock.release();
         try { return await send(); } finally { await this.lock.acquire(); }
       }
@@ -215,7 +184,7 @@ export class Runtime {
           new RegExp(`(${escape(new URL(this.api).origin)})?/(flow-delete-requests|flows|sources|service|objects)(?=[/?">]|$)`, 'g'),
           `${this.api}$2`);
       }
-      await this.sqlQueue;
+      await this.sqlHost.drained();
       return result;
     });
   }
@@ -223,7 +192,7 @@ export class Runtime {
     await this.serial(async () => {
       this.polling = true;
       try { await this.core.poll(); } finally { this.polling = false; }
-      await this.sqlQueue;
+      await this.sqlHost.drained();
     });
   }
   private schedule(): void {
@@ -235,7 +204,7 @@ export class Runtime {
   }
   stopPolling(): void { this.stopped = true; clearTimeout(this.timer); }
   async close(): Promise<void> {
-    this.stopPolling(); await this.serial(async () => {}); await this.sqlQueue; await this.db.close();
+    this.stopPolling(); await this.serial(async () => {}); await this.sqlHost.drained(); await this.db.close();
     this.releaseStore?.();
   }
   private async fileRow(backend: string, id: string, current = false): Promise<FileRow | undefined> {
