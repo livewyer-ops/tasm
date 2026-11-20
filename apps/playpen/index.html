@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#001825"><title>TAMS Playpen</title><link rel="icon" type="image/svg+xml" href="./branding/tams-favicon.svg"><link rel="icon" type="image/png" sizes="32x32" href="./branding/tams-icon-32.png"><link rel="icon" type="image/png" sizes="16x16" href="./branding/tams-icon-16.png"><link rel="preload" href="./branding/HKGrotesk-Regular.otf" as="font" type="font/otf" crossorigin><link rel="preload" href="./branding/HKGrotesk-Bold.otf" as="font" type="font/otf" crossorigin><link rel="stylesheet" href="./omakase.css"><link rel="stylesheet" href="./playpen.css"><link rel="stylesheet" href="./onboarding.css"></head>
+<body data-app="playpen">
+  <div id="startup-notice" role="status"><span id="startup-message">Opening application...</span> <button id="startup-retry" type="button">Retry</button></div>
+  <header class="app-header">
+    <a class="brand" href="./">TAMS Playpen</a>
+    <nav class="partners" aria-label="Project partners"><a href="https://livewyer.io/" target="_blank" rel="noopener noreferrer"><img src="./branding/livewyer.svg" alt="LiveWyer" width="140" height="20"></a><a href="https://techex.tv/" target="_blank" rel="noopener noreferrer"><img src="./branding/techex.svg" alt="Techex" width="100" height="22"></a></nav>
+    <div class="header-actions"><button id="tour-playpen" type="button" disabled>Start tour</button><button id="about-playpen" type="button">About Playpen</button><a href="__PEER_URL__">TAMS in Practice</a></div>
+    <div class="source-toolbar"><label for="sources">Source</label><select id="sources" disabled><option>Opening storage...</option></select><button id="new-source" aria-label="Create source" disabled>Create source</button><button id="rename-source" disabled>Rename</button><div class="runtime-controls"><span id="runtime-status" class="runtime-status" role="status">Opening storage...</span><button id="reset-playpen" disabled>Reset</button></div></div>
+  </header>
+  <p id="preview-limitation" class="preview-limitation" role="status" hidden>Visual preview only. Storage and playback require HTTPS or localhost.</p>
+  <div id="notice" class="notice" role="status" hidden><span id="notice-text"></span><button id="retry-action" hidden>Retry</button><button id="dismiss-notice" aria-label="Dismiss notification">×</button></div>
+  <main class="app-layout">
+    <details id="library-section" class="panel library-section" aria-label="Sample library" aria-busy="false" open>
+      <summary class="panel-heading"><h2>Sample library</h2><span id="sample-count" class="count">40</span></summary>
+      <div class="library-content">
+      <div class="file-import"><button id="import-media" disabled>Import media</button><input id="media-file" type="file" accept=".mp4,.mov,.ts,.m4a,.aac,video/mp4,video/quicktime,video/mp2t,audio/mp4,audio/aac" aria-label="Choose audio or video file" hidden><p id="library-status" role="status">Samples stay in this browser until you remove them.</p><button id="import-cancel" hidden>Cancel import</button></div>
+      <p class="library-hint">Drag onto a matching flow. Drop over a clip to insert at a segment boundary.</p>
+      <div class="segmented" role="group" aria-label="Sample type"><button class="active" data-filter="all" aria-pressed="true">All</button><button data-filter="video" aria-pressed="false">Video</button><button data-filter="audio" aria-pressed="false">Audio</button><button data-filter="speech" aria-pressed="false">Speech</button></div>
+      <div id="samples" class="samples"></div>
+      <button id="add-sample" class="secondary wide" disabled>Add sample at playhead</button>
+      </div>
+    </details>
+    <div class="workspace-panels">
+    <details class="panel timeline-panel" aria-label="Source timeline" open>
+      <summary class="panel-heading"><h2>Timeline</h2><span id="flow-count" class="count">0 flows</span></summary>
+      <div class="timeline-tools"><div class="timeline-tabs segmented" role="tablist" aria-label="Timeline view"><button id="flows-tab" role="tab" aria-selected="true" aria-controls="timeline-scroll" class="active">Flows</button><button id="segments-tab" role="tab" aria-selected="false" aria-controls="timeline-scroll" tabindex="-1">Segments</button></div><button id="add-video" disabled>+ Video flow</button><button id="add-audio" disabled>+ Audio flow</button><span class="tool-divider"></span><button id="zoom-out" class="icon-button" aria-label="Zoom out">−</button><span id="zoom-label">100%</span><button id="zoom-in" class="icon-button" aria-label="Zoom in">+</button></div>
+      <div class="draft-toolbar"><button id="save-draft" class="primary" disabled>Save</button><button id="discard-draft" disabled>Discard</button><span id="draft-status" role="status">All changes saved</span><details id="save-options"><summary>API steps</summary><div><label class="step-toggle"><input id="asap" name="save-mode" type="radio" checked>Run all API steps</label><label class="step-toggle"><input id="step-through" name="save-mode" type="radio">Step through API calls</label></div></details></div>
+      <div class="transport"><label for="seek-time">Source time</label><input id="seek-time" type="number" min="0" step="0.04" value="0" aria-label="Seek to source time in seconds"><button id="seek-button">Seek</button><output id="playhead-time">00:00.000</output><span id="source-duration" class="subtle">End 00:00.000</span><span class="snap-label">Edge snap · 10 px</span></div>
+      <div id="timeline-scroll" class="timeline-scroll" role="tabpanel" aria-labelledby="flows-tab" tabindex="0"><div id="timeline" class="timeline"></div></div>
+      <div class="selection-bar" hidden><span id="selection-label">Select a clip to edit its timing</span><div id="block-controls" hidden><label for="block-start">Start</label><input id="block-start" type="number" min="0" step="any" aria-label="Clip start in seconds"><span>s</span><span id="block-bounds" class="subtle"></span><button id="move-block">Move</button><button id="remove-block" class="danger">Remove</button></div></div>
+      <div class="range-exercise"><div class="range-controls"><label for="range-start">From</label><input id="range-start" type="number" min="0" step="0.04" value="1"><label for="range-end">to</label><input id="range-end" type="number" min="0" step="0.04" value="3"><span>s</span><button id="read-range" disabled>Query &amp; read</button><button id="play-range" disabled>Play range</button></div><div id="range-result" role="status">Queries the selected saved preview flows, then reads each matching object once.</div></div>
+      <footer class="workspace-footer"><details class="concepts"><summary>Glossary</summary><div class="glossary"><button type="button" id="close-glossary" aria-label="Close glossary">×</button><dl><dt>Source</dt><dd>A source groups related media, such as video and audio from the same recording.</dd><dt>Flow</dt><dd>One representation of a source, ordered by time.</dd><dt>Segment</dt><dd>A reference to a stored media object over a time range in a flow.</dd><dt>Object</dt><dd>Stored media bytes. Segments can reuse an object at different offsets.</dd></dl></div></details><a href="https://livewyer.io/" target="_blank" rel="noopener noreferrer">Powered by TASM</a></footer>
+    </details>
+    <details class="panel api-panel" aria-label="API activity" open>
+      <summary class="panel-heading"><h2>API activity</h2><span id="request-count" class="count">0</span></summary>
+      <div class="api-toolbar"><div id="activity-summary" role="status">No actions yet.</div><div class="api-tools"><button id="review-requests" aria-haspopup="dialog" aria-controls="api-review" disabled>Raw requests</button><button id="walkthrough-requests" aria-haspopup="dialog" aria-controls="api-review" disabled>Review API calls</button><button id="follow-requests" aria-pressed="true" disabled>Following live</button></div></div>
+      <details id="ingest-controls"><summary>Ingest controls</summary><p id="ingest-title" role="status">No upload in progress</p><p id="ingest-summary"></p><div class="ingest-heading"><button id="ingest-next" disabled>Next</button><button id="ingest-run" disabled>Run remaining</button><button id="ingest-cancel" disabled>Cancel</button></div></details>
+      <div id="api-content"><details id="source-details"><summary>Source and flow identifiers</summary><p id="source-id"></p><div id="flow-identifiers"></div></details><div class="action-picker"><label class="sr-only" for="action-history">Action history</label><select id="action-history"><option>No actions yet</option></select><button id="copy-request" disabled>Copy</button></div><div id="planned-request" hidden></div><div class="api-inspector"><div id="requests" class="request-list"></div><div id="request-detail" class="request-detail"><p class="api-empty">Select a request to inspect its headers, payload and response.</p></div></div></div>
+    </details>
+    <details id="terminal" class="panel terminal-panel">
+      <summary class="panel-heading"><h2>Terminal</h2></summary>
+      <pre id="terminal-output" role="status"></pre>
+      <form id="terminal-form">
+        <div class="terminal-line"><label class="terminal-prompt" for="terminal-command"><span aria-hidden="true">playpen:~$</span><span class="sr-only">curl command</span></label><input id="terminal-command" type="text" spellcheck="false" autocomplete="off" aria-describedby="terminal-help" placeholder="curl -X GET /api/sources"><button id="terminal-run" disabled>Run</button></div>
+        <p id="terminal-help">Enter to run in this browser. Tab completes a flag, method or resource. Shift+Tab moves focus back.</p>
+        <div id="terminal-options" aria-label="Completions"></div>
+        <input id="terminal-file" type="file" hidden>
+      </form>
+    </details>
+    </div>
+    <div class="monitor-panels">
+    <div id="tour-desktop"></div>
+    <details class="panel preview-panel" aria-label="Source preview" open>
+      <summary class="panel-heading"><h2>Preview</h2><span id="preview-format" class="count"></span></summary>
+      <h1 id="source-title" class="sr-only">No source yet</h1>
+      <div class="preview-body"><div class="preview-stage"><div id="omakase-player"></div><div id="preview-empty" class="preview-empty"><strong>No media yet</strong><p>Add a flow, then place a sample on its timeline.</p></div></div>
+      <div class="preview-settings"><label for="preview-video">Video flow<select id="preview-video"><option value="">None · black</option></select></label><label for="preview-audio">Audio flow<select id="preview-audio"><option value="">None · silence</option></select></label><p id="preview-caption" class="subtle" role="status">Add clips to an arrangement to preview them.</p><span id="preview-status" role="status">Waiting for media</span></div></div>
+    </details>
+    <details id="storage" class="panel storage-panel" aria-labelledby="storage-title" aria-busy="false" open>
+      <summary class="panel-heading"><h2 id="storage-title">Media store</h2><span id="storage-count" class="count">0 objects</span></summary>
+      <div class="storage-heading"><p id="storage-summary" role="status">No objects stored yet.</p><button id="storage-refresh" disabled>Check storage</button></div>
+      <p class="storage-note">Objects in the saved source. Select a UUID to find its timeline segments.</p>
+      <div id="objects" class="objects"></div>
+      <div id="selected-object" hidden><span>Object ID <code id="selected-object-id"></code></span><button id="copy-object-id">Copy ID</button></div>
+      <details id="time-details" hidden><summary>Time mapping</summary><p id="time-equation"></p></details>
+    </details>
+    </div>
+  </main>
+  <dialog id="api-review" aria-labelledby="review-title" aria-describedby="review-help">
+    <header class="review-heading"><div><h2 id="review-title">API call review</h2><p id="review-help">Calls recorded in this tab. Reviewing does not send requests or pause the running action.</p></div><button id="review-close" autofocus>Close</button></header>
+    <div class="review-toolbar"><label for="review-action">Action</label><select id="review-action"></select><button id="review-mode">Explain API calls</button><p id="review-action-status"></p></div>
+    <div class="review-body"><nav id="review-requests-list" aria-label="Recorded API calls"></nav><section id="review-detail" class="request-detail" aria-label="Call explanation" tabindex="0"></section></div>
+    <footer class="review-navigation"><button id="review-previous">Previous</button><span id="review-position" role="status"></span><button id="review-next">Next</button></footer>
+  </dialog>
+  <dialog id="reset-dialog" aria-labelledby="reset-title" aria-describedby="reset-warning"><h2 id="reset-title">Reset Playpen?</h2><p id="reset-warning">Stops active work and permanently clears all Playpen data in this browser, including media, imported samples, preferences and cached app files. Close other Playpen tabs first. A connection is needed to reload. This cannot be undone.</p><p id="reset-status" role="status" aria-live="polite"></p><div class="dialog-buttons"><button id="reset-cancel" autofocus>Cancel</button><button id="reset-confirm" class="danger">Reset Playpen</button></div></dialog>
+  <dialog id="draft-dialog" aria-labelledby="draft-dialog-title"><form method="dialog"><h2 id="draft-dialog-title">Unsaved changes</h2><p>Save this arrangement before switching sources, or discard your edits.</p><div class="dialog-buttons"><button value="stay" autofocus>Keep editing</button><button value="discard">Discard</button><button class="primary" value="save">Save</button></div></form></dialog>
+  <dialog id="name-dialog"><form method="dialog"><h2 id="dialog-title">Create a source</h2><label for="entity-name">Name</label><input id="entity-name" name="name" maxlength="80" required autocomplete="off" placeholder="e.g. Morning programme"><p id="dialog-hint" class="subtle">A source brings your video and audio flows together.</p><div class="dialog-buttons"><button type="button" id="dialog-cancel">Cancel</button><button id="dialog-submit" class="primary" value="save">Create source</button></div></form></dialog>
+  <dialog class="welcome-dialog" id="playpen-about" aria-labelledby="playpen-about-title"><form method="dialog"><button class="welcome-close" aria-label="Close" title="Close welcome">×</button><h2 id="playpen-about-title">Welcome to Playpen</h2><p>Use TAMS Playpen to experiment with arranging video and audio by time. Start with the supplied samples or import your own clips, try insertions and offsets, and explore how an arrangement can reuse stored media.</p><p>Your edits are kept as a local draft. Save prepares the arrangement for playback and inspection through the TAMS API. Your media and edits stay in this browser.</p><div class="dialog-buttons"><button type="button" data-start-tour autofocus>Start tour</button><button>Explore on my own</button></div></form></dialog>
+  <script src="./startup.js"></script>
+  <script type="module">window.tasmReady = import('./index.js').then(({ startTasm }) => startTasm({ basePath: '/', signal: window.tasmStartup.signal })); window.tasmReady.catch(error => window.tasmStartup.fail(error)); import('./playpen.js').catch(error => window.tasmStartup.fail(error));</script>
+</body></html>
