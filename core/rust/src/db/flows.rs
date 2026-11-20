@@ -1,6 +1,6 @@
 // TASM adaptation of rust-tams-api (Apache-2.0), shared by the browser and
 // Cloudflare adapters through their db::dialect modules; see NOTICE.
-use super::dialect::{self, Engine, NOW, Pool, RecordRow, sqlx};
+use super::dialect::{self, Engine, FLOW_SEGMENTS, NOW, Pool, RecordRow, sqlx};
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
@@ -153,27 +153,30 @@ pub async fn list_flows_page(
         clause!("flow.label=").push_bind(v);
     }
     if f.timerange_is_empty {
-        clause!("NOT EXISTS(SELECT 1 FROM tamoss_segments segment WHERE segment.flow_id=flow.id)");
+        clause!(format!("NOT EXISTS({FLOW_SEGMENTS})"));
     } else if f.timerange_start.is_some() || f.timerange_end.is_some() {
-        // MIN(start)<end AND MAX(end)>start, written as two EXISTS checks so
-        // each can use a segment index instead of aggregating the flow.
+        // MIN(start)<end AND MAX(end)>start over the segments of the flow and its
+        // direct collection members, the same set its reported timerange covers.
+        // Two EXISTS checks let each use a segment index instead of aggregating.
         let mut first = true;
         if let Some(mut end) = f.timerange_end {
             if f.timerange_is_point && f.timerange_start == Some(end) {
                 end += 1
             }
-            clause!("EXISTS(SELECT 1 FROM tamoss_segments segment WHERE segment.flow_id=flow.id AND segment.timerange_start<")
-                .push_bind(end)
-                .push(")");
+            clause!(format!(
+                "EXISTS({FLOW_SEGMENTS} AND segment.timerange_start<"
+            ))
+            .push_bind(end)
+            .push(")");
             first = false;
         }
         if let Some(start) = f.timerange_start {
             if first {
-                clause!(
-                    "EXISTS(SELECT 1 FROM tamoss_segments segment WHERE segment.flow_id=flow.id AND segment.timerange_end>"
-                );
+                clause!(format!("EXISTS({FLOW_SEGMENTS} AND segment.timerange_end>"));
             } else {
-                q.push(" AND EXISTS(SELECT 1 FROM tamoss_segments segment WHERE segment.flow_id=flow.id AND segment.timerange_end>");
+                q.push(format!(
+                    " AND EXISTS({FLOW_SEGMENTS} AND segment.timerange_end>"
+                ));
             }
             q.push_bind(start).push(")");
         }

@@ -177,6 +177,10 @@ pub fn push_source_collected_by<'a, B: sqlx::Bind + 'a>(
     };
 }
 
+/// Selects the segments owned by `flow` or by one of its direct collection
+/// members; callers append further `AND` conditions on `segment`.
+pub const FLOW_SEGMENTS: &str = "SELECT 1 FROM (SELECT flow.id AS member_id UNION ALL SELECT child_id FROM tamoss_flow_collection_members WHERE parent_id=flow.id) member JOIN tamoss_segments segment ON segment.flow_id=member.member_id WHERE true";
+
 /// Flows whose collection contains one of the ids in `$1`.
 pub const COLLECTING_FLOWS: &str = "flow.id IN (SELECT member.parent_id FROM tamoss_flow_collection_members member WHERE member.child_id IN (SELECT value FROM json_each($1)))";
 

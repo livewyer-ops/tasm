@@ -419,6 +419,62 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     await unchanged(immediate.reuse, immediate.objectId);
   });
 
+  await t.test("Flow timerange searches include the segments of collection members", { timeout: 30_000 }, async () => {
+    const name = "collection-timerange-search";
+    const env = await api.getEnv();
+    const call = async (method: string, path: string, body?: unknown) => {
+      const result = JSON.parse(await env.STORE.getByName(name).request(JSON.stringify({ method, url: origin + path, headers: { "content-type": "application/json" }, body: body === undefined ? null : JSON.stringify(body), actor: { subject: username, scopes: ["tams-api/admin"] } })));
+      return { status: result.status as number, headers: Object.fromEntries(Object.entries(result.headers as Record<string, string>).map(([k, v]) => [k.toLowerCase(), v])), value: result.body ? JSON.parse(result.body) : null };
+    };
+    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const put = async (extra: Record<string, unknown> = {}) => {
+      const id = crypto.randomUUID();
+      assert.equal((await call("PUT", `/flows/${id}`, { ...video, id, source_id: crypto.randomUUID(), ...extra })).status, 201);
+      return id;
+    };
+    const segments = async (id: string, timeranges: string[]) => {
+      const objects = (await call("POST", `/flows/${id}/storage`, { limit: timeranges.length })).value.media_objects as { object_id: string; put_url: { url: string } }[];
+      for (const object of objects) await env.MEDIA.put(new URL(object.put_url.url).pathname.split("/").slice(2).join("/"), "media", { httpMetadata: { contentType: "video/mp2t" } });
+      const registered = await call("POST", `/flows/${id}/segments`, objects.map((object, i) => ({ object_id: object.object_id, timerange: timeranges[i] })));
+      assert.equal(registered.status, 201, JSON.stringify(registered.value));
+    };
+    const a = await put(), b = await put(), own = await put(), hollow = await put();
+    await segments(a, ["[10:0_12:0)"]);
+    await segments(b, ["[20:0_22:0)"]);
+    await segments(own, ["[10:0_11:0)"]);
+    const collection = await put({ flow_collection: [{ id: a, role: "a" }, { id: b, role: "b" }] });
+    const empty = await put({ flow_collection: [{ id: hollow, role: "h" }] });
+    const ids = async (query: string) => {
+      const response = await call("GET", `/flows?${query}`);
+      assert.equal(response.status, 200, JSON.stringify(response.value));
+      return (response.value as { id: string }[]).map(f => f.id);
+    };
+    const names = new Map([[a, "a"], [b, "b"], [own, "own"], [hollow, "hollow"], [collection, "collection"], [empty, "empty"]]);
+    const named = (list: string[]) => list.map(id => names.get(id)).filter(Boolean).sort();
+    assert.deepEqual(named(await ids("timerange=[10:0_11:0)")), ["a", "collection", "own"]);
+    assert.deepEqual(named(await ids("timerange=[21:0_23:0)")), ["b", "collection"]);
+    assert.deepEqual(named(await ids("timerange=[11:0]")), ["a", "collection"]);
+    // The list filters on each flow's reported extent, so the gap between members still matches the collection.
+    assert.deepEqual(named(await ids("timerange=[12:0_20:0)")), ["collection"]);
+    assert.deepEqual(named(await ids("timerange=()")), ["empty", "hollow"]);
+
+    // Following the cursor one flow at a time yields the unpaged result exactly once each.
+    const unpaged = await ids("timerange=[10:0_21:0)");
+    const paged: string[] = [];
+    let path: string | undefined = "/flows?timerange=[10:0_21:0)&limit=1";
+    while (path) {
+      const page = await call("GET", path);
+      const head = await call("HEAD", path);
+      assert.equal(head.status, 200);
+      assert.equal(head.headers.link, page.headers.link);
+      paged.push(...(page.value as { id: string }[]).map(f => f.id));
+      path = /<[^>]*?(\/flows\?[^>]*)>; rel="next"/.exec(page.headers.link ?? "")?.[1];
+    }
+    assert.deepEqual(paged, unpaged);
+    assert.equal(new Set(paged).size, paged.length);
+    assert.deepEqual(named(paged), ["a", "b", "collection", "own"]);
+  });
+
   await t.test("Profiles page in id order, filter, reject duplicates and lock for flows", async () => {
     const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
     const metadata = { format: video.format, codec: video.codec, container: video.container, essence_parameters: video.essence_parameters };

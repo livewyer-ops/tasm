@@ -292,3 +292,52 @@ test('deleting a reference keeps a reused object on its own timeline', async () 
   assert.equal((await request('DELETE', `/flows/${immediate.original}/segments?object_id=${immediate.objectId}`)).status, 204);
   await unchanged(immediate.reuse, immediate.objectId);
 });
+
+test('flow timerange searches include the segments of collection members', async () => {
+  const { request, upload } = await store();
+  const put = async (extra: Record<string, unknown> = {}) => {
+    const id = crypto.randomUUID();
+    assert.equal((await request('PUT', `/flows/${id}`, { ...videoFlow, id, source_id: crypto.randomUUID(), ...extra })).status, 201);
+    return id;
+  };
+  const segments = async (id: string, timeranges: string[]) => {
+    const objects = (JSON.parse((await request('POST', `/flows/${id}/storage`, { limit: timeranges.length })).body).media_objects as { object_id: string }[]).map(o => o.object_id);
+    objects.forEach(upload);
+    assert.equal((await request('POST', `/flows/${id}/segments`, objects.map((object_id, i) => ({ object_id, timerange: timeranges[i] })))).status, 201);
+  };
+  const a = await put(), b = await put(), own = await put(), hollow = await put();
+  await segments(a, ['[10:0_12:0)']);
+  await segments(b, ['[20:0_22:0)']);
+  await segments(own, ['[10:0_11:0)']);
+  const collection = await put({ flow_collection: [{ id: a, role: 'a' }, { id: b, role: 'b' }] });
+  const empty = await put({ flow_collection: [{ id: hollow, role: 'h' }] });
+  const ids = async (query: string) => {
+    const response = await request('GET', `/flows?${query}`);
+    assert.equal(response.status, 200, response.body);
+    return (JSON.parse(response.body) as { id: string }[]).map(f => f.id);
+  };
+  const names = new Map([[a, 'a'], [b, 'b'], [own, 'own'], [hollow, 'hollow'], [collection, 'collection'], [empty, 'empty']]);
+  const named = (list: string[]) => list.map(id => names.get(id)).filter(Boolean).sort();
+  assert.deepEqual(named(await ids('timerange=[10:0_11:0)')), ['a', 'collection', 'own']);
+  assert.deepEqual(named(await ids('timerange=[21:0_23:0)')), ['b', 'collection']);
+  assert.deepEqual(named(await ids('timerange=[11:0]')), ['a', 'collection']);
+  // The list filters on each flow's reported extent, so the gap between members still matches the collection.
+  assert.deepEqual(named(await ids('timerange=[12:0_20:0)')), ['collection']);
+  assert.deepEqual(named(await ids('timerange=()')), ['empty', 'hollow']);
+
+  // Following the cursor one flow at a time yields the unpaged result exactly once each.
+  const unpaged = await ids('timerange=[10:0_21:0)');
+  const paged: string[] = [];
+  let path: string | undefined = '/flows?timerange=[10:0_21:0)&limit=1';
+  while (path) {
+    const page = await request('GET', path);
+    const head = await request('HEAD', path);
+    assert.equal(head.status, 200);
+    assert.equal(head.headers.link, page.headers.link);
+    paged.push(...(JSON.parse(page.body) as { id: string }[]).map(f => f.id));
+    path = /<[^>]*?(\/flows\?[^>]*)>; rel="next"/.exec(page.headers.link ?? '')?.[1];
+  }
+  assert.deepEqual(paged, unpaged);
+  assert.equal(new Set(paged).size, paged.length);
+  assert.deepEqual(named(paged), ['a', 'b', 'collection', 'own']);
+});
