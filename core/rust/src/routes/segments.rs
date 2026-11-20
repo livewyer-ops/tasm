@@ -804,37 +804,49 @@ async fn delete(
             "Forbidden. The requested Flow is read-only.",
         ));
     }
-    let selected = segments_in(&mut transaction, flow_id)
-        .await?
-        .into_iter()
-        .filter(|item| {
-            object_id.as_deref().is_none_or(|id| item.object_id == id)
-                && requested.is_none_or(|query| {
-                    !query.empty
-                        && segment::bounds(&item.timerange).is_ok_and(|value| {
-                            value.start >= query.start.unwrap_or(i128::MIN)
-                                && value.end
-                                    <= if query.point {
-                                        query.start.map(|start| start.saturating_add(1))
-                                    } else {
-                                        query.end
-                                    }
-                                    .unwrap_or(i128::MAX)
-                        })
-                })
-        })
-        .collect::<Vec<_>>();
-    if selected.is_empty() {
-        transaction.commit().await.map_err(internal)?;
-        return Ok(StatusCode::NO_CONTENT.into_response());
-    }
-    if object_id.is_none() {
+    // Selected segments lie wholly within the requested timerange.
+    let (start, end) = match requested {
+        Some(query) if query.empty => {
+            transaction.commit().await.map_err(internal)?;
+            return Ok(StatusCode::NO_CONTENT.into_response());
+        }
+        Some(query) => (
+            query.start.unwrap_or(i128::MIN),
+            if query.point {
+                query.start.map(|start| start.saturating_add(1))
+            } else {
+                query.end
+            }
+            .unwrap_or(i128::MAX),
+        ),
+        None => (i128::MIN, i128::MAX),
+    };
+    let Some(object_id) = object_id else {
+        let selection = sqlx::query(crate::db::statements::SEGMENT_SELECTION)
+            .bind(flow_id)
+            .bind(start)
+            .bind(end)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(internal)?;
+        let count: i64 = selection.try_get(2).map_err(internal)?;
+        if count == 0 {
+            transaction.commit().await.map_err(internal)?;
+            return Ok(StatusCode::NO_CONTENT.into_response());
+        }
+        let matching: String = if count == 1 {
+            selection.try_get(3).map_err(internal)?
+        } else {
+            crate::domain::timerange::from_bounds(
+                selection.try_get(0).map_err(internal)?,
+                selection.try_get(1).map_err(internal)?,
+            )
+        };
         let now = crate::now();
         let now = now
             .replace_nanosecond(now.nanosecond() / 1_000 * 1_000)
             .expect("whole microseconds are valid nanoseconds");
         let id = Uuid::new_v4();
-        let matching = timerange_union(&selected);
         let to_delete = timerange_text
             .filter(|value| !matches!(*value, "" | "_"))
             .unwrap_or(&matching)
@@ -870,6 +882,11 @@ async fn delete(
                 .map_err(internal)?,
         );
         return Ok(response);
+    };
+    let selected = segments_in(&mut transaction, flow_id, &object_id, start, end).await?;
+    if selected.is_empty() {
+        transaction.commit().await.map_err(internal)?;
+        return Ok(StatusCode::NO_CONTENT.into_response());
     }
     let ids = selected
         .iter()
@@ -1069,9 +1086,15 @@ async fn queue_cleanup(
 async fn segments_in(
     transaction: &mut Transaction<'_, Engine>,
     flow_id: Uuid,
+    object_id: &str,
+    start: i128,
+    end: i128,
 ) -> Result<Vec<SegmentRecord>, ApiError> {
-    sqlx::query(crate::db::statements::FLOW_SEGMENTS)
+    sqlx::query(crate::db::statements::OBJECT_SEGMENTS)
         .bind(flow_id)
+        .bind(object_id)
+        .bind(start)
+        .bind(end)
         .fetch_all(&mut **transaction)
         .await
         .map_err(internal)?

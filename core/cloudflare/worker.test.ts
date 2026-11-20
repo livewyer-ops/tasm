@@ -475,6 +475,41 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     assert.deepEqual(named(paged), ["a", "b", "collection", "own"]);
   });
 
+  await t.test("Segment deletion selects matching segments in the database", { timeout: 30_000 }, async () => {
+    const name = "selective-segment-delete";
+    const env = await api.getEnv();
+    const call = async (method: string, path: string, body?: unknown) => {
+      const result = JSON.parse(await env.STORE.getByName(name).request(JSON.stringify({ method, url: origin + path, headers: { "content-type": "application/json" }, body: body === undefined ? null : JSON.stringify(body), actor: { subject: username, scopes: ["tams-api/admin"] } })));
+      return { status: result.status as number, value: result.body ? JSON.parse(result.body) : null };
+    };
+    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const flow = crypto.randomUUID();
+    assert.equal((await call("PUT", `/flows/${flow}`, { ...video, id: flow, source_id: crypto.randomUUID() })).status, 201);
+    const timeranges = ["[0:0_1:0)", "[1:0_2:0)", "[2:0_3:0)", "[3:0_4:0)", "[50:0]"];
+    const objects = (await call("POST", `/flows/${flow}/storage`, { limit: timeranges.length })).value.media_objects as { object_id: string; put_url: { url: string } }[];
+    for (const object of objects) await env.MEDIA.put(new URL(object.put_url.url).pathname.split("/").slice(2).join("/"), "media", { httpMetadata: { contentType: "video/mp2t" } });
+    const ids = objects.map(object => object.object_id);
+    assert.equal((await call("POST", `/flows/${flow}/segments`, ids.map((object_id, i) => ({ object_id, timerange: timeranges[i] })))).status, 201);
+    const remaining = async () => ((await call("GET", `/flows/${flow}/segments`)).value as { object_id: string }[]).map(s => s.object_id);
+    const remove = (query: string) => call("DELETE", `/flows/${flow}/segments?${query}`);
+
+    assert.equal((await remove(`object_id=${ids[2]}&timerange=${encodeURIComponent("[2:0_3:0)")}`)).status, 204);
+    assert.ok(!(await remaining()).includes(ids[2]));
+    // No match, and partial overlap, leave the segment in place.
+    for (const timerange of ["[0:0_1:0)", "[3:500000000_5:0)"]) assert.equal((await remove(`object_id=${ids[3]}&timerange=${encodeURIComponent(timerange)}`)).status, 204);
+    assert.ok((await remaining()).includes(ids[3]));
+    // A point timerange contains a point segment.
+    assert.equal((await remove(`object_id=${ids[4]}&timerange=${encodeURIComponent("[50:0]")}`)).status, 204);
+    assert.ok(!(await remaining()).includes(ids[4]));
+
+    const queued = await remove(`timerange=${encodeURIComponent("_2:0)")}`);
+    assert.equal(queued.status, 202, JSON.stringify(queued.value));
+    assert.equal(queued.value.timerange_to_delete, "_2:0)");
+    assert.equal((await remove("")).value.timerange_to_delete, "[0:0_4:0)");
+    assert.equal((await remove(`timerange=${encodeURIComponent("[3:0_3:500000000)")}`)).status, 204);
+    assert.equal((await remove(`timerange=${encodeURIComponent("()")}`)).status, 204);
+  });
+
   await t.test("Profiles page in id order, filter, reject duplicates and lock for flows", async () => {
     const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
     const metadata = { format: video.format, codec: video.codec, container: video.container, essence_parameters: video.essence_parameters };

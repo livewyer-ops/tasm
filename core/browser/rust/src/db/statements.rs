@@ -56,7 +56,9 @@ pub const OBJECT_RANGES: &str = "SELECT timerange,record FROM tamoss_segments WH
 
 pub const GET_OBJECTS: &str = "SELECT id,first_referenced_by_flow,referenced_by_flows,object_kind,content_type,record,created_at,updated_at FROM tamoss_media_objects WHERE id=ANY($1) ORDER BY id";
 
-pub const FLOW_SEGMENTS: &str = "SELECT flow_id,object_id,init_object_id,timerange,timerange_start,timerange_end,record,created FROM tamoss_segments WHERE flow_id=$1 ORDER BY timerange_start,object_id,timerange";
+pub const OBJECT_SEGMENTS: &str = "SELECT flow_id,object_id,init_object_id,timerange,timerange_start,timerange_end,record,created FROM tamoss_segments WHERE flow_id=$1 AND object_id=$2 AND timerange_start>=$3 AND timerange_end<=$4 ORDER BY timerange_start,object_id,timerange";
+
+pub const SEGMENT_SELECTION: &str = "SELECT MIN(timerange_start),MAX(timerange_end),COUNT(*),MIN(timerange) FROM tamoss_segments WHERE flow_id=$1 AND timerange_start>=$2 AND timerange_end<=$3";
 
 pub const FLOW_SEGMENT_BOUNDS: &str = "SELECT timerange_start,timerange_end FROM tamoss_segments WHERE flow_id=$1 AND timerange_end>$2 AND timerange_start<$3";
 

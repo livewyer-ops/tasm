@@ -25,9 +25,15 @@ async function store() {
   const files = new Map<string, Stored>();
   const deliveries: { url: string; event: string }[] = [];
   const key = (b: string, id: string) => `${b}/${id}`;
+  // Counts the rows the database returns to the core.
+  const returned = { rows: 0 };
   const bridge = async (op: string, payload: string): Promise<string> => {
     const p = JSON.parse(payload);
-    if (sql.handles(op)) return JSON.stringify(await sql.call(op, p));
+    if (sql.handles(op)) {
+      const result = await sql.call(op, p) as { rows?: unknown[] } | undefined;
+      returned.rows += result?.rows?.length ?? 0;
+      return JSON.stringify(result);
+    }
     switch (op) {
       case 'url': return JSON.stringify(`${origin}/media/${p.backend}?object_id=${encodeURIComponent(p.id)}`);
       case 'head': {
@@ -58,7 +64,7 @@ async function store() {
     return response;
   };
   const upload = (id: string) => files.set(key(backend, id), { size: 188, contentType: 'video/mp2t', checksum: 'a'.repeat(64) });
-  return { db, sql, core, request, upload, files, deliveries };
+  return { db, sql, core, request, upload, files, deliveries, returned };
 }
 
 await init({ module_or_path: readFileSync('pkg/browser/tasm_bg.wasm') });
@@ -340,4 +346,52 @@ test('flow timerange searches include the segments of collection members', async
   assert.deepEqual(paged, unpaged);
   assert.equal(new Set(paged).size, paged.length);
   assert.deepEqual(named(paged), ['a', 'b', 'collection', 'own']);
+});
+
+test('segment deletion selects matching segments in the database', async () => {
+  const { request, upload, returned } = await store();
+  const flow = crypto.randomUUID();
+  assert.equal((await request('PUT', `/flows/${flow}`, { ...videoFlow, id: flow, source_id: crypto.randomUUID() })).status, 201);
+  const count = 40;
+  const objects = (JSON.parse((await request('POST', `/flows/${flow}/storage`, { limit: count + 1 })).body).media_objects as { object_id: string }[]).map(o => o.object_id);
+  objects.forEach(upload);
+  const timeranges = [...Array(count).keys()].map(i => `[${i}:0_${i + 1}:0)`).concat('[50:0]');
+  assert.equal((await request('POST', `/flows/${flow}/segments`, objects.map((object_id, i) => ({ object_id, timerange: timeranges[i] })))).status, 201);
+  const remaining = async () => (JSON.parse((await request('GET', `/flows/${flow}/segments`)).body) as { object_id: string }[]).map(s => s.object_id);
+  const remove = async (query: string) => {
+    returned.rows = 0;
+    const response = await request('DELETE', `/flows/${flow}/segments?${query}`);
+    return { ...response, rows: returned.rows };
+  };
+
+  // One match: only that segment crosses into the core.
+  const one = await remove(`object_id=${objects[2]}&timerange=${encodeURIComponent('[2:0_3:0)')}`);
+  assert.equal(one.status, 204, one.body);
+  assert.ok(one.rows < count / 2, `${one.rows} rows returned`);
+  assert.ok(!(await remaining()).includes(objects[2]));
+
+  // No match, and partial overlap, leave the segment in place.
+  for (const timerange of ['[0:0_1:0)', '[3:500000000_5:0)']) {
+    const none = await remove(`object_id=${objects[3]}&timerange=${encodeURIComponent(timerange)}`);
+    assert.equal(none.status, 204, none.body);
+    assert.ok(none.rows < count / 2, `${none.rows} rows returned`);
+  }
+  assert.ok((await remaining()).includes(objects[3]));
+
+  // A point timerange contains a point segment.
+  assert.equal((await remove(`object_id=${objects[count]}&timerange=${encodeURIComponent('[50:0]')}`)).status, 204);
+  assert.ok(!(await remaining()).includes(objects[count]));
+
+  // Queued deletion reads only the bounds of the selection.
+  const queued = await remove(`timerange=${encodeURIComponent('_10:0)')}`);
+  assert.equal(queued.status, 202, queued.body);
+  assert.equal(JSON.parse(queued.body).timerange_to_delete, '_10:0)');
+  assert.ok(queued.rows < count / 2, `${queued.rows} rows returned`);
+  const single = await remove(`timerange=${encodeURIComponent('[20:0_21:500000000)')}`);
+  assert.equal(JSON.parse(single.body).timerange_to_delete, '[20:0_21:500000000)');
+  const whole = await remove('');
+  assert.equal(whole.status, 202, whole.body);
+  assert.equal(JSON.parse(whole.body).timerange_to_delete, '[0:0_40:0)');
+  assert.equal((await remove(`timerange=${encodeURIComponent('[45:0_46:0)')}`)).status, 204);
+  assert.equal((await remove(`timerange=${encodeURIComponent('()')}`)).status, 204);
 });
