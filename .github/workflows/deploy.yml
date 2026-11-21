@@ -64,7 +64,7 @@ jobs:
           compression-level: 1
 
   browser:
-    name: ${{ github.event_name != 'pull_request' && format('{0} ({1}/{2})', matrix.browser, matrix.shard, matrix.browser == 'webkit' && 4 || matrix.browser == 'firefox' && 2 || 1) || 'Chromium smoke' }}
+    name: ${{ github.event_name != 'pull_request' && format('{0} ({1}/{2})', matrix.browser, matrix.shard, matrix.browser == 'webkit' && 6 || matrix.browser == 'firefox' && 2 || 1) || 'Chromium smoke' }}
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -72,13 +72,17 @@ jobs:
       fail-fast: false
       matrix:
         browser: ${{ fromJSON((github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && '["chromium","firefox","webkit"]' || '["chromium"]') }}
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && '[1,2,3,4]' || '[1]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && '[1,2,3,4,5,6]' || '[1]') }}
         exclude:
           - { browser: chromium, shard: 2 }
           - { browser: chromium, shard: 3 }
           - { browser: chromium, shard: 4 }
-          - { browser: firefox, shard: 4 }
+          - { browser: chromium, shard: 5 }
+          - { browser: chromium, shard: 6 }
           - { browser: firefox, shard: 3 }
+          - { browser: firefox, shard: 4 }
+          - { browser: firefox, shard: 5 }
+          - { browser: firefox, shard: 6 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -103,7 +107,7 @@ jobs:
             --env CI=true --env GITHUB_ACTIONS=true \
             --mount "type=bind,src=$GITHUB_WORKSPACE/dist,dst=/app/dist,readonly" \
             tasm:browser sh scripts/test-browser.sh \
-            ${{ github.event_name == 'pull_request' && '--smoke' || '' }} --project=${{ matrix.browser }} --shard=${{ matrix.shard }}/${{ matrix.browser == 'webkit' && 4 || matrix.browser == 'firefox' && 2 || 1 }}
+            ${{ github.event_name == 'pull_request' && '--smoke' || '' }} ${{ matrix.browser == 'webkit' && '--workers=1' || '' }} --project=${{ matrix.browser }} --shard=${{ matrix.shard }}/${{ matrix.browser == 'webkit' && 6 || matrix.browser == 'firefox' && 2 || 1 }}
       - name: Collect browser reports
         if: ${{ !cancelled() && (steps.tests.outcome == 'success' || steps.tests.outcome == 'failure') }}
         run: |
