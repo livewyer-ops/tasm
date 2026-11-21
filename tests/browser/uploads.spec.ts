@@ -255,5 +255,6 @@ test('imported samples retain the existing ingest cancel and retry controls', as
   await expect(page.locator('#notice')).toContainText('Injected registration failure', { timeout: 90000 }); await ready(page);
   expect((await state(page))[0].segments).toEqual([]); expect(await libraryCounts(page)).toEqual([2, 2]);
   await page.locator('#retry-action').click(); await expect(page.locator('.clip')).toHaveCount(1, { timeout: 90000 }); await ready(page);
-  await expect(page.locator('#objects tr[data-state="stored"]')).toHaveCount(2);
+  // Storage checks run in the background, one HEAD per object with a 10 s deadline each.
+  await expect(page.locator('#objects tr[data-state="stored"]')).toHaveCount(2, { timeout: 30000 });
 });
