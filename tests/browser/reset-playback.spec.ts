@@ -62,6 +62,11 @@ test('playback reads are grouped, reviewed and cached without stealing manual se
   await page.locator('video').scrollIntoViewIfNeeded();
   await page.locator('video').evaluate(async (video: HTMLVideoElement) => { video.muted = true; await video.play(); });
   await expect.poll(() => page.locator('video').evaluate((v: HTMLVideoElement) => v.currentTime), { timeout: 25000 }).toBeGreaterThan(0.3);
+  // The timeline playhead follows playback under the site policy instead of waiting for it to stop.
+  await expect.poll(() => page.evaluate(() => {
+    const video = document.querySelector('video')!;
+    return !video.paused && !video.ended && document.getElementById('playhead-time')!.textContent !== '00:00.000';
+  })).toBe(true);
   await page.locator('video').evaluate((v: HTMLVideoElement) => v.pause());
   await expect(page.locator('#action-history option:checked')).toHaveText('Save draft');
   await expect(page.locator('#requests .selected')).toHaveAttribute('data-request', inspected!);

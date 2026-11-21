@@ -46,7 +46,11 @@ class TimelineMedia {
       });
       this.manifests.set(`${this.base}${kind}.m3u8`, `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:${Math.ceil(Math.max(...chunks.map(c => c.end - c.start)))}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n${entries.join('\n')}\n#EXT-X-ENDLIST\n`);
     }
-    this.manifests.set(`${this.base}master.m3u8`, `#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Timeline audio",DEFAULT=YES,AUTOSELECT=YES,URI="${this.base}audio.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=2000000,AUDIO="audio"\n${this.base}video.m3u8\n`);
+    // Black fills every video gap, so the stream always has pictures. Declaring their size
+    // lets the player follow playback from video frames rather than an audio worklet.
+    const picture = workspace.lanes.find(l => l.id === selection.video)?.blocks[0]?.sample.technical.essence_parameters;
+    const resolution = picture?.frame_width && picture.frame_height ? `${picture.frame_width}x${picture.frame_height}` : '640x360';
+    this.manifests.set(`${this.base}master.m3u8`, `#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Timeline audio",DEFAULT=YES,AUTOSELECT=YES,URI="${this.base}audio.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=${resolution},AUDIO="audio"\n${this.base}video.m3u8\n`);
     this.worker = new Worker(new URL('./preview-worker.js', import.meta.url), { type: 'module' });
     this.worker.onmessage = ({ data }) => {
       const pending = this.pending.get(data.id); this.pending.delete(data.id);
