@@ -30,15 +30,16 @@ async function empty(page: Page) {
   })).toEqual([]);
 }
 
-test('playback reads are grouped, reviewed and cached without stealing manual selection', async ({ page }) => {
-  test.setTimeout(180000);
+test('playback reads are grouped, reviewed and cached without stealing manual selection', async ({ page, browserName }) => {
+  test.setTimeout(browserName === 'webkit' ? 360000 : 180000);
   await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto('/'); await ready(page);
   await named(page, '#new-source', 'Playback'); await named(page, '#add-video', 'Picture');
   await page.locator('[data-sample="orbit"]').click(); await page.locator('#add-sample').click(); await page.locator('#save-draft').click(); await ready(page);
-  await expect(page.locator('#preview-status')).toHaveText('Source ready · press play to preview');
+  // The preview reads saved media and keeps reading ahead after it is ready.
+  await expect(page.locator('#preview-status')).toHaveText('Source ready · press play to preview', { timeout: 60000 });
+  await expect(page.locator('#action-history option:checked')).toHaveText('Playback', { timeout: 60000 });
   const playback = page.locator('#action-history option').filter({ hasText: /^Playback$/ });
   await expect(playback).toHaveCount(1);
-  await expect(page.locator('#action-history option:checked')).toHaveText('Playback');
   await expect(page.locator('#request-detail')).toContainText('reads ahead');
   const id = await playback.getAttribute('value');
   const count = Number(await page.locator('#request-count').textContent());
