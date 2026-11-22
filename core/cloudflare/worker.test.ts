@@ -62,7 +62,9 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     assert.equal((await request("/service", { method: "POST", body: '{}', headers: { "content-type": "text/plain" } })).status, 400);
     assert.equal((await request("/service?unexpected=true")).status, 400);
     assert.equal((await request("/service", { method: "POST", body: '{"extension":true}' })).status, 200);
-    assert.equal("name" in (await (await request("/service")).json() as object), false);
+    const retained = await (await request("/service")).json() as Record<string, unknown>;
+    assert.equal(retained.name, "Rust service");
+    assert.equal(retained.description, "SQLite metadata");
     assert.equal((await request("/flows")).status, 200);
     const unsupported = await request("/service", { method: "PUT", body: "{}" });
     assert.equal(unsupported.status, 405);

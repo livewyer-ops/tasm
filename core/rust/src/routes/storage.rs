@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::{
     db::{self, StorageBackend},
     domain::object::{MediaObject, ObjectInstance},
-    http::routes::service::{MetadataState, internal},
+    http::routes::service::{MetadataState, internal, query},
     http::{MAX_JSON_BODY_BYTES, error::ApiError},
     storage::StorageFactory,
 };
@@ -71,6 +71,7 @@ async fn allocate(
     Extension(factory): Extension<StorageFactory>,
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
+    query(&request, &[], &[])?;
     let raw = request.uri().path().split('/').nth(2).unwrap_or_default();
     let flow_id = crate::http::path_uuid(&crate::http::lenient_decode_path(raw))?;
     let content_type_header = request
@@ -155,7 +156,7 @@ async fn allocate(
     }
     let limit = body
         .get("limit")
-        .map(|v| v.as_i64().ok_or_else(invalid))
+        .map(|v| crate::domain::model::integer(v).ok_or_else(invalid))
         .transpose()?;
     let supplied = body
         .get("object_ids")

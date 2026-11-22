@@ -705,3 +705,54 @@ test('an unregistered allocation survives the advertised minimum and expires aft
   assert.equal(await age(minimum + 5), 1);
   assert.equal(await age(minimum + 60), 0);
 });
+
+test('partial service edits preserve other fields and Flow edits preserve the Source audit', async t => {
+  const { db, request } = await store();
+  t.after(() => db.close());
+  const service = async () => JSON.parse((await request('GET', '/service')).body);
+  const original = await service();
+  assert.equal((await request('POST', '/service', { name: 'Studio' })).status, 200);
+  assert.equal((await service()).description, original.description);
+  assert.equal((await request('POST', '/service', { description: 'Edit room' })).status, 200);
+  assert.equal((await service()).name, 'Studio');
+  assert.equal((await request('POST', '/service', { description: '' })).status, 200);
+  assert.equal((await service()).description, undefined);
+
+  const flow = { ...videoFlow, id: crypto.randomUUID(), source_id: crypto.randomUUID() }, path = '/flows/' + flow.id;
+  assert.equal((await request('PUT', path, flow)).status, 201);
+  const source = await request('GET', '/sources/' + flow.source_id);
+  for (const field of ['avg_bit_rate', 'max_bit_rate']) {
+    for (const method of ['GET', 'HEAD']) assert.equal((await request(method, path + '/' + field)).status, 404);
+    assert.equal((await request('PUT', path + '/' + field, '5000.0')).status, 204);
+    assert.equal((await request('PUT', path + '/' + field, '0')).status, 204);
+    assert.equal(JSON.parse((await request('GET', path + '/' + field)).body), 0);
+  }
+  assert.equal((await request('PUT', path, { ...flow, profile_id: '' })).status, 204);
+  assert.deepEqual(JSON.parse((await request('GET', '/sources/' + flow.source_id)).body), JSON.parse(source.body));
+  assert.equal((await request('PUT', path, { ...flow, created: 'yesterday' })).status, 400);
+});
+
+test('queued deletion versions the parent and emits a Flow update', async t => {
+  const { db, core, request, upload } = await store();
+  t.after(() => db.close());
+  const child = crypto.randomUUID(), parent = crypto.randomUUID();
+  for (const id of [child, parent]) {
+    const metadata = id === child ? videoFlow : { format: 'urn:x-nmos:format:multi', flow_collection: [{ id: child, role: 'video' }] };
+    assert.equal((await request('PUT', '/flows/' + id, { id, source_id: crypto.randomUUID(), ...metadata })).status, 201);
+  }
+  const path = '/flows/' + child;
+  const object = JSON.parse((await request('POST', path + '/storage', {})).body).media_objects[0].object_id;
+  upload(object);
+  assert.equal((await request('POST', path + '/segments', { object_id: object, timerange: '[0:0_1:0)' })).status, 201);
+  const hook = { url: 'http://hooks.test/metadata', events: ['flows/updated'], flow_ids: [parent] };
+  assert.equal((await request('POST', '/service/webhooks', hook)).status, 201);
+  const before = JSON.parse((await request('GET', '/flows/' + parent)).body);
+  assert.equal((await request('DELETE', path)).status, 202);
+  await core.poll();
+  const after = JSON.parse((await request('GET', '/flows/' + parent)).body);
+  assert.equal(after.flow_collection, undefined);
+  assert.notEqual(after.metadata_version, before.metadata_version);
+  assert.equal(after.updated_by, 'tasm');
+  const queued = await db.query("SELECT record->'payload'->'event'->'flow'->>'metadata_version' AS version FROM tamoss_webhook_deliveries");
+  assert.deepEqual(queued.rows, [{ version: after.metadata_version }]);
+});

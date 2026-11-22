@@ -141,9 +141,9 @@ pub(crate) async fn update_service(
     let value = value
         .as_object()
         .ok_or_else(|| ApiError::bad_request("Bad request. Invalid service JSON."))?;
-    let field = |name: &str| -> Result<Option<String>, ApiError> {
+    let field = |name: &str, default: &str| -> Result<Option<String>, ApiError> {
         match value.get(name) {
-            None => Ok(None),
+            None => Ok(Some(default.to_owned())),
             Some(Value::String(value)) => Ok((!value.is_empty()).then(|| value.clone())),
             Some(_) => Err(ApiError::bad_request("Bad request. Invalid service JSON.")),
         }
@@ -151,9 +151,11 @@ pub(crate) async fn update_service(
     db::service::save_metadata(
         &state.pool,
         &ServiceMetadata {
-            name: field("name")?,
-            description: field("description")?,
+            name: field("name", &state.settings.service_name)?,
+            description: field("description", &state.settings.service_description)?,
         },
+        value.contains_key("name"),
+        value.contains_key("description"),
     )
     .await
     .map_err(internal)?;

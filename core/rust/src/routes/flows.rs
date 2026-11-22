@@ -302,7 +302,7 @@ fn data(record: &FlowRecord) -> Map<String, Value> {
         .cloned()
         .unwrap_or_default()
 }
-fn sync_record(record: &mut FlowRecord, mut payload: Map<String, Value>, identity: &Actor) {
+fn sync_record(record: &mut FlowRecord, mut payload: Map<String, Value>, subject: &str) {
     let previous_version = data(record)
         .get("metadata_version")
         .and_then(Value::as_str)
@@ -318,7 +318,7 @@ fn sync_record(record: &mut FlowRecord, mut payload: Map<String, Value>, identit
     payload.insert("status".into(), json!(record.status));
     payload.insert("read_only".into(), json!(record.read_only));
     payload.insert("tags".into(), json!(record.tags));
-    payload.insert("updated_by".into(), json!(identity.subject));
+    payload.insert("updated_by".into(), json!(subject));
     record.label = payload
         .get("label")
         .and_then(Value::as_str)
@@ -386,7 +386,7 @@ async fn put_flow(
     let requested_profile = map.get("profile_id");
     if let Some(Value::String(value)) = requested_profile {
         if value.is_empty() {
-            if created || profile_id.is_none() {
+            if created {
                 return Err(invalid_flow());
             }
             profile_id = None;
@@ -440,7 +440,7 @@ async fn put_flow(
     let source_metadata_updated = now
         .replace_nanosecond(now.nanosecond() / 1_000 * 1_000)
         .expect("whole microseconds are valid nanoseconds");
-    let mut source = match db::flows::get_source_for_update(&mut *tx, source_id)
+    let source = match db::flows::get_source_for_update(&mut *tx, source_id)
         .await
         .map_err(internal)?
     {
@@ -456,24 +456,17 @@ async fn put_flow(
                 format: Some(format.clone()),
                 label: map.get("label").and_then(Value::as_str).map(str::to_owned),
                 tags: tags.clone(),
-                record: json!({"id":source_id,"format":format,"label":map.get("label"),"description":map.get("description"),"tags":tags,"created_by":identity.subject,"created":model::timestamp(now)}),
+                record: json!({"id":source_id,"format":format,"label":map.get("label"),"description":map.get("description"),"tags":tags,"created_by":identity.subject,"updated_by":identity.subject,"created":model::timestamp(now),"metadata_updated":model::timestamp(source_metadata_updated)}),
                 metadata_updated: source_metadata_updated,
                 created: now,
             }
         }
     };
-    source.metadata_updated = source_metadata_updated;
-    if !source.record.is_object() {
-        source.record = json!({});
+    if source_created {
+        db::flows::save_source(&mut *tx, &source)
+            .await
+            .map_err(internal)?;
     }
-    source.record["updated_by"] = json!(identity.subject);
-    source.record.as_object_mut().unwrap().insert(
-        "metadata_updated".into(),
-        json!(model::timestamp(source.metadata_updated)),
-    );
-    db::flows::save_source(&mut *tx, &source)
-        .await
-        .map_err(internal)?;
     let collection_ids = if let Some(collection) = map.get("flow_collection") {
         let ids = rules::validate_collection(collection, flow_id).map_err(|_| invalid_flow())?;
         if !db::flows::all_flow_ids_exist(&mut *tx, &ids)
@@ -551,7 +544,7 @@ async fn put_flow(
         .and_then(Value::as_bool)
         .unwrap_or(record.read_only);
     record.metadata_updated = now;
-    sync_record(&mut record, payload, &identity);
+    sync_record(&mut record, payload, &identity.subject);
     db::flows::save_flow(&mut *tx, &record)
         .await
         .map_err(internal)?;
@@ -722,31 +715,7 @@ async fn delete_flow(
         .map_err(internal)?;
     let parent_ids = parents.iter().map(|value| value.id).collect::<Vec<_>>();
     for mut parent in parents {
-        parent.flow_collection_ids.retain(|id| *id != flow_id);
-        let mut payload = data(&parent);
-        let empty = if let Some(collection) = payload
-            .get_mut("flow_collection")
-            .and_then(Value::as_array_mut)
-        {
-            collection.retain(|item| {
-                item.get("id")
-                    .and_then(Value::as_str)
-                    .and_then(|id| id.parse::<Uuid>().ok())
-                    != Some(flow_id)
-            });
-            collection.is_empty()
-        } else {
-            false
-        };
-        if empty {
-            payload.remove("flow_collection");
-        }
-        parent.metadata_updated = crate::now();
-        sync_record(&mut parent, payload, &identity);
-        db::flows::save_flow(&mut *tx, &parent)
-            .await
-            .map_err(internal)?;
-        emit_flow_updated(&mut tx, &parent).await?;
+        detach_member(&mut tx, &mut parent, flow_id, &identity.subject).await?;
     }
     db::flows::delete_flow(&mut *tx, flow_id)
         .await
@@ -857,7 +826,7 @@ async fn set_collection(
     }
     flow.flow_collection_ids = ids;
     flow.metadata_updated = crate::now();
-    sync_record(&mut flow, payload, &identity);
+    sync_record(&mut flow, payload, &identity.subject);
     db::flows::save_flow(&mut *tx, &flow)
         .await
         .map_err(internal)?;
@@ -889,6 +858,39 @@ async fn delete_collection(
     set_collection(state, raw, request, true).await
 }
 
+pub(crate) async fn detach_member(
+    tx: &mut crate::sql::Connection,
+    parent: &mut FlowRecord,
+    flow_id: Uuid,
+    subject: &str,
+) -> Result<(), ApiError> {
+    parent.flow_collection_ids.retain(|id| *id != flow_id);
+    let mut payload = data(parent);
+    let empty = if let Some(collection) = payload
+        .get_mut("flow_collection")
+        .and_then(Value::as_array_mut)
+    {
+        collection.retain(|item| {
+            item.get("id")
+                .and_then(Value::as_str)
+                .and_then(|id| id.parse::<Uuid>().ok())
+                != Some(flow_id)
+        });
+        collection.is_empty()
+    } else {
+        false
+    };
+    if empty {
+        payload.remove("flow_collection");
+    }
+    parent.metadata_updated = crate::now();
+    sync_record(parent, payload, subject);
+    db::flows::save_flow(&mut *tx, parent)
+        .await
+        .map_err(internal)?;
+    emit_flow_updated(tx, parent).await
+}
+
 async fn get_property(
     state: MetadataState,
     raw: String,
@@ -902,7 +904,11 @@ async fn get_property(
         "label" => flow.label.map_or_else(|| json!(""), Value::String),
         "description" => payload.get(name).cloned().unwrap_or_else(|| json!("")),
         "read_only" => json!(flow.read_only),
-        _ => payload.get(name).cloned().unwrap_or(Value::Null),
+        _ => payload
+            .get(name)
+            .filter(|v| !v.is_null())
+            .cloned()
+            .ok_or_else(|| ApiError::not_found("The Flow has no value for this property."))?,
     };
     Ok(Json(value).into_response())
 }
@@ -944,7 +950,9 @@ async fn set_property(
             .map_err(|_| ApiError::bad_request("Bad request."))?;
         let valid = match name {
             "label" | "description" => value.is_string(),
-            "avg_bit_rate" | "max_bit_rate" => value.as_i64().is_some_and(|value| value >= 0),
+            "avg_bit_rate" | "max_bit_rate" => {
+                model::integer(&value).is_some_and(|value| value >= 0)
+            }
             "read_only" => value.is_boolean(),
             _ => false,
         };
@@ -981,7 +989,7 @@ async fn set_property(
         }
     }
     flow.metadata_updated = crate::now();
-    sync_record(&mut flow, payload, &identity);
+    sync_record(&mut flow, payload, &identity.subject);
     db::flows::save_flow(&mut *tx, &flow)
         .await
         .map_err(internal)?;
@@ -1090,7 +1098,7 @@ async fn set_tag(
     let mut payload = data(&flow);
     payload.insert("tags".into(), json!(flow.tags));
     flow.metadata_updated = crate::now();
-    sync_record(&mut flow, payload, &identity);
+    sync_record(&mut flow, payload, &identity.subject);
     db::flows::save_flow(&mut *tx, &flow)
         .await
         .map_err(internal)?;

@@ -310,6 +310,7 @@ async fn post(
     Extension(storage): Extension<StorageFactory>,
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
+    query(&request, &[], &[])?;
     let flow_id = flow_id(&request, "The requested Flow does not exist.");
     let value: Value = strict_json(request, MAX_JSON_BODY_BYTES)
         .await

@@ -264,28 +264,19 @@ impl Worker {
             .await
             .map_err(db::DbError::from)?;
         if delete_flow && !remaining && flow.is_some() {
-            let flow_id_text = flow_id.to_string();
-            for parent in &mut parents {
-                if parent.id == flow_id {
-                    continue;
-                }
-                parent.flow_collection_ids.retain(|value| *value != flow_id);
-                if let Some(data) = parent.record.get_mut("data").and_then(Value::as_object_mut) {
-                    let empty = data
-                        .get_mut("flow_collection")
-                        .and_then(Value::as_array_mut)
-                        .is_some_and(|collection| {
-                            collection.retain(|item| {
-                                item.get("id").and_then(Value::as_str)
-                                    != Some(flow_id_text.as_str())
-                            });
-                            collection.is_empty()
-                        });
-                    if empty {
-                        data.remove("flow_collection");
-                    }
-                }
-                db::flows::save_flow(&mut *transaction, parent).await?;
+            let subject = record
+                .get("created_by")
+                .and_then(Value::as_str)
+                .unwrap_or(&self.settings.worker_id);
+            for parent in parents.iter_mut().filter(|parent| parent.id != flow_id) {
+                crate::http::routes::flows::detach_member(
+                    &mut transaction,
+                    parent,
+                    flow_id,
+                    subject,
+                )
+                .await
+                .map_err(|_| db::DbError::Record("parent Flow update failed".into()))?;
             }
             db::flows::delete_flow(&mut *transaction, flow_id).await?;
             enqueue_event(

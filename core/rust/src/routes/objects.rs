@@ -424,6 +424,7 @@ async fn post_instance(
     object_id: String,
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
+    query(&request, &[], &[])?;
     let body: Value = strict_json(request, MAX_JSON_BODY_BYTES)
         .await
         .map_err(|_| ApiError::bad_request("Bad request. Invalid request JSON."))?;

@@ -90,6 +90,7 @@ async fn create(
     Path(path): Path<String>,
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
+    query(&request, &[], &[])?;
     let path = profile_id(&path)?;
     let identity = request
         .extensions()

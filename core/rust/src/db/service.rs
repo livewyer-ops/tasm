@@ -25,12 +25,17 @@ pub async fn get_metadata(pool: &sqlx::Pool) -> Result<Option<ServiceMetadata>, 
         description: r.get(1),
     }))
 }
-pub async fn save_metadata<'e, E>(executor: E, value: &ServiceMetadata) -> Result<(), DbError>
+pub async fn save_metadata<'e, E>(
+    executor: E,
+    value: &ServiceMetadata,
+    update_name: bool,
+    update_description: bool,
+) -> Result<(), DbError>
 where
     E: sqlx::Executor<'e, Database = Engine>,
 {
-    dialect::query(&format!("INSERT INTO tamoss_service_metadata(id,name,description,updated_at) VALUES ('default',$1,$2,{NOW}) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,description=EXCLUDED.description,updated_at={NOW}"))
-        .bind(&value.name).bind(&value.description).execute(executor).await?;
+    dialect::query(&format!("INSERT INTO tamoss_service_metadata(id,name,description,updated_at) VALUES ('default',$1,$2,{NOW}) ON CONFLICT(id) DO UPDATE SET name=CASE WHEN $3 THEN EXCLUDED.name ELSE tamoss_service_metadata.name END,description=CASE WHEN $4 THEN EXCLUDED.description ELSE tamoss_service_metadata.description END,updated_at={NOW}"))
+        .bind(&value.name).bind(&value.description).bind(update_name).bind(update_description).execute(executor).await?;
     Ok(())
 }
 pub async fn get_storage_backend(

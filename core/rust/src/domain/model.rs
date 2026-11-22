@@ -103,6 +103,18 @@ pub fn tag_filters(
     Ok(TagFilters { values, exists })
 }
 
+/// Decode integer literals directly so large values never pass through a float.
+pub fn integer(value: &Value) -> Option<i64> {
+    value.as_i64().or_else(|| {
+        let number = value.as_number()?;
+        if !number.is_f64() {
+            return None;
+        }
+        let float = number.as_f64()?;
+        (float.fract() == 0.0 && float.abs() < 9_007_199_254_740_992.0).then_some(float as i64)
+    })
+}
+
 pub fn timestamp(value: OffsetDateTime) -> String {
     value
         .format(&Rfc3339)

@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use super::{
     ValidationError,
-    model::{FORMATS, tags, uuid_field},
+    model::{FORMATS, integer, parse_uuid, tags, uuid_field},
 };
 
 const SERVER_FIELDS: &[&str] = &[
@@ -40,12 +40,26 @@ pub fn validate_put(map: &Map<String, Value>, path_id: Uuid) -> Result<(), Valid
         }
     }
     for name in ["created_by", "updated_by"] {
-        if map
-            .get(name)
-            .is_some_and(|value| !value.is_string() && !value.is_null())
-        {
+        if map.get(name).is_some_and(|value| !value.is_string()) {
             return Err(ValidationError);
         }
+    }
+    for name in ["created", "metadata_updated", "segments_updated"] {
+        if let Some(value) = map.get(name) {
+            time::OffsetDateTime::parse(
+                value.as_str().ok_or(ValidationError)?,
+                &time::format_description::well_known::Rfc3339,
+            )
+            .map_err(|_| ValidationError)?;
+        }
+    }
+    if let Some(value) = map.get("collected_by") {
+        for id in value.as_array().ok_or(ValidationError)? {
+            parse_uuid(id.as_str().ok_or(ValidationError)?)?;
+        }
+    }
+    if let Some(value) = map.get("timerange") {
+        super::timerange::parse(value.as_str().ok_or(ValidationError)?)?;
     }
     if map
         .get("read_only")
@@ -61,7 +75,7 @@ pub fn validate_put(map: &Map<String, Value>, path_id: Uuid) -> Result<(), Valid
     }
     for name in ["avg_bit_rate", "max_bit_rate", "generation"] {
         if let Some(value) = map.get(name)
-            && value.as_i64().is_none_or(|value| value < 0)
+            && integer(value).is_none_or(|value| value < 0)
         {
             return Err(ValidationError);
         }
@@ -94,7 +108,7 @@ fn mime(value: &Value) -> Result<&str, ValidationError> {
 fn positive_integer(map: &Map<String, Value>, name: &str) -> Result<(), ValidationError> {
     if map
         .get(name)
-        .is_some_and(|value| value.as_i64().is_none_or(|value| value <= 0))
+        .is_some_and(|value| integer(value).is_none_or(|value| value <= 0))
     {
         return Err(ValidationError);
     }
@@ -139,7 +153,7 @@ fn container_mapping(value: &Value) -> Result<(), ValidationError> {
     for name in ["track_index", "format_track_index"] {
         if map
             .get(name)
-            .is_some_and(|value| value.as_i64().is_none_or(|value| value < 0))
+            .is_some_and(|value| integer(value).is_none_or(|value| value < 0))
         {
             return Err(ValidationError);
         }
@@ -175,7 +189,7 @@ fn container_mapping(value: &Value) -> Result<(), ValidationError> {
                 .ok_or(ValidationError)?;
             if numbers
                 .iter()
-                .any(|value| value.as_i64().is_none_or(|value| value < 0))
+                .any(|value| integer(value).is_none_or(|value| value < 0))
             {
                 return Err(ValidationError);
             }
@@ -209,7 +223,7 @@ pub fn validate_direct(map: &Map<String, Value>) -> Result<(), ValidationError> 
     }
     if map
         .get("avg_bit_rate")
-        .is_some_and(|value| value.as_i64().is_none_or(|value| value < 0))
+        .is_some_and(|value| integer(value).is_none_or(|value| value < 0))
     {
         return Err(ValidationError);
     }
@@ -335,7 +349,7 @@ pub fn validate_direct(map: &Map<String, Value>) -> Result<(), ValidationError> 
     }
     if let Some(parameters) = parameters.get("avc_parameters").and_then(Value::as_object) {
         for name in ["profile", "level", "flags"] {
-            if parameters.get(name).and_then(Value::as_i64).is_none() {
+            if parameters.get(name).and_then(integer).is_none() {
                 return Err(ValidationError);
             }
         }
@@ -347,7 +361,7 @@ pub fn validate_direct(map: &Map<String, Value>) -> Result<(), ValidationError> 
         for name in ["coded_frame_size", "mp4_oti"] {
             if parameters
                 .get(name)
-                .is_some_and(|value| value.as_i64().is_none())
+                .is_some_and(|value| integer(value).is_none())
             {
                 return Err(ValidationError);
             }
@@ -359,7 +373,7 @@ pub fn validate_direct(map: &Map<String, Value>) -> Result<(), ValidationError> 
         required_positive_integer(parameters, "bit_depth")?;
         if unc_type.is_none()
             || (codec == "audio/x-raw-float"
-                && !matches!(parameters["bit_depth"].as_i64(), Some(32 | 64)))
+                && !matches!(integer(&parameters["bit_depth"]), Some(32 | 64)))
         {
             return Err(ValidationError);
         }
