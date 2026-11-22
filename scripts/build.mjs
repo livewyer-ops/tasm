@@ -34,7 +34,6 @@ for (const directory of outputs) {
   if (stat.isDirectory() && await readFile(`${directory}/${marker}`, 'utf8').catch(() => '') === signature) continue;
   throw new Error(`Refusing to replace ${directory}. Choose a fresh TASM_DIST directory.`);
 }
-const options = { ...browserOptions, sourcemap: true };
 const spec = await RefParser.dereference('contracts/tams/api/TimeAddressableMediaStore.yaml');
 if (cloudflare) await buildCloudflare(dist, spec, marker, signature);
 if (!browser) process.exit(0);
@@ -60,7 +59,7 @@ await writeFile('pkg/validators.js', standalone(ajv, validators));
 await writeFile('pkg/operations.json', JSON.stringify(operations));
 await writeFile(`${core}/openapi.json`, JSON.stringify({ ...spec, security: [],
   'x-tasm-exceptions': ['Authentication is disabled for this browser-local deployment.', 'Local object URLs are not presigned.'] }));
-const coreBundle = await build({ ...coreOptions, sourcemap: true, metafile: true,
+const coreBundle = await build({ ...coreOptions, metafile: true,
   entryPoints: { index: 'core/browser/index.ts', worker: 'core/browser/worker.ts' }, outdir: core });
 await cp('pkg/browser/tasm_bg.wasm', `${core}/tasm_bg.wasm`);
 for (const file of ['pglite.wasm', 'pglite.data', 'initdb.wasm']) await cp(`node_modules/@electric-sql/pglite/dist/${file}`, `${core}/${file}`);
@@ -77,13 +76,14 @@ async function files(directory, prefix = '') {
   return result.sort();
 }
 async function serviceWorker(directory, homepage = false) {
-  const paths = (await files(directory)).filter(path => path !== marker && !path.endsWith('.map') && !path.startsWith('service-worker.') && !path.startsWith('_'));
+  const paths = (await files(directory)).filter(path => !path.startsWith('service-worker.') &&
+    (/\.(?:html|js|wasm|data|json|css|svg|png|jpg|otf|ttf)$/.test(path) || path.startsWith('samples/') && path.endsWith('.ts')));
   // Cache the canonical homepage, avoiding Cloudflare's /index.html redirect.
   const assets = paths.filter(path => path !== 'index.html').concat(homepage ? [''] : []);
   const hash = createHash('sha256').update(await readFile('core/browser/service-worker.ts')).update(JSON.stringify(assets));
   for (const path of paths) hash.update(path).update(await readFile(`${directory}/${path}`));
   const version = hash.digest('hex').slice(0, 20);
-  await build({ ...options, entryPoints: ['core/browser/service-worker.ts'], outdir: directory,
+  await build({ ...browserOptions, entryPoints: ['core/browser/service-worker.ts'], outdir: directory,
     define: { __TASM_ASSETS__: JSON.stringify(assets) } });
   await writeFile(`${directory}/service-worker.js`, (await readFile(`${directory}/service-worker.js`, 'utf8')).replace('__TASM_BUILD__', version));
 }
@@ -101,11 +101,11 @@ for (const app of selectedApps) {
   await writeFile(samplesDir + '/manifest.json', JSON.stringify(entries));
   const media = new Set(['black.ts', 'silence.ts', ...entries.flatMap(sample => [sample.file, sample.thumbnail].filter(Boolean))]);
   for (const file of media) await cp(`${sampleDir}/${file}`, `${samplesDir}/${file}`);
-  const appBundle = await build({ ...options, plugins: [{ name: 'app-samples', setup(builder) {
+  const appBundle = await build({ ...browserOptions, plugins: [{ name: 'app-samples', setup(builder) {
     builder.onResolve({ filter: /^\.\/samples\/manifest\.json$/ }, () => ({ path: `${samplesDir}/manifest.json` }));
   } }], metafile: true, entryPoints: { [app]: `apps/${app}/main.ts`,
     'preview-worker': 'apps/shared/preview-worker.ts', 'ingest-worker': 'apps/shared/ingest-worker.ts' }, outdir: out });
-  await build({ ...options, entryPoints: ['apps/shared/startup.ts'], format: 'iife', outdir: out });
+  await build({ ...browserOptions, entryPoints: ['apps/shared/startup.ts'], format: 'iife', outdir: out });
   await writeFile(`${out}/index.html`, appHTML(await readFile(`apps/${app}/index.html`, 'utf8'), app));
   await cp(`apps/${app}/bootstrap.js`, `${out}/bootstrap.js`);
   await cp(`apps/${app}/style.css`, `${out}/${app}.css`);

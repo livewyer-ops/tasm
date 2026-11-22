@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
+
+if (resolve(process.env.TASM_DIST ?? 'dist') !== resolve('dist')) throw new Error('Cloudflare asset configuration serves dist/. Unset TASM_DIST.');
+const policies = [...readFileSync('deploy/_headers', 'utf8').matchAll(/^  Content-Security-Policy: (.+)$/gm)].map(match => match[1]);
+assert.equal(policies.length, 2);
+assert.match(policies[0], /(?:^|; )connect-src 'self' blob:(?:;|$)/);
+assert.match(policies[0], /(?:^|; )font-src 'self' data:(?:;|$)/);
+assert.match(policies[1], /(?:^|; )connect-src 'self' blob: https:/);
+for (const policy of policies) assert.match(policy, /(?:^|; )frame-ancestors 'none'(?:;|$)/);
 
 // Exercise Cloudflare's asset routing and headers without credentials or deployment.
 for (const app of ['demo', 'playpen']) {
@@ -21,13 +31,17 @@ for (const app of ['demo', 'playpen']) {
     }
     assert(ready, log);
     const home = await fetch(base + '/', { redirect: 'manual' });
+    assert.equal(home.headers.get('content-security-policy'), policies[0]);
+    assert.equal(home.headers.get('x-frame-options'), 'DENY');
     assert.equal(home.status, 200); assert((await home.text()).includes(`data-app="${app}"`));
-    for (const [path, type] of [['service-worker.js', 'javascript'], [`${app}.js`, 'javascript'], [`${app}.css`, 'text/css'], ['tasm_bg.wasm', 'application/wasm'], ['samples/black.ts', 'video/mp2t'], ['branding/tams-favicon.svg', 'image/svg+xml']]) {
+    for (const [path, type] of [['worker.js', 'javascript'], ['service-worker.js', 'javascript'], [`${app}.js`, 'javascript'], [`${app}.css`, 'text/css'], ['tasm_bg.wasm', 'application/wasm'], ['samples/black.ts', 'video/mp2t'], ['branding/tams-favicon.svg', 'image/svg+xml']]) {
       const response = await fetch(base + '/' + path);
       assert.equal(response.status, 200, path);
       assert(response.headers.get('content-type').includes(type), `${path}: ${response.headers.get('content-type')}`);
       assert.equal(response.headers.get('cache-control'), 'no-cache');
       assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+      assert.equal(response.headers.get('content-security-policy'), policies[path === 'worker.js' ? 1 : 0]);
+      assert.equal(response.headers.get('x-frame-options'), 'DENY');
       await response.arrayBuffer();
     }
     for (const path of ['api/service', 'media/missing', 'missing.js', 'preview.html', '_headers', '.git/config', `${app === 'demo' ? 'playpen' : 'demo'}.js`]) {

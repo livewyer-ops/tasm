@@ -19,7 +19,7 @@ const { values, positionals } = parseArgs({
 });
 const command = positionals[0];
 if (!["schema", "bootstrap", "create", "list", "scopes", "rotate", "disable"].includes(command)) {
-  throw new Error("Use schema, bootstrap, create, list, scopes, rotate or disable; see docs/oauth.md.");
+  throw new Error("Use schema, bootstrap, create, list, scopes, rotate or disable.");
 }
 if (["schema", "create", "rotate"].includes(command) && !values.output) throw new Error("--output is required; credentials are never printed.");
 if (["scopes", "rotate", "disable"].includes(command) && !values.client) throw new Error("--client is required.");

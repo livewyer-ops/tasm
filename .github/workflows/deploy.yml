@@ -26,11 +26,45 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22.19.0'
+      - name: Check the minimum Rust version
+        run: |
+          rustup toolchain install 1.89.0 --profile minimal --target wasm32-unknown-unknown
+          cargo +1.89.0 check --locked --workspace --target wasm32-unknown-unknown
       - run: npm ci --engine-strict
       - run: cargo install wasm-bindgen-cli --version 0.2.104 --locked
       - run: npm run build && npm run check
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser -- contract.spec.ts --project=chromium
+
+      - name: Find the previous supported release
+        id: previous
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // empty')
+          if [ -z "$tag" ]; then
+            echo 'No published stable release is available for cross-version tests.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Verify upgrades from the published release
+        if: steps.previous.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
+          TASM_PREVIOUS_DIST: ${{ runner.temp }}/previous-dist
+        run: |
+          git fetch --depth=1 origin "refs/tags/$PREVIOUS_TAG"
+          git worktree add --detach "$RUNNER_TEMP/previous-source" FETCH_HEAD
+          (cd "$RUNNER_TEMP/previous-source" && npm ci && TASM_DIST="$TASM_PREVIOUS_DIST" npm run build:playpen)
+          archive="tasm-cloudflare-${PREVIOUS_TAG#v}.tar.gz"
+          mkdir -p "$TASM_PREVIOUS_DIST/cloudflare"
+          gh release download "$PREVIOUS_TAG" -p "$archive" -p "$archive.sha256" -D "$TASM_PREVIOUS_DIST"
+          (cd "$TASM_PREVIOUS_DIST" && sha256sum --strict -c "$archive.sha256" && tar -xzf "$archive" -C cloudflare)
+          npm run test:browser -- tests/browser/startup.spec.ts --grep 'ready updates' --project=chromium
+          node --experimental-strip-types --test --test-name-pattern='previous Cloudflare distribution' core/cloudflare/worker.test.ts
 
   build:
     name: Validate core and independent Cloudflare assets

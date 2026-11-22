@@ -9,6 +9,6 @@ test-results
 playwright-report
 
 **/.wrangler
-.env
-.env.*
+**/.env
+**/.env.*
 **/.dev.vars*

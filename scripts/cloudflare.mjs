@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { build } from 'esbuild';
@@ -7,9 +8,14 @@ import { writeCoreNotices } from './notices.mjs';
 
 export function buildWasm(crate, directory, name) {
   const manifest = resolve('core', directory, 'rust', 'Cargo.toml');
+  const flags = process.env.CARGO_ENCODED_RUSTFLAGS?.split('\x1f') ?? process.env.RUSTFLAGS?.trim().split(/\s+/) ?? [];
+  const paths = [[resolve(process.env.CARGO_HOME ?? resolve(homedir(), '.cargo')), '/cargo'],
+    [resolve(process.env.RUSTUP_HOME ?? resolve(homedir(), '.rustup')), '/rustup'], [realpathSync('.'), '/src/tasm']];
+  const remaps = paths.map(([from, to]) => `--remap-path-prefix=${from}=${to}`);
+  const env = { ...process.env, CARGO_ENCODED_RUSTFLAGS: flags.filter(Boolean).concat(remaps).join('\x1f') };
   const output = execFileSync('cargo', ['build', '-p', crate, '--lib', '--locked', '--release',
     '--target', 'wasm32-unknown-unknown', '--message-format=json-render-diagnostics'], {
-    encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 16 * 1024 * 1024,
+    env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 16 * 1024 * 1024,
   });
   const modules = output.trimEnd().split('\n').map(line => JSON.parse(line))
     .filter(message => message.reason === 'compiler-artifact' && message.manifest_path === manifest &&

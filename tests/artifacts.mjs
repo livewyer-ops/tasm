@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import assert from 'node:assert/strict';
 import { appendFile, cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -36,7 +37,7 @@ try {
   }
   await symlink(resolve('node_modules'), join(source, 'node_modules'));
   const cargoTarget = join(source, 'cargo output');
-  const env = { ...process.env, CARGO_TARGET_DIR: cargoTarget, TASM_DIST: join(source, 'dist'), DEMO_URL: 'https://demo.example/', PLAYPEN_URL: 'https://playpen.example/',
+  const env = { ...process.env, CARGO_TARGET_DIR: cargoTarget, TASM_DIST: join(source, 'dist'), DEMO_URL: 'https://demo.example/?label=$&target=demo', PLAYPEN_URL: 'https://playpen.example/',
     WASM_BINDGEN: process.env.WASM_BINDGEN ?? (existsSync('.local/bin/wasm-bindgen') ? resolve('.local/bin/wasm-bindgen') : 'wasm-bindgen') };
   for (const invalid of ['.', 'apps']) assert.throws(() => execFileSync(process.execPath, ['scripts/build.mjs', 'demo'],
     { cwd: source, env: { ...env, TASM_DIST: invalid }, stdio: 'pipe' }), /Build output must be outside source directories/);
@@ -64,7 +65,11 @@ try {
   }
   rebuild('all');
   for (const file of ['core/tasm_bg.wasm', 'cloudflare/api/tasm.wasm']) {
-    const module = await WebAssembly.compile(await readFile(join(source, 'dist', file)));
+    const bytes = await readFile(join(source, 'dist', file));
+    for (const path of [source, resolve(process.env.CARGO_HOME ?? join(homedir(), '.cargo')), resolve(process.env.RUSTUP_HOME ?? join(homedir(), '.rustup'))]) {
+      assert(!bytes.includes(path), `Build path in ${file}`);
+    }
+    const module = await WebAssembly.compile(bytes);
     assert(WebAssembly.Module.exports(module).some(entry => entry.name === 'package_revision_probe'), `Stale module in ${file}`);
   }
   const hashes = {};
@@ -77,13 +82,15 @@ try {
     const peer = app === 'demo' ? 'playpen' : 'demo', out = join(source, 'dist', app);
     const html = await readFile(join(out, 'index.html'), 'utf8');
     assert(html.includes(`data-app="${app}"`));
-    if (app === 'playpen') assert(html.includes('href="https://demo.example/"'));
+    if (app === 'playpen') assert(html.includes('href="https://demo.example/?label=$&amp;target=demo"'));
     else assert(!html.includes('https://playpen.example/') && !html.includes('Open Playpen'));
     assert(!html.includes('__PEER_URL__'));
     assert(!existsSync(join(out, `${peer}.js`)));
     assert(!existsSync(join(out, 'preview.html')));
     const worker = await readFile(join(out, 'service-worker.js'), 'utf8');
     assert(!worker.includes(`${peer}.js`));
+    assert(!(await readdir(out)).some(file => file.endsWith('.map')));
+    for (const file of ['THIRD_PARTY.txt', 'index.d.ts', 'PLAYER-LICENSES.txt']) assert(!worker.includes(file));
     assert.equal(worker.includes('samples/grid.ts'), app === 'playpen');
     for (const file of ['index.js', 'worker.js', 'tasm_bg.wasm', 'samples/manifest.json', 'branding/tams-favicon.svg']) assert(existsSync(join(out, file)), `${app}/${file}`);
     for (const path of ['LICENSE', 'NOTICE', 'THIRD_PARTY.txt', 'mediabunny-LICENSE', 'branding/HKGrotesk-OFL.txt', 'branding/FiraCode-OFL.txt']) assert(existsSync(join(out, path)), path);

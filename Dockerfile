@@ -25,7 +25,7 @@ RUN npm run build && npm run check
 
 FROM build AS checks
 COPY tests/segmentation.mjs tests/artifacts.mjs tests/ui-preview.mjs tests/cloudflare.mjs tests/
-COPY scripts/serve.mjs scripts/serve.mjs
+COPY scripts/serve.mjs scripts/check-cloudflare-package.sh scripts/
 COPY tests/media/ tests/media/
 RUN cargo test --locked \
     && cargo clippy --locked --all-targets -- -D warnings \
@@ -36,8 +36,8 @@ RUN cargo test --locked \
     && npm run test:artifacts \
     && npm run check:cloudflare \
     && npm run test:cloudflare \
-    && npm run test:worker \
-    && node scripts/package-cloudflare.mjs
+    && node scripts/package-cloudflare.mjs \
+    && sh scripts/check-cloudflare-package.sh
 
 FROM node AS test-deps
 WORKDIR /app

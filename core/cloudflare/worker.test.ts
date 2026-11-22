@@ -1,3 +1,4 @@
+import { presign } from "./signing.ts";
 import { apiConfig, apiConfigPath } from "./test-installation.ts";
 import assert from "node:assert/strict";
 import { checkLegacyRanges } from "../../tests/contract/legacy-ranges.ts";
@@ -737,6 +738,22 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
         }
         for (const url of [...delivered.get_urls, ...delivered.init_object.get_urls]) if (url.presigned) assert.equal(new URL(url.url).searchParams.get("X-Amz-Expires"), "3630");
         if (index === 1) {
+          const legacy = JSON.parse(queued.record);
+          legacy.payload.event = event;
+          for (const item of [delivered, delivered.init_object]) {
+            for (const link of item.get_urls) {
+              const physical = new URL(link.url);
+              physical.search = "";
+              link.url = await presign("GET", physical, env.R2_ACCESS_KEY_ID, env.R2_SECRET_ACCESS_KEY, 3630, {}, new Date("2020-01-01T00:00:00Z"));
+            }
+          }
+          await sql.exec("UPDATE tamoss_webhook_deliveries SET record=?,status='pending',next_attempt_at=NULL WHERE id=?", JSON.stringify(legacy), queued.id);
+          await store.pollNow();
+          const renewed = (await store.received(queued.id)).event.segments[0];
+          const signature = new URL(renewed.get_urls[0].url).searchParams;
+          assert.match(signature.get("X-Amz-Signature") ?? "", /^[0-9a-f]{64}$/);
+          assert.match(signature.get("X-Amz-Date") ?? "", /^\d{8}T\d{6}Z$/);
+          assert.notEqual(signature.get("X-Amz-Date"), "20200101T000000Z");
           // Replaying an old delivery cannot grant access to replacement bytes under the same object ID.
           await sql.exec("UPDATE tamoss_media_objects SET allocation_id=lower(hex(randomblob(16))) WHERE id=?", objectId);
           await sql.exec("UPDATE tamoss_webhook_deliveries SET status='pending',next_attempt_at=NULL,claimed_by=NULL,claim_expires_at=NULL WHERE id=?", queued.id);
@@ -854,19 +871,13 @@ test("a populated SQLite v4 store rolls back an interrupted upgrade and refuses 
   const legacy = await worker.getDurableObjectStorage("STORE", prototype);
   await legacy.exec("CREATE TABLE service_metadata (id TEXT PRIMARY KEY,name TEXT,description TEXT)");
   await legacy.exec("INSERT INTO service_metadata VALUES ('default','Preserved prototype','Existing metadata')");
-  const previousDist = process.env.TASM_PREVIOUS_DIST;
-  if (previousDist) {
-    await harness.update(() => ({ workers: [{ configPath: join(previousDist, "cloudflare/api/wrangler.json") }] }));
-  }
   const storage = () => worker.getDurableObjectStorage("STORE", { name: "upgrade" });
   let sql = await storage();
-  if (!previousDist) {
-    for (const file of ["002", "003", "004"]) {
-      await sql.exec(readFileSync(new URL(`./migrations/${file}.sql`, import.meta.url), "utf8"));
-    }
-    await sql.exec("CREATE TABLE wasm_schema_versions(version INTEGER PRIMARY KEY)");
-    await sql.exec("INSERT INTO wasm_schema_versions VALUES (2),(3),(4)");
+  for (const file of ["002", "003", "004"]) {
+    await sql.exec(readFileSync(new URL(`./migrations/${file}.sql`, import.meta.url), "utf8"));
   }
+  await sql.exec("CREATE TABLE wasm_schema_versions(version INTEGER PRIMARY KEY)");
+  await sql.exec("INSERT INTO wasm_schema_versions VALUES (2),(3),(4)");
   const versions = () => sql.exec("SELECT version FROM wasm_schema_versions ORDER BY version").then(rows => rows.map(r => r.version));
   assert.deepEqual(await versions(), [2, 3, 4]);
   const flow = crypto.randomUUID(), job = crypto.randomUUID();
@@ -912,6 +923,40 @@ test("a populated SQLite v4 store rolls back an interrupted upgrade and refuses 
   assert.deepEqual(await versions(), [2, 3, 4, 5, 6, 99]);
   assert.deepEqual(await sql.exec("SELECT label FROM tamoss_storage_backends WHERE id=?", backend), [{ label: "Future label" }]);
   assert.deepEqual(await snapshot(), before);
+});
+
+test("previous Cloudflare distribution preserves media and queued work after an upgrade", { skip: !process.env.TASM_PREVIOUS_DIST }, async t => {
+  const previous = join(process.env.TASM_PREVIOUS_DIST!, "cloudflare/api/wrangler.json");
+  const installed = installation.workers[0];
+  const harness = createTestHarness({ workers: [{ ...installed, configPath: previous }] });
+  t.after(() => harness.close());
+  await harness.listen();
+  const worker = harness.getWorker<Bindings>(apiConfig.name);
+  const call = (method: string, path: string, body?: unknown) => worker.fetch(origin + path,
+    { method, headers: { authorization, "content-type": "application/json" }, body: JSON.stringify(body) });
+  const flow = { ...JSON.parse(readFileSync(new URL("./video-flow.test.json", import.meta.url), "utf8")), id: crypto.randomUUID(), source_id: crypto.randomUUID() };
+  assert.equal((await call("PUT", `/flows/${flow.id}`, flow)).status, 201);
+  const env = await worker.getEnv();
+  const sql = await worker.getDurableObjectStorage("STORE", { name: env.STORE_ID });
+  await sql.exec("CREATE TRIGGER hold_upgrade_event AFTER INSERT ON tamoss_webhook_deliveries BEGIN UPDATE tamoss_webhook_deliveries SET next_attempt_at='2099-01-01T00:00:00.000000000Z' WHERE id=NEW.id; END");
+  assert.equal((await call("POST", "/service/webhooks", { url: "https://hooks.example.com/receive", events: ["flows/segments_added"], flow_ids: [flow.id] })).status, 201);
+  const allocation = await call("POST", `/flows/${flow.id}/storage`, { object_ids: ["clip"] });
+  assert.equal(allocation.status, 201);
+  const [object] = (await allocation.json() as { media_objects: { put_url: { url: string } }[] }).media_objects;
+  const key = new URL(object.put_url.url).pathname.split("/").slice(2).join("/");
+  await env.MEDIA.put(key, "persisted media");
+  assert.equal((await call("POST", `/flows/${flow.id}/segments`, { object_id: "clip", timerange: "[1:0_2:0)" })).status, 201);
+  const pending = "SELECT id,webhook_id,status,record FROM tamoss_webhook_deliveries ORDER BY id";
+  const before = await sql.exec(pending);
+  assert.equal(before.length, 1);
+  await harness.update({ workers: [installed] });
+  const updated = await worker.getEnv();
+  const [segment] = await (await call("GET", `/flows/${flow.id}/segments?presigned=true`)).json() as { object_id: string; get_urls: { url: string }[] }[];
+  assert.equal(segment.object_id, "clip");
+  assert.equal(new URL(segment.get_urls[0].url).pathname.split("/").slice(2).join("/"), key);
+  assert.equal(await (await updated.MEDIA.get(key))?.text(), "persisted media");
+  const reopened = await worker.getDurableObjectStorage("STORE", { name: updated.STORE_ID });
+  assert.deepEqual(await reopened.exec(pending), before);
 });
 
 test("idle Durable Object alarms expire terminal queues and respect earlier retries", async t => {

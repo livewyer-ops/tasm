@@ -11,5 +11,6 @@ export function peerURL(app) {
   return url.href;
 }
 export function appHTML(html, app) {
-  return html.replaceAll('__PEER_URL__', peerURL(app).replaceAll('&', '&amp;').replaceAll('"', '&quot;'));
+  const href = peerURL(app).replaceAll('&', '&amp;').replaceAll('"', '&quot;');
+  return html.replaceAll('__PEER_URL__', () => href);
 }

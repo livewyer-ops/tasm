@@ -36,7 +36,7 @@
     "test:cloudflare": "node tests/cloudflare.mjs",
     "build:cloudflare": "node scripts/build.mjs cloudflare",
     "package:cloudflare": "npm run build:cloudflare && node scripts/package-cloudflare.mjs",
-    "test:worker": "node --experimental-strip-types --test core/cloudflare/worker.test.ts core/cloudflare/signing.test.ts core/cloudflare/contract.test.ts core/cloudflare/oauth.test.ts core/cloudflare/auth/auth.test.ts"
+    "test:worker": "node --experimental-strip-types --test --test-concurrency=1 core/cloudflare/worker.test.ts core/cloudflare/signing.test.ts core/cloudflare/contract.test.ts core/cloudflare/oauth.test.ts core/cloudflare/auth/auth.test.ts"
   },
   "dependencies": {
     "@better-auth/oauth-provider": "1.7.27",

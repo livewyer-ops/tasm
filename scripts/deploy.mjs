@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import { appName } from './apps.mjs';
 
 const app = appName(process.argv[2]);
@@ -11,6 +12,6 @@ if (!/^(?:[a-z\d](?:[a-z\d-]*[a-z\d])?\.)+[a-z]{2,}$/i.test(domain)) {
 if (!dryRun && !/^[a-f0-9]{32}$/i.test(process.env.CLOUDFLARE_ACCOUNT_ID ?? '')) {
   throw new Error('Select the deployment account with CLOUDFLARE_ACCOUNT_ID.');
 }
-if (!dryRun && process.env.TASM_DIST) throw new Error('Deployment uses dist/. Unset TASM_DIST before building.');
+if (resolve(process.env.TASM_DIST ?? 'dist') !== resolve('dist')) throw new Error('Deployment uses dist/. Unset TASM_DIST before building.');
 execFileSync(process.execPath, ['node_modules/wrangler/bin/wrangler.js', 'deploy',
   '--config', `apps/${app}/wrangler.jsonc`, '--domain', domain, ...(dryRun ? ['--dry-run'] : [])], { stdio: 'inherit' });
