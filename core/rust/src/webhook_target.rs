@@ -90,6 +90,7 @@ fn valid_header(value: &str) -> bool {
         "trailer",
         "transfer-encoding",
         "upgrade",
+        "x-tasm-delivery-id",
     ];
     !value.is_empty()
         && value.trim() == value
@@ -97,6 +98,11 @@ fn valid_header(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
         && !RESERVED.contains(&value.to_ascii_lowercase().as_str())
+}
+
+pub(crate) fn same_destination(previous: &Value, current: &Value) -> bool {
+    let url = |value: &Value| url::Url::parse(value.get("url")?.as_str()?).ok();
+    url(previous).is_some_and(|previous| Some(previous) == url(current))
 }
 
 pub(crate) async fn validate_configuration(
@@ -254,6 +260,7 @@ mod tests {
             json!({ "api_key_name": "X-Key", "api_key_value": "abc" })
         ));
         assert!(!with(json!({ "api_key_name": "Host" })));
+        assert!(!with(json!({ "api_key_name": "X-Tasm-Delivery-Id" })));
         assert!(!with(json!({ "api_key_name": "X Key" })));
         assert!(!with(json!({ "api_key_value": "a\r\nInjected: 1" })));
     }

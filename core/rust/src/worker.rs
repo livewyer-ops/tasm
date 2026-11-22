@@ -671,15 +671,21 @@ impl Worker {
             .await?;
             return Ok(());
         }
-        let mut webhook = delivery
-            .record
-            .get("webhook_snapshot")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-        if webhook.get("api_key_value_ref").and_then(Value::as_str) == Some("webhook.api_key_value")
-            && let Some(value) = live.record.pointer("/data/api_key_value").cloned()
-        {
-            webhook["api_key_value"] = value;
+        let webhook = &live.record["data"];
+        if !crate::webhook_target::same_destination(&delivery.record["webhook_snapshot"], webhook) {
+            db::queues::terminal_webhook(
+                &self.pool,
+                delivery.id,
+                &self.settings.worker_id,
+                "dead",
+                None,
+                Some(queue_error(
+                    "WebhookReplaced",
+                    "Webhook destination changed",
+                )),
+            )
+            .await?;
+            return Ok(());
         }
         let payload = delivery
             .record
@@ -690,7 +696,7 @@ impl Worker {
         let result = webhooks::deliver(
             &self.pool.0,
             delivery.id,
-            &webhook,
+            webhook,
             &payload,
             self.settings.webhook_timeout_seconds,
             &policy,

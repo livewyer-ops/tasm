@@ -166,7 +166,8 @@ export class WasmStore extends DurableObject<Bindings> {
     }
     if (operation === "webhook") {
       const headers = new Headers({ "Content-Type": "application/json" });
-      if (payload.webhook.api_key_name) headers.set(payload.webhook.api_key_name, payload.webhook.api_key_value ?? "");
+      if (payload.webhook.api_key_name && payload.webhook.api_key_value !== undefined) headers.set(payload.webhook.api_key_name, payload.webhook.api_key_value);
+      headers.set("X-Tasm-Delivery-Id", payload.id);
       const send = async () => {
         const response = await fetch(payload.webhook.url, { method: "POST", headers, body: payload.payload_json, redirect: "manual", signal: AbortSignal.timeout(Math.min(10_000, payload.timeout*1000)) });
         await response.body?.cancel();

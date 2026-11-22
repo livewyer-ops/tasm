@@ -44,6 +44,11 @@ async fn authorise(
         ["tams-api/read", "tams-api/write", "tams-api/delete"]
             .iter()
             .any(|scope| actor.has(scope))
+    } else if matches!(
+        (method, path),
+        (&Method::POST, "/service/webhooks") | (&Method::PUT, "/service/webhooks/{webhookId}")
+    ) {
+        actor.has("tams-api/read") && actor.has("tams-api/write")
     } else {
         let scope = if path == "/flow-delete-requests"
             || path == "/service"

@@ -30,6 +30,9 @@ pub struct DeliveryResponse {
     pub status: u16,
     pub reason: String,
 }
+pub fn destination_changed() -> Value {
+    json!({"type":"WebhookReplaced","summary":"Webhook destination changed","time":crate::domain::model::timestamp(crate::now())})
+}
 pub fn retry_delay(attempt: u64) -> i64 {
     [30, 60, 120, 300][attempt.saturating_sub(1).min(3) as usize]
 }

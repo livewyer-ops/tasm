@@ -160,8 +160,9 @@ export class Runtime {
         return null;
       }
       case 'webhook': {
-        const headers = new Headers({ 'Content-Type': 'application/json', 'X-Tasm-Delivery-Id': p.id });
-        if (p.webhook.api_key_name && p.webhook.api_key_value) headers.set(p.webhook.api_key_name, p.webhook.api_key_value);
+        const headers = new Headers({ 'Content-Type': 'application/json' });
+        if (p.webhook.api_key_name && p.webhook.api_key_value !== undefined) headers.set(p.webhook.api_key_name, p.webhook.api_key_value);
+        headers.set('X-Tasm-Delivery-Id', p.id);
         const send = async () => {
           const response = await fetch(p.webhook.url, { method: 'POST', body: p.payload_json, headers,
             credentials: 'omit', redirect: 'manual', signal: AbortSignal.timeout(p.timeout * 1000) });

@@ -23,7 +23,7 @@ Webhook destinations must allow browser requests from the app's origin, includin
 
 ## Cloudflare access policy
 
-Cloudflare authenticates API clients with HTTP Basic or OAuth Bearer credentials, according to the deployment configuration. Its OAuth policy reserves changing a Flow's `read_only` flag for administrators, including changes through whole-Flow PUT. Creating, replacing or deleting a webhook requires `tams-api/write` or `tams-api/admin`. Reading a webhook requires `tams-api/read` or `tams-api/admin`. Deployments may choose their own policy under [BBC application note 0016](https://github.com/bbc/tams/blob/34fb31b80cb8afb3194f28c8b787301379caacf8/docs/appnotes/0016-authorisation-in-tams-workflows.md).
+Cloudflare authenticates API clients with HTTP Basic or OAuth Bearer credentials, according to the deployment configuration. Its OAuth policy reserves changing a Flow's `read_only` flag for administrators, including changes through whole-Flow PUT. Creating or replacing a webhook requires both `tams-api/read` and `tams-api/write`, or `tams-api/admin`. Deleting one requires `tams-api/write` or `tams-api/admin`. Changing the destination cancels queued deliveries. Retries to the same destination use its current credential and retain their `X-Tasm-Delivery-Id`. Reading a webhook requires `tams-api/read` or `tams-api/admin`. Deployments may choose their own policy under [BBC application note 0016](https://github.com/bbc/tams/blob/34fb31b80cb8afb3194f28c8b787301379caacf8/docs/appnotes/0016-authorisation-in-tams-workflows.md).
 
 ## BBC 8.2 wire conventions
 

@@ -1,5 +1,5 @@
 // Cloudflare adaptation of TASM and rust-tams-api (Apache-2.0); see NOTICE.
-use crate::webhook_target::validate_configuration;
+use crate::webhook_target::{same_destination, validate_configuration};
 
 use axum::{
     Json, Router,
@@ -202,11 +202,18 @@ async fn update(
     validate_configuration(&state, map).await?;
     let (status, tags, mut data) = validated;
     // GET never returns api_key_value, so a read-modify-write PUT omits it.
-    // Keep the stored secret while the header name is unchanged.
+    // Keep the stored secret only for the same destination and header.
     let previous = existing.record.get("data");
     let same_header =
         previous.and_then(|value| value.get("api_key_name")) == data.get("api_key_name");
-    if same_header
+    let same_url = same_destination(&existing.record["data"], &value);
+    if !same_url {
+        db::queues::retire_webhooks(&mut *tx, path)
+            .await
+            .map_err(internal)?;
+    }
+    if same_url
+        && same_header
         && !data.contains_key("api_key_value")
         && let Some(secret) = previous.and_then(|value| value.get("api_key_value"))
     {

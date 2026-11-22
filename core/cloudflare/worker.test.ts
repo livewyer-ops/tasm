@@ -180,7 +180,19 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
   await t.test("Rust enforces scopes and webhook egress policy", async () => {
     const env = await api.getEnv();
     const store = env.STORE.getByName("scope-tests");
-    const call = async (method: string, path: string, scope: string, body?: unknown) => JSON.parse(await store.request(JSON.stringify({ method, url: origin + path, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : null, actor: { subject: "scoped-client", scopes: [scope] } })));
+    const call = async (method: string, path: string, scope: string | string[], body?: unknown) => JSON.parse(await store.request(JSON.stringify({ method, url: origin + path, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : null, actor: { subject: "scoped-client", scopes: Array.isArray(scope) ? scope : [scope] } })));
+    const hook = { url: "https://hooks.example.com/receive", events: [], status: "disabled" };
+    const both = ["tams-api/read", "tams-api/write"];
+    const registered = await call("POST", "/service/webhooks", both, hook);
+    assert.equal(registered.status, 201);
+    const saved = JSON.parse(registered.body);
+    const hookPath = "/service/webhooks/" + saved.id;
+    for (const scope of both) {
+      assert.equal((await call("POST", "/service/webhooks", scope, hook)).status, 403);
+      assert.equal((await call("PUT", hookPath, scope, saved)).status, 403);
+    }
+    assert.equal((await call("PUT", hookPath, both, saved)).status, 201);
+    assert.equal((await call("DELETE", hookPath, "tams-api/write")).status, 204);
     assert.equal((await call("GET", "/flows", "tams-api/read")).status, 200);
     assert.equal((await call("GET", "/flows", "tams-api/write")).status, 403);
     assert.equal((await call("POST", "/service", "tams-api/write", { name: "denied" })).status, 403);

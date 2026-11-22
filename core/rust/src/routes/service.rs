@@ -316,11 +316,8 @@ pub(crate) async fn enqueue_event(
                 .await
                 .map_err(internal)?;
         }
-        let credential = (data.get("api_key_name").and_then(Value::as_str).is_some()
-            && data.get("api_key_value").and_then(Value::as_str).is_some())
-        .then_some("webhook.api_key_value");
         let snapshot = json!({
-            "url": data.get("url"), "api_key_name": data.get("api_key_name"), "api_key_value_ref": credential,
+            "url": data.get("url"),
             "accept_get_urls": data.get("accept_get_urls"), "accept_storage_ids": data.get("accept_storage_ids"),
             "presigned": data.get("presigned"), "verbose_storage": data.get("verbose_storage"), "status": webhook.status,
             "include_object_timerange": data.get("include_object_timerange"),

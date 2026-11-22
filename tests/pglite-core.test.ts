@@ -27,7 +27,7 @@ async function store() {
   const sql = new SqlHost(db);
   // In-memory stand-in for OPFS: bytes are never read, only their metadata.
   const files = new Map<string, Stored>();
-  const deliveries: { url: string; event: string }[] = [];
+  const deliveries: { url: string; event: string; header?: string; value?: string; id: string }[] = [];
   const key = (b: string, id: string) => `${b}/${id}`;
   // Counts the queries the core runs and the rows the database returns to it.
   const returned = { queries: 0, rows: 0 };
@@ -56,7 +56,7 @@ async function store() {
         return 'null';
       }
       case 'webhook':
-        deliveries.push({ url: p.webhook.url, event: JSON.parse(p.payload_json).event_type });
+        deliveries.push({ url: p.webhook.url, event: JSON.parse(p.payload_json).event_type, header: p.webhook.api_key_name, value: p.webhook.api_key_value, id: p.id });
         return JSON.stringify({ status: 200, reason: 'OK', redirected: false });
       default: throw new Error(`Unknown host operation ${op}`);
     }
@@ -395,6 +395,38 @@ test('webhooks filter by tags, page by url and receive matching events', async (
   assert.equal((await request('PUT', `/flows/${flowId}`, { ...videoFlow, id: flowId, source_id: crypto.randomUUID() })).status, 201);
   for (let attempt = 0; attempt < 5 && deliveries.length < 2; attempt++) await core.poll();
   assert.deepEqual(deliveries.map(d => `${d.event} ${d.url}`).sort(), ['flows/created http://hooks.test/a', 'flows/created http://hooks.test/c']);
+});
+
+test('queued webhook credentials follow rotations at the same destination', async t => {
+  const { db, core, request, deliveries } = await store();
+  t.after(() => db.close());
+  const subscription = { url: 'http://hooks.test/a', events: ['flows/created'], api_key_name: 'X-Old', api_key_value: 'first' };
+  const created = await request('POST', '/service/webhooks', subscription);
+  assert.equal(created.status, 201, created.body);
+  const { id } = JSON.parse(created.body);
+  const enqueue = async () => {
+    const flow = crypto.randomUUID();
+    assert.equal((await request('PUT', '/flows/' + flow, { ...videoFlow, id: flow, source_id: crypto.randomUUID() })).status, 201);
+  };
+  const update = async (url: string, name: string, value?: string) => {
+    const response = await request('PUT', '/service/webhooks/' + id, { id, url, events: subscription.events, status: 'created', api_key_name: name, api_key_value: value });
+    assert.equal(response.status, 201, response.body);
+  };
+  await enqueue();
+  await update(subscription.url, 'X-Rotated', 'second');
+  await core.poll();
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].header, 'X-Rotated');
+  assert.equal(deliveries[0].value, 'second');
+  await enqueue();
+  await update('http://hooks.test/b', 'X-Rotated');
+  assert.deepEqual((await db.query('SELECT status FROM tamoss_webhook_deliveries ORDER BY status')).rows, [{ status: 'dead' }, { status: 'done' }]);
+  await enqueue();
+  await core.poll();
+  assert.equal(deliveries.length, 2);
+  assert.equal(deliveries[1].url, 'http://hooks.test/b');
+  assert.ok(!deliveries[1].value);
+  assert.notEqual(deliveries[0].id, deliveries[1].id);
 });
 
 test('a reused object only accepts segments within its own timerange', async () => {

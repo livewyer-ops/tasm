@@ -290,6 +290,18 @@ pub async fn retry_webhook(
         .rows_affected()
         == 1)
 }
+pub async fn retire_webhooks<'e, E>(executor: E, id: Uuid) -> Result<(), DbError>
+where
+    E: sqlx::Executor<'e, Database = Engine>,
+{
+    sqlx::query(statements::RETIRE_WEBHOOKS)
+        .bind(id)
+        .bind(sqlx::types::Json(crate::webhooks::destination_changed()))
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
 pub async fn terminal_webhook(
     pool: &Pool,
     id: Uuid,

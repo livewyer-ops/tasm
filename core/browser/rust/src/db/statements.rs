@@ -1,3 +1,8 @@
+pub const RETIRE_WEBHOOKS: &str = r#"UPDATE tamoss_webhook_deliveries
+    SET status='dead',next_attempt_at=NULL,claimed_at=NULL,claimed_by=NULL,claim_expires_at=NULL,
+        record=record || jsonb_build_object('status','dead','next_attempt_at',NULL,'error',$2::jsonb,'updated',NOW()),
+        updated_at=NOW() WHERE webhook_id=$1 AND status IN ('pending','started')"#;
+
 pub const FAIL_WEBHOOK: &str = "UPDATE tamoss_webhook_deliveries
                      SET status='dead',next_attempt_at=NULL,claimed_at=NULL,claimed_by=NULL,
                          claim_expires_at=NULL,

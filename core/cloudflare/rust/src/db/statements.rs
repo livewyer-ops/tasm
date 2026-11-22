@@ -1,3 +1,8 @@
+pub const RETIRE_WEBHOOKS: &str = r#"UPDATE tamoss_webhook_deliveries
+    SET status='dead',next_attempt_at=NULL,claimed_at=NULL,claimed_by=NULL,claim_expires_at=NULL,
+        record=json_set(record,'$.status','dead','$.next_attempt_at',NULL,'$.error',json(?2),'$.updated',(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')),
+        updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z') WHERE webhook_id=?1 AND status IN ('pending','started')"#;
+
 pub const FAIL_WEBHOOK: &str = "UPDATE tamoss_webhook_deliveries
                      SET status='dead',next_attempt_at=NULL,claimed_at=NULL,claimed_by=NULL,
                          claim_expires_at=NULL,
