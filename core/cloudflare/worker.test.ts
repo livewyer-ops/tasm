@@ -298,9 +298,11 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     const secondary = backends.find(b => !b.default_storage)!.id;
     const copied = await request(path + "/instances", { method: "POST", body: JSON.stringify({ storage_id: secondary }) });
     assert.equal(copied.status, 201, await copied.text());
+    assert.equal((await request(path + "/instances", { method: "POST", body: JSON.stringify({ storage_id: secondary }) })).status, 201);
+    const sql = await api.getDurableObjectStorage("STORE", { name: env.STORE_ID });
+    assert.deepEqual(await sql.exec("SELECT COUNT(*) AS n FROM tamoss_object_copies WHERE object_id=?", objectId), [{ n: 1 }]);
     for (let attempt = 0; attempt < 50 && !(await env.MEDIA_SECONDARY.head(key)); attempt++) await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(await (await env.MEDIA_SECONDARY.get(key))?.text(), "media bytes");
-    const sql = await api.getDurableObjectStorage("STORE", { name: env.STORE_ID });
     const rows = await sql.exec<{ record: string }>("SELECT record FROM tamoss_media_objects WHERE id=?", objectId);
     const record = JSON.parse(rows[0].record);
     record.instances = record.instances.filter((instance: { storage_backend_id: string }) => instance.storage_backend_id !== secondary);

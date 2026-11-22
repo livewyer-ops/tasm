@@ -396,16 +396,9 @@ impl Worker {
             {
                 continue;
             }
-            let result = self
-                .copy_one(
-                    copy.object_id.clone(),
-                    copy.source_storage_backend_id,
-                    copy.destination_storage_backend_id,
-                    &copy.record,
-                )
-                .await;
-            match result {
-                Ok(()) => {
+            match self.copy_one(copy).await {
+                Ok(false) => continue,
+                Ok(true) => {
                     db::queues::complete_copy(&self.pool, copy.id, &self.settings.worker_id)
                         .await?;
                 }
@@ -427,67 +420,65 @@ impl Worker {
         Ok(copies.len() as u64)
     }
 
-    async fn copy_one(
-        &self,
-        object_id: String,
-        source_id: Uuid,
-        destination_id: Uuid,
-        copy_record: &Value,
-    ) -> Result<(), WorkerError> {
+    // A lost claim belongs to the next worker, which will finish the job.
+    async fn copy_one(&self, copy: &db::ObjectCopy) -> Result<bool, WorkerError> {
+        let object_id = &copy.object_id;
+        let source_id = copy.source_storage_backend_id;
+        let destination_id = copy.destination_storage_backend_id;
         let backends = self.storage.backends().await?;
         let source = backend(&backends, source_id)?;
         let destination = backend(&backends, destination_id)?;
-        let Some(record) = db::objects::get(&self.pool, &object_id).await? else {
-            return Ok(());
+        let Some(original) = db::objects::get(&self.pool, object_id).await? else {
+            return Ok(true);
         };
-        if record.record.get("allocation_id") != copy_record.get("allocation_id") {
-            return Ok(());
+        let allocation = copy.record["allocation_id"].as_str();
+        if original.created_at > copy.created_at
+            || original.record["allocation_id"].as_str() != allocation
+        {
+            return Ok(true);
         }
         let allocation_id = if crate::storage::SIGNED_URLS {
-            copy_record["allocation_id"]
-                .as_str()
-                .ok_or_else(|| db::DbError::Record("Missing copy incarnation".into()))?
+            allocation.ok_or_else(|| db::DbError::Record("Missing copy incarnation".into()))?
         } else {
-            &object_id
+            object_id
         };
-        let media = MediaObject::from_record(&record, &backends);
-        if media.referenced_by_flows.is_empty() || controlled(&media, destination_id) {
-            return Ok(());
-        }
-        if !controlled(&media, source_id) {
-            return Err(
-                db::DbError::Record("object copy source instance no longer exists".into()).into(),
-            );
+        let media = MediaObject::from_record(&original, &backends);
+        if media.referenced_by_flows.is_empty()
+            || controlled(&media, destination_id)
+            || !controlled(&media, source_id)
+        {
+            return Ok(true);
         }
         self.storage
-            .copy(source, destination, &object_id, allocation_id)
+            .copy(source, destination, object_id, allocation_id)
             .await?;
         let mut transaction = self.pool.begin().await.map_err(db::DbError::from)?;
         db::objects::lock_sorted(&mut transaction, [object_id.clone()]).await?;
-        let mut delete_copy = true;
-        if let Some(record) = db::objects::get(&mut *transaction, &object_id).await? {
+        let owned = db::queues::owns_copy(&mut *transaction, copy).await?;
+        if owned
+            && let Some(record) = db::objects::get(&mut *transaction, object_id).await?
+            && record.created_at == original.created_at
+            && record.record["allocation_id"].as_str() == allocation
+        {
             let mut current = MediaObject::from_record(&record, &backends);
-            if !current.referenced_by_flows.is_empty() {
-                delete_copy = false;
-                if !controlled(&current, destination_id) {
-                    current.instances.push(ObjectInstance {
-                        storage_backend: Some(destination.clone()),
-                        storage_backend_id: Some(destination_id),
-                        url: None,
-                        label: Some(destination.label.clone()),
-                        controlled: true,
-                        presigned: false,
-                    });
-                    db::objects::save(&mut *transaction, &current.into_record(crate::now()))
-                        .await?;
-                }
+            if !current.referenced_by_flows.is_empty()
+                && controlled(&current, source_id)
+                && !controlled(&current, destination_id)
+            {
+                current.instances.push(ObjectInstance {
+                    storage_backend: Some(destination.clone()),
+                    storage_backend_id: Some(destination_id),
+                    url: None,
+                    label: Some(destination.label.clone()),
+                    controlled: true,
+                    presigned: false,
+                });
+                db::objects::save(&mut *transaction, &current.into_record(crate::now())).await?;
             }
         }
+        // The R2 adapter recorded cleanup for the physical destination before streaming.
         transaction.commit().await.map_err(db::DbError::from)?;
-        if delete_copy {
-            self.storage.delete(destination, [json!({"object_id":object_id,"allocation_id":allocation_id,"not_before":crate::now().unix_timestamp()+86400})]).await?;
-        }
-        Ok(())
+        Ok(owned)
     }
 
     async fn queue_stale_allocations(&self, limit: i64) -> Result<u64, WorkerError> {

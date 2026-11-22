@@ -141,16 +141,17 @@ export class WasmStore extends DurableObject<Bindings> {
     if (operation === "copy") {
       if (this.#allocation(payload.id) !== payload.allocationId) throw new Error("Stale object copy");
       const key = this.#key(payload.allocationId);
-      const source = await this.#backend(payload.source).bucket.get(key);
-      if (!source) throw new Error("Copy source is absent");
       const destination = this.#backend(payload.destination).bucket;
-      // A crash before the metadata update must leave a durable cleanup record.
-      this.ctx.storage.sql.exec("INSERT INTO wasm_r2_deletions VALUES(?,?,?) ON CONFLICT(backend,allocation_id) DO UPDATE SET not_before=MAX(not_before,excluded.not_before)", payload.destination, payload.allocationId, Math.floor(Date.now()/1000)+86400);
-      try {
-        const copied = await destination.put(key, source.body, { httpMetadata: source.httpMetadata, customMetadata: { ...source.customMetadata, cf_tams_source_etag: source.etag }, onlyIf: new Headers({ "If-None-Match": "*" }) });
-        const stored = copied ?? await destination.head(key);
-        if (!stored || stored.size !== source.size || (!copied && stored.customMetadata?.cf_tams_source_etag !== source.etag)) throw new Error("Copy destination differs from source");
-      } finally { if (!source.body.locked) await source.body.cancel(); }
+      this.ctx.storage.sql.exec("INSERT INTO wasm_r2_deletions VALUES(?,?,?) ON CONFLICT(backend,allocation_id) DO UPDATE SET not_before=MAX(not_before,excluded.not_before)", payload.destination, payload.allocationId, Math.floor(Date.now()/1000) + Number(this.#core.allocationLifetimeSeconds));
+      await this.#outsideTransaction(async () => {
+        const source = await this.#backend(payload.source).bucket.get(key);
+        if (!source) throw new Error("Copy source is absent");
+        try {
+          const copied = await destination.put(key, source.body, { httpMetadata: source.httpMetadata, customMetadata: { ...source.customMetadata, cf_tams_source_etag: source.etag }, onlyIf: new Headers({ "If-None-Match": "*" }) });
+          const stored = copied ?? await destination.head(key);
+          if (!stored || stored.size !== source.size || (!copied && stored.customMetadata?.cf_tams_source_etag !== source.etag)) throw new Error("Copy destination differs from source");
+        } finally { if (!source.body.locked) await source.body.cancel(); }
+      });
       return null;
     }
     if (operation === "delete") {
@@ -173,14 +174,15 @@ export class WasmStore extends DurableObject<Bindings> {
         await response.body?.cancel();
         return { status: response.status, reason: response.statusText };
       };
-      // The Rust worker delivers one webhook at a time (process_webhooks) with no
-      // transaction open, so API requests can use the store while a slow
-      // receiver answers. Concurrent deliveries would release the lock twice.
-      if (!this.#polling || this.#transaction) return send();
-      this.#lock.release();
-      try { return await send(); } finally { await this.#lock.acquire(); }
+      return this.#outsideTransaction(send);
     }
     throw new Error("Unsupported host operation");
+  }
+
+  async #outsideTransaction<T>(operation: () => Promise<T>): Promise<T> {
+    if (!this.#polling || this.#transaction) return operation();
+    this.#lock.release();
+    try { return await operation(); } finally { await this.#lock.acquire(); }
   }
 
   async #end(commit: boolean): Promise<void> {
@@ -257,11 +259,16 @@ export class WasmStore extends DurableObject<Bindings> {
     });
   }
   async #purgeDeletions(): Promise<void> {
-    const deletions = this.ctx.storage.sql.exec<{ backend: string; allocation_id: string }>("SELECT backend,allocation_id FROM wasm_r2_deletions WHERE not_before<=unixepoch() LIMIT 100").toArray();
-    for (const item of deletions) {
-      const active = this.ctx.storage.sql.exec("SELECT 1 FROM tamoss_media_objects m,json_each(m.record,'$.instances') i WHERE m.allocation_id=? AND json_extract(i.value,'$.controlled')=1 AND json_extract(i.value,'$.storage_backend_id')=? LIMIT 1", item.allocation_id, item.backend).toArray().length;
-      if (!active) await this.#backend(item.backend).bucket.delete(this.#key(item.allocation_id));
-      this.ctx.storage.sql.exec("DELETE FROM wasm_r2_deletions WHERE backend=? AND allocation_id=?", item.backend, item.allocation_id);
+    const batches = this.ctx.storage.sql.exec<{ backend: string; allocations: string; unused: string }>(`
+      WITH due AS (SELECT backend,allocation_id FROM wasm_r2_deletions WHERE not_before<=unixepoch() ORDER BY not_before LIMIT 100)
+      SELECT backend,json_group_array(allocation_id) AS allocations,json_group_array(allocation_id) FILTER (WHERE NOT EXISTS (
+        SELECT 1 FROM tamoss_media_objects m,json_each(m.record,'$.instances') i
+        WHERE m.allocation_id=due.allocation_id AND i.value->>'controlled'=1 AND i.value->>'storage_backend_id'=due.backend
+      )) AS unused FROM due GROUP BY backend`).toArray();
+    for (const { backend, allocations, unused } of batches) {
+      const keys = (JSON.parse(unused) as string[]).map(id => this.#key(id));
+      if (keys.length) await this.#backend(backend).bucket.delete(keys);
+      this.ctx.storage.sql.exec("DELETE FROM wasm_r2_deletions WHERE backend=? AND allocation_id IN (SELECT value FROM json_each(?))", backend, allocations);
     }
   }
   async fetch(): Promise<Response> { return Response.json({ type: "unauthorized", summary: "Use the authenticated Worker entrypoint.", time: new Date().toISOString() }, { status: 401 }); }

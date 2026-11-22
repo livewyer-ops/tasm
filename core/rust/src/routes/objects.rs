@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
-    db::{self, ObjectCleanup, ObjectCopy, StorageBackend, TagFilters, Tags},
+    db::{self, ObjectCleanup, StorageBackend, TagFilters, Tags},
     domain::{
         model,
         object::{MediaObject, ObjectInstance},
@@ -484,26 +484,7 @@ async fn post_instance(
         }) {
             return Err(invalid_instance_json());
         }
-        let now = crate::now();
-        let copy = ObjectCopy {
-            id: Uuid::new_v4(),
-            object_id: object_id.clone(),
-            source_storage_backend_id: source,
-            destination_storage_backend_id: destination.id,
-            status: "pending".into(),
-            record: json!({
-                "object_id":object_id,"source_storage_backend_id":source,
-                "destination_storage_backend_id":destination.id,"status":"pending",
-                "attempt_count":0,"error":null,"created":model::timestamp(now),
-                "updated":model::timestamp(now)
-            }),
-            updated: now,
-            created_at: now,
-            claimed_at: None,
-            claimed_by: None,
-            claim_expires_at: None,
-        };
-        db::queues::save_copy(&mut *transaction, &copy)
+        db::queues::enqueue_copy(&mut *transaction, &record, source, destination.id)
             .await
             .map_err(internal)?;
     } else {

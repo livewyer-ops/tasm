@@ -188,12 +188,45 @@ pub async fn complete_cleanup(pool: &Pool, id: Uuid, worker: &str) -> Result<boo
     .await
 }
 
-pub async fn save_copy<'e, E>(e: E, v: &ObjectCopy) -> Result<(), DbError>
+pub async fn enqueue_copy<'e, E>(
+    executor: E,
+    object: &super::MediaObjectRecord,
+    source: Uuid,
+    destination: Uuid,
+) -> Result<(), DbError>
 where
     E: sqlx::Executor<'e, Database = Engine>,
 {
-    dialect::query(&format!("INSERT INTO tamoss_object_copies(id,object_id,source_storage_backend_id,destination_storage_backend_id,status,claimed_at,claimed_by,claim_expires_at,record,updated,created_at,updated_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,{NOW})ON CONFLICT(id)DO UPDATE SET object_id=EXCLUDED.object_id,source_storage_backend_id=EXCLUDED.source_storage_backend_id,destination_storage_backend_id=EXCLUDED.destination_storage_backend_id,status=EXCLUDED.status,claimed_at=EXCLUDED.claimed_at,claimed_by=EXCLUDED.claimed_by,claim_expires_at=EXCLUDED.claim_expires_at,record=EXCLUDED.record,updated=EXCLUDED.updated,updated_at={NOW}")).bind(v.id).bind(&v.object_id).bind(v.source_storage_backend_id).bind(v.destination_storage_backend_id).bind(&v.status).bind(v.claimed_at).bind(&v.claimed_by).bind(v.claim_expires_at).bind(sqlx::types::Json(&v.record)).bind(v.updated).bind(v.created_at).execute(e).await?;
+    let now = crate::now();
+    let stamp = crate::domain::model::timestamp(now);
+    let record = serde_json::json!({
+        "object_id":object.id, "source_storage_backend_id":source,
+        "destination_storage_backend_id":destination, "status":"pending",
+        "allocation_id":object.record.get("allocation_id"), "attempt_count":0,
+        "error":null, "created":stamp, "updated":stamp
+    });
+    dialect::query(&format!("INSERT INTO tamoss_object_copies
+        (id,object_id,source_storage_backend_id,destination_storage_backend_id,status,record,updated,created_at,updated_at)
+        SELECT $1,$2,$3,$4,'pending',$5,$6,$6,{NOW}
+        WHERE NOT EXISTS (SELECT 1 FROM tamoss_object_copies
+            WHERE object_id=$2 AND source_storage_backend_id=$3 AND destination_storage_backend_id=$4
+            AND status IN ('pending','started','error') AND created_at >= $7
+            AND COALESCE(record->>'allocation_id','')=COALESCE($8,''))"))
+        .bind(Uuid::new_v4()).bind(&object.id).bind(source).bind(destination)
+        .bind(sqlx::types::Json(record)).bind(now).bind(object.created_at)
+        .bind(object.record["allocation_id"].as_str().map(str::to_owned))
+        .execute(executor).await?;
     Ok(())
+}
+
+pub async fn owns_copy<'e, E>(executor: E, copy: &ObjectCopy) -> Result<bool, DbError>
+where
+    E: sqlx::Executor<'e, Database = Engine>,
+{
+    Ok(dialect::query(&format!("SELECT 1 FROM tamoss_object_copies
+        WHERE id=$1 AND status='started' AND claimed_by=$2 AND claimed_at=$3 AND claim_expires_at>{NOW}"))
+        .bind(copy.id).bind(&copy.claimed_by).bind(copy.claimed_at)
+        .fetch_optional(executor).await?.is_some())
 }
 pub async fn claim_copies(
     pool: &Pool,
