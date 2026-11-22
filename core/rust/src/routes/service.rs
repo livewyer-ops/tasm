@@ -129,7 +129,7 @@ pub(crate) async fn service(
         "service_version": state.settings.service_version, "name": name, "description": description,
         "event_stream_mechanisms": [{"name":"webhooks"}],
         "min_object_timeout": state.settings.min_object_timeout,
-        "min_presigned_url_timeout": crate::storage::SIGNED_URLS.then_some("3600:0"),
+        "min_presigned_url_timeout": crate::storage::SIGNED_URLS.then(|| format!("{}:0", crate::domain::object::MIN_SIGNED_URL_SECONDS)),
     });
     value
         .as_object_mut()

@@ -47,6 +47,14 @@ impl Tasm {
             worker: worker::Worker::new(database, settings),
         })
     }
+    #[wasm_bindgen(getter, js_name = allocationLifetimeSeconds)]
+    pub fn allocation_lifetime_seconds(&self) -> u64 {
+        self.worker.allocation_lifetime_seconds()
+    }
+    #[wasm_bindgen(getter, js_name = signedUrlLifetimeSeconds)]
+    pub fn signed_url_lifetime_seconds(&self) -> u32 {
+        domain::object::MIN_SIGNED_URL_SECONDS + domain::object::STORAGE_GRACE_SECONDS
+    }
     pub async fn request(&self, request_json: String) -> Result<String, JsValue> {
         api::request::<Identity>(&self.router, request_json).await
     }

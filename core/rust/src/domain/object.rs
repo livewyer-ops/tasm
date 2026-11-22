@@ -7,6 +7,10 @@ use uuid::Uuid;
 
 use crate::db::{MediaObjectRecord, StorageBackend};
 
+/// Allow clients time to receive an allocation before its advertised interval starts.
+pub const STORAGE_GRACE_SECONDS: u32 = 30;
+pub const MIN_SIGNED_URL_SECONDS: u32 = 3600;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjectInstance {
     pub storage_backend: Option<StorageBackend>,

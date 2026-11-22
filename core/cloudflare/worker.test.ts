@@ -259,7 +259,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     const allocation = (await allocated.json() as { media_objects: { presigned: boolean; put_url: { url: string; headers: Record<string, string> } }[] }).media_objects[0];
     assert.equal(allocation.presigned, true);
     const url = new URL(allocation.put_url.url);
-    assert.equal(url.searchParams.get("X-Amz-Expires"), "3600");
+    assert.equal(url.searchParams.get("X-Amz-Expires"), "3630");
     assert.equal(url.searchParams.get("X-Amz-SignedHeaders"), "content-type;host;if-none-match");
     assert.equal(allocation.put_url.headers["If-None-Match"], "*");
     assert.equal((await allocate(["rolled-back", objectId])).status, 400);
@@ -680,7 +680,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
           assert.ok(delivered.get_urls.length);
           assert.ok(delivered.init_object.get_urls.length);
         }
-        for (const url of [...delivered.get_urls, ...delivered.init_object.get_urls]) if (url.presigned) assert.equal(new URL(url.url).searchParams.get("X-Amz-Expires"), "3600");
+        for (const url of [...delivered.get_urls, ...delivered.init_object.get_urls]) if (url.presigned) assert.equal(new URL(url.url).searchParams.get("X-Amz-Expires"), "3630");
         assert.equal((await request(`/service/webhooks/${webhookId}`, { method: "DELETE" })).status, 204);
         webhookId = undefined;
       }

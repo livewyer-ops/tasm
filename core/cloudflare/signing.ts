@@ -3,7 +3,7 @@ const encoder = new TextEncoder();
 const hex = (value: ArrayBuffer) => Array.from(new Uint8Array(value), byte => byte.toString(16).padStart(2, "0")).join("");
 const encode = (value: string) => encodeURIComponent(value).replace(/[!'()*]/g, c => "%" + c.charCodeAt(0).toString(16).toUpperCase());
 
-export async function presign(method: string, url: URL, accessKey: string, secretKey: string, headers: Record<string, string> = {}, now = new Date()): Promise<string> {
+export async function presign(method: string, url: URL, accessKey: string, secretKey: string, lifetimeSeconds: number, headers: Record<string, string> = {}, now = new Date()): Promise<string> {
   if (url.protocol !== "https:" || url.search || url.hash || !accessKey || !secretKey) throw new Error("Invalid signing configuration");
   const stamp = now.toISOString().replace(/[-:]|\.\d{3}/g, "");
   const date = stamp.slice(0, 8);
@@ -14,7 +14,7 @@ export async function presign(method: string, url: URL, accessKey: string, secre
   const signedHeaders = names.join(";");
   const query = Object.entries({
     "X-Amz-Algorithm": "AWS4-HMAC-SHA256", "X-Amz-Credential": `${accessKey}/${scope}`,
-    "X-Amz-Date": stamp, "X-Amz-Expires": "3600", "X-Amz-SignedHeaders": signedHeaders,
+    "X-Amz-Date": stamp, "X-Amz-Expires": String(lifetimeSeconds), "X-Amz-SignedHeaders": signedHeaders,
   }).sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => `${encode(key)}=${encode(value)}`).join("&");
   const canonical = [method, url.pathname, query, names.map(key => `${key}:${canonicalHeaders[key]}\n`).join(""), signedHeaders, "UNSIGNED-PAYLOAD"].join("\n");
   const toSign = `AWS4-HMAC-SHA256\n${stamp}\n${scope}\n${hex(await crypto.subtle.digest("SHA-256", encoder.encode(canonical)))}`;

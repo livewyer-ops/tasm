@@ -53,6 +53,12 @@ impl Worker {
         }
     }
 
+    pub fn allocation_lifetime_seconds(&self) -> u64 {
+        self.settings
+            .min_object_timeout_seconds()
+            .saturating_add(u64::from(crate::domain::object::STORAGE_GRACE_SECONDS))
+    }
+
     pub async fn poll_once(&self) -> Result<u64, WorkerError> {
         let limit =
             i64::try_from(self.settings.worker_max_requests).map_err(|_| WorkerError::Bounds)?;
@@ -500,8 +506,8 @@ impl Worker {
 
     async fn queue_stale_allocations(&self, limit: i64) -> Result<u64, WorkerError> {
         let pool = self.database.pool().await?;
-        let seconds = i64::try_from(self.settings.min_object_timeout_seconds())
-            .map_err(|_| WorkerError::Bounds)?;
+        let seconds =
+            i64::try_from(self.allocation_lifetime_seconds()).map_err(|_| WorkerError::Bounds)?;
         let mut transaction = pool.begin().await.map_err(db::DbError::from)?;
         let rows = sqlx::query(crate::db::statements::EXPIRED_ALLOCATIONS)
             .bind(seconds)

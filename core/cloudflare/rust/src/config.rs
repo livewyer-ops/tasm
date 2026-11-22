@@ -43,8 +43,7 @@ impl Settings {
             webhook_timeout_seconds: 10.0,
         }
     }
-    /// Seconds from the advertised `min_object_timeout`, so the value the
-    /// service reports and the value garbage collection uses cannot differ.
+    /// Advertised allocation lifetime before the transfer grace period.
     pub fn min_object_timeout_seconds(&self) -> u64 {
         tasm_core::domain::timerange::timestamp(&self.min_object_timeout)
             .ok()

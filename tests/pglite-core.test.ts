@@ -457,3 +457,18 @@ test('object references filter by flow tags and page in one query', async () => 
   for (let i = 0; i < 6; i++) await reference({ sample: 'yes' });
   assert.equal(await queries(), before);
 });
+
+test('an unregistered allocation survives the advertised minimum and expires after the grace period', async () => {
+  const { db, core, request } = await store();
+  const flow = crypto.randomUUID(), id = crypto.randomUUID();
+  assert.equal((await request('PUT', '/flows/' + flow, { ...videoFlow, id: flow, source_id: crypto.randomUUID() })).status, 201);
+  assert.equal((await request('POST', '/flows/' + flow + '/storage', { object_ids: [id] })).status, 201);
+  const minimum = Number(JSON.parse((await request('GET', '/service')).body).min_object_timeout.split(':')[0]);
+  const age = async (seconds: number) => {
+    await db.query("UPDATE tamoss_media_objects SET created_at=NOW()-($1::int * INTERVAL '1 second') WHERE id=$2", [seconds, id]);
+    await core.poll();
+    return (await db.query("SELECT id FROM tamoss_media_objects WHERE id=$1", [id])).rows.length;
+  };
+  assert.equal(await age(minimum + 5), 1);
+  assert.equal(await age(minimum + 60), 0);
+});

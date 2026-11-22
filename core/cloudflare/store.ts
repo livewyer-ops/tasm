@@ -147,7 +147,7 @@ export class WasmStore extends DurableObject<Bindings> {
       const url = new URL(`/${backend.bucket_name}/${key}`, this.env.R2_ENDPOINT);
       if (!payload.presigned) return url.href;
       const headers: Record<string, string> = payload.method === "PUT" ? { "Content-Type": payload.contentType, "If-None-Match": "*" } : {};
-      const signed = await presign(payload.method, url, this.env.R2_ACCESS_KEY_ID, this.env.R2_SECRET_ACCESS_KEY, headers);
+      const signed = await presign(payload.method, url, this.env.R2_ACCESS_KEY_ID, this.env.R2_SECRET_ACCESS_KEY, this.#core.signedUrlLifetimeSeconds, headers);
       this.ctx.storage.sql.exec("UPDATE tamoss_media_objects SET access_expires_at=MAX(access_expires_at,?) WHERE id=?", Math.floor(Date.now()/1000)+3660, payload.id);
       return signed;
     }
@@ -228,7 +228,7 @@ export class WasmStore extends DurableObject<Bindings> {
     }
     for (const query of [
       "SELECT MIN(MAX(COALESCE(unixepoch(next_attempt_at),0),COALESCE(unixepoch(claim_expires_at),0))) AS due FROM tamoss_webhook_deliveries WHERE status IN ('pending','started')",
-      "SELECT MIN(unixepoch(created_at)+86400) AS due FROM tamoss_media_objects WHERE json_array_length(referenced_by_flows)=0",
+      `SELECT MIN(unixepoch(created_at)+${this.#core.allocationLifetimeSeconds}) AS due FROM tamoss_media_objects WHERE json_array_length(referenced_by_flows)=0`,
       "SELECT MIN(not_before) AS due FROM wasm_r2_deletions",
     ]) {
       const due = this.ctx.storage.sql.exec<{ due: number | null }>(query).one().due;
