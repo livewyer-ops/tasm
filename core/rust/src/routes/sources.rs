@@ -1,9 +1,9 @@
 // Cloudflare adaptation of TASM and rust-tams-api (Apache-2.0); see NOTICE.
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     body::Body,
     extract::{Path, State},
-    http::{Request, StatusCode},
+    http::{Method, Request, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -31,20 +31,20 @@ pub fn router() -> Router<MetadataState> {
             "/sources/{sourceId}/label",
             get(get_label)
                 .head(get_label)
-                .put(put_label)
-                .delete(delete_label),
+                .put(edit_label)
+                .delete(edit_label),
         )
         .route(
             "/sources/{sourceId}/description",
             get(get_description)
                 .head(get_description)
-                .put(put_description)
-                .delete(delete_description),
+                .put(edit_description)
+                .delete(edit_description),
         )
         .route("/sources/{sourceId}/tags", get(get_tags).head(get_tags))
         .route(
             "/sources/{sourceId}/tags/{*name}",
-            get(get_tag).head(get_tag).put(put_tag).delete(delete_tag),
+            get(get_tag).head(get_tag).put(edit_tag).delete(edit_tag),
         )
 }
 
@@ -174,33 +174,31 @@ async fn get_description(
     scalar(State(state), raw, request, "description").await
 }
 
-async fn mutate_scalar(
-    State(state): State<MetadataState>,
-    raw: String,
+enum SourceEdit {
+    Label(Option<String>),
+    Description(Option<String>),
+    Tag(String, Option<Value>),
+}
+
+async fn edit_value<T: serde::de::DeserializeOwned>(
     request: Request<Body>,
-    name: &str,
-    clear: bool,
-) -> Result<Response, ApiError> {
+) -> Result<Option<T>, ApiError> {
     query(&request, &[], &[])?;
-    let actor = request
-        .extensions()
-        .get::<crate::Actor>()
-        .expect("auth identity")
-        .subject
-        .clone();
-    let value = if clear {
-        None
-    } else {
-        let value: Value = strict_json(request, MAX_JSON_BODY_BYTES)
-            .await
-            .map_err(|_| ApiError::bad_request("Bad request."))?;
-        Some(
-            value
-                .as_str()
-                .ok_or_else(|| ApiError::bad_request("Bad request."))?
-                .to_owned(),
-        )
-    };
+    if request.method() == Method::DELETE {
+        return Ok(None);
+    }
+    strict_json(request, MAX_JSON_BODY_BYTES)
+        .await
+        .map(Some)
+        .map_err(|_| ApiError::bad_request("Bad request."))
+}
+
+async fn edit_source(
+    state: MetadataState,
+    raw: String,
+    actor: crate::Actor,
+    edit: SourceEdit,
+) -> Result<Response, ApiError> {
     let source_id = id(&raw)?;
     let pool = state.pool().await?;
     let mut tx = pool.begin().await.map_err(internal)?;
@@ -208,37 +206,39 @@ async fn mutate_scalar(
         .await
         .map_err(internal)?
         .ok_or_else(missing)?;
-    source.metadata_updated = crate::now();
-    if name == "label" {
-        source.label = value.clone();
-    } else {
-        if !source.record.is_object() {
-            source.record = json!({});
-        }
-        match value {
-            Some(value) => {
-                source
-                    .record
-                    .as_object_mut()
-                    .unwrap()
-                    .insert("description".into(), json!(value));
-            }
-            None => {
-                source.record.as_object_mut().unwrap().remove("description");
-            }
-        }
-    }
     if !source.record.is_object() {
         source.record = json!({});
     }
-    let record = source.record.as_object_mut().unwrap();
-    record.insert("label".into(), json!(source.label));
+    let record = source
+        .record
+        .as_object_mut()
+        .expect("Source metadata object");
+    match edit {
+        SourceEdit::Label(label) => {
+            source.label = label;
+            record.insert("label".into(), json!(source.label));
+        }
+        SourceEdit::Description(Some(description)) => {
+            record.insert("description".into(), json!(description));
+        }
+        SourceEdit::Description(None) => {
+            record.remove("description");
+        }
+        SourceEdit::Tag(name, value) => {
+            if let Some(value) = value {
+                source.tags.insert(name, value);
+            } else {
+                source.tags.remove(&name);
+            }
+        }
+    }
+    source.metadata_updated = crate::now();
     record.insert("tags".into(), json!(source.tags));
     record.insert(
         "metadata_updated".into(),
         json!(model::timestamp(source.metadata_updated)),
     );
-    source.record["updated_by"] = json!(actor);
+    record.insert("updated_by".into(), json!(actor.subject));
     db::flows::save_source(&mut *tx, &source)
         .await
         .map_err(internal)?;
@@ -253,43 +253,14 @@ async fn mutate_scalar(
         &[],
         &[source_id],
         &[],
-        &relationship
-            .map(|r| r.collected_by.clone())
+        relationship
+            .map(|r| r.collected_by.as_slice())
             .unwrap_or_default(),
     )
     .await?;
     tx.commit().await.map_err(internal)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
-async fn put_label(
-    State(state): State<MetadataState>,
-    Path(raw): Path<String>,
-    request: Request<Body>,
-) -> Result<Response, ApiError> {
-    mutate_scalar(State(state), raw, request, "label", false).await
-}
-async fn delete_label(
-    State(state): State<MetadataState>,
-    Path(raw): Path<String>,
-    request: Request<Body>,
-) -> Result<Response, ApiError> {
-    mutate_scalar(State(state), raw, request, "label", true).await
-}
-async fn put_description(
-    State(state): State<MetadataState>,
-    Path(raw): Path<String>,
-    request: Request<Body>,
-) -> Result<Response, ApiError> {
-    mutate_scalar(State(state), raw, request, "description", false).await
-}
-async fn delete_description(
-    State(state): State<MetadataState>,
-    Path(raw): Path<String>,
-    request: Request<Body>,
-) -> Result<Response, ApiError> {
-    mutate_scalar(State(state), raw, request, "description", true).await
-}
-
 async fn get_tags(
     State(state): State<MetadataState>,
     Path(raw): Path<String>,
@@ -319,93 +290,36 @@ async fn get_tag(
         .ok_or_else(|| ApiError::not_found("The requested Source tag does not exist."))?;
     Ok(Json(value).into_response())
 }
-async fn mutate_tag(
+
+async fn edit_label(
     State(state): State<MetadataState>,
-    raw: String,
-    name: String,
+    Path(raw): Path<String>,
+    Extension(actor): Extension<crate::Actor>,
     request: Request<Body>,
-    clear: bool,
 ) -> Result<Response, ApiError> {
-    query(&request, &[], &[])?;
-    let actor = request
-        .extensions()
-        .get::<crate::Actor>()
-        .expect("auth identity")
-        .subject
-        .clone();
-    let value = if clear {
-        None
-    } else {
-        let value: Value = strict_json(request, MAX_JSON_BODY_BYTES)
-            .await
-            .map_err(|_| ApiError::bad_request("Bad request."))?;
-        if !model::tag_value(&value) {
-            return Err(ApiError::bad_request("Bad request."));
-        }
-        Some(value)
-    };
-    let source_id = id(&raw)?;
-    let pool = state.pool().await?;
-    let mut tx = pool.begin().await.map_err(internal)?;
-    let mut source = db::flows::get_source_for_update(&mut *tx, source_id)
-        .await
-        .map_err(internal)?
-        .ok_or_else(missing)?;
-    match value {
-        Some(value) => {
-            source.tags.insert(name, value);
-        }
-        None => {
-            source.tags.remove(&name);
-        }
-    }
-    source.metadata_updated = crate::now();
-    if !source.record.is_object() {
-        source.record = json!({});
-    }
-    source
-        .record
-        .as_object_mut()
-        .unwrap()
-        .insert("tags".into(), json!(source.tags));
-    source.record.as_object_mut().unwrap().insert(
-        "metadata_updated".into(),
-        json!(model::timestamp(source.metadata_updated)),
-    );
-    source.record["updated_by"] = json!(actor);
-    db::flows::save_source(&mut *tx, &source)
-        .await
-        .map_err(internal)?;
-    let relationships = db::flows::source_relationships(&mut *tx, &[source_id])
-        .await
-        .map_err(internal)?;
-    let relationship = relationships.get(&source_id);
-    enqueue_event(
-        &mut tx,
-        "sources/updated",
-        json!({"source":model::source(&source, relationship)}),
-        &[],
-        &[source_id],
-        &[],
-        &relationship
-            .map(|r| r.collected_by.clone())
-            .unwrap_or_default(),
-    )
-    .await?;
-    tx.commit().await.map_err(internal)?;
-    Ok(StatusCode::NO_CONTENT.into_response())
+    let value = edit_value(request).await?;
+    edit_source(state, raw, actor, SourceEdit::Label(value)).await
 }
-async fn put_tag(
+
+async fn edit_description(
+    State(state): State<MetadataState>,
+    Path(raw): Path<String>,
+    Extension(actor): Extension<crate::Actor>,
+    request: Request<Body>,
+) -> Result<Response, ApiError> {
+    let value = edit_value(request).await?;
+    edit_source(state, raw, actor, SourceEdit::Description(value)).await
+}
+
+async fn edit_tag(
     State(state): State<MetadataState>,
     Path((raw, name)): Path<(String, String)>,
+    Extension(actor): Extension<crate::Actor>,
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
-    mutate_tag(State(state), raw, name, request, false).await
-}
-async fn delete_tag(
-    State(state): State<MetadataState>,
-    Path((raw, name)): Path<(String, String)>,
-    request: Request<Body>,
-) -> Result<Response, ApiError> {
-    mutate_tag(State(state), raw, name, request, true).await
+    let value = edit_value(request).await?;
+    if value.as_ref().is_some_and(|v| !model::tag_value(v)) {
+        return Err(ApiError::bad_request("Bad request."));
+    }
+    edit_source(state, raw, actor, SourceEdit::Tag(name, value)).await
 }

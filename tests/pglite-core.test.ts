@@ -2,6 +2,7 @@
 // same SQL bridge as core/browser/runtime.ts, so SQL and row decoding bugs fail
 // here in seconds rather than in the browser suite.
 import { test } from 'node:test';
+import { isDeepStrictEqual } from 'node:util';
 import { checkUuidFilters } from './contract/uuid-filters';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -223,6 +224,28 @@ test('profiles page in id order, filter, reject duplicates and lock for flows', 
   const flow = await request('PUT', `/flows/${flowId}`, { id: flowId, source_id: crypto.randomUUID(), profile_id: ids[0] });
   assert.equal(flow.status, 201, flow.body);
   assert.equal(JSON.parse((await request('GET', `/flows/${flowId}`)).body).codec, videoFlow.codec);
+});
+
+test('Source edits queue the same metadata returned by GET', async () => {
+  const { request, db } = await store();
+  const id = crypto.randomUUID(), source = crypto.randomUUID(), path = '/sources/' + source;
+  assert.equal((await request('PUT', '/flows/' + id, { ...videoFlow, id, source_id: source })).status, 201);
+  assert.equal((await request('POST', '/service/webhooks', {
+    url: 'http://hooks.test/source', events: ['sources/updated'],
+  })).status, 201);
+  const edits = [
+    ['PUT', '/label', '"Edited"'], ['PUT', '/tags/role', '["editor"]'],
+    ['PUT', '/description', '"Sample"'], ['DELETE', '/tags/role'], ['DELETE', '/description'],
+  ];
+  for (const [index, [method, field, body]] of edits.entries()) {
+    assert.equal((await request(method, path + field, body)).status, 204);
+    const current = JSON.parse((await request('GET', path)).body);
+    const { rows } = await db.query<{ source: unknown }>(
+      "SELECT record->'payload'->'event'->'source' AS source FROM tamoss_webhook_deliveries",
+    );
+    assert.equal(rows.length, index + 1);
+    assert.ok(rows.some(row => isDeepStrictEqual(row.source, current)));
+  }
 });
 
 test('webhooks filter by tags, page by url and receive matching events', async () => {
