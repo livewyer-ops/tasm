@@ -593,6 +593,15 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     const flow = await request(`/flows/${flowId}`, { method: "PUT", body: JSON.stringify({ id: flowId, source_id: crypto.randomUUID(), profile_id: ids[0] }) });
     assert.equal(flow.status, 201, await flow.text());
     assert.equal((await (await request(`/flows/${flowId}`)).json() as { codec: string }).codec, codec);
+    // Older stores could persist a string PID in an immutable Profile.
+    const env = await api.getEnv();
+    const sql = await api.getDurableObjectStorage("STORE", { name: env.STORE_ID });
+    await sql.exec("UPDATE tamoss_profiles SET record=json_set(record,'$.flow_metadata.container_mapping',json(?)) WHERE id=?",
+      JSON.stringify({ mp2ts_container: { pid: "100" } }), ids[0]);
+    const derivedId = crypto.randomUUID();
+    const derived = await request(`/flows/${derivedId}`, { method: "PUT", body: JSON.stringify({ id: derivedId, source_id: crypto.randomUUID(), profile_id: ids[0] }) });
+    assert.equal(derived.status, 400);
+    assert.equal((await request(`/flows/${derivedId}`)).status, 404);
   });
 
   await t.test("Webhooks filter by tags, page by url and queue matching events", async () => {
