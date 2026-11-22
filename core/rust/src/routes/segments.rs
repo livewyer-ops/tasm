@@ -18,7 +18,8 @@ use uuid::Uuid;
 use super::{
     objects::object_urls,
     service::{
-        MetadataState, enqueue_flow_event, flow_audience, internal, page, paged_response, query,
+        MetadataState, enqueue_flow_event, flow_audience, internal, page_from, paged_response,
+        query,
     },
 };
 use crate::{
@@ -146,7 +147,13 @@ async fn list(
         .transpose()
         .map_err(|_| invalid_query())?
         .unwrap_or_default();
-    let page_request = page(&params)?;
+    let key = params.last("page");
+    let cursor = key
+        .and_then(|key| key.strip_prefix("t."))
+        .map(str::parse::<i128>)
+        .transpose()
+        .map_err(|_| invalid_query())?;
+    let page_request = page_from(&params, key.filter(|_| cursor.is_none()))?;
     let pool = state.pool;
     // Filter, order and page in SQL so a request costs one page, not the
     // whole flow. Segments in a flow never overlap, so ordering by start is
@@ -156,6 +163,7 @@ async fn list(
         timerange_start: requested.start,
         timerange_end: requested.end,
         timerange_is_point: requested.point,
+        cursor,
     };
     let (items, next_page) = if requested.empty {
         (Vec::new(), None)

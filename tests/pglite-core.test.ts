@@ -614,6 +614,28 @@ test('segment deletion selects matching segments in the database', async () => {
   assert.equal((await remove(`timerange=${encodeURIComponent('()')}`)).status, 204);
 });
 
+test('Segment links continue past their last start when preceding Segments disappear', async t => {
+  const { db, request, upload } = await store();
+  t.after(() => db.close());
+  for (const reverse of [false, true]) {
+    const flow = crypto.randomUUID(), path = `/flows/${flow}`;
+    assert.equal((await request('PUT', path, { ...videoFlow, id: flow, source_id: crypto.randomUUID() })).status, 201);
+    const ids = JSON.parse((await request('POST', path + '/storage', { limit: 3 })).body).media_objects.map((v: { object_id: string }) => v.object_id) as string[];
+    ids.forEach(upload);
+    assert.equal((await request('POST', path + '/segments', ids.map((object_id, i) => ({ object_id, timerange: `[${i * 2}:0_${i * 2 + 2}:0)` })))).status, 201);
+    const query = `?limit=1&reverse_order=${reverse}`;
+    const first = await request('GET', path + '/segments' + query);
+    const next = first.headers['x-paging-nextkey'];
+    const legacy = await request('GET', path + '/segments' + query + '&page=1');
+    assert.equal(JSON.parse(legacy.body)[0].object_id, ids[1]);
+    assert.equal((await request('DELETE', path + '/segments?object_id=' + ids[reverse ? 2 : 0])).status, 204);
+    const second = await request('GET', path + '/segments' + query + '&page=' + encodeURIComponent(next));
+    assert.equal(JSON.parse(second.body)[0].object_id, ids[1]);
+    const overlap = await request('GET', path + '/segments?timerange=' + encodeURIComponent('[2:500000000]'));
+    assert.equal(JSON.parse(overlap.body)[0].object_id, ids[1]);
+  }
+});
+
 test('object references filter by flow tags and page in one query', async () => {
   const { request, upload, returned } = await store();
   const put = async (tags?: Record<string, unknown>) => {

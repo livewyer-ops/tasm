@@ -51,11 +51,14 @@ pub(crate) fn query(
     Ok(query)
 }
 pub(crate) fn page(query: &QueryParams) -> Result<PageRequest, ApiError> {
+    page_from(query, query.last("page"))
+}
+pub(crate) fn page_from(query: &QueryParams, key: Option<&str>) -> Result<PageRequest, ApiError> {
     let limit = query.integer("limit")?;
     if limit.is_some_and(|value| value <= 0) {
         return Err(invalid_query());
     }
-    PageRequest::parse(query.last("page"), limit).map_err(|_| invalid_query())
+    PageRequest::parse(key, limit).map_err(|_| invalid_query())
 }
 pub(crate) fn tag_filters(query: &QueryParams) -> Result<TagFilters, ApiError> {
     model::tag_filters(

@@ -46,6 +46,7 @@ pub struct SegmentFilters {
     pub timerange_start: Option<i128>,
     pub timerange_end: Option<i128>,
     pub timerange_is_point: bool,
+    pub cursor: Option<i128>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceSort {
@@ -162,12 +163,10 @@ pub async fn list_flows_page(
         // direct collection members, the same set its reported timerange covers.
         // Two EXISTS checks let each use a segment index instead of aggregating.
         let mut first = true;
-        if let Some(mut end) = f.timerange_end {
-            if f.timerange_is_point && f.timerange_start == Some(end) {
-                end += 1
-            }
+        if let Some(end) = f.timerange_end {
+            let comparison = if f.timerange_is_point { "<=" } else { "<" };
             clause!(format!(
-                "EXISTS({FLOW_SEGMENTS} AND segment.timerange_start<"
+                "EXISTS({FLOW_SEGMENTS} AND segment.timerange_start{comparison}"
             ))
             .push_bind(end)
             .push(")");
@@ -525,13 +524,23 @@ fn push_segment_filters(q: &mut QueryBuilder<'_, Engine>, flow_id: Uuid, f: &Seg
         q.push(" AND object_id=").push_bind(id.clone());
     }
     if let Some(start) = f.timerange_start {
-        q.push(" AND timerange_end>").push_bind(start);
+        // Only the immediate predecessor can overlap the lower bound.
+        q.push(" AND timerange_start>=COALESCE((SELECT MAX(timerange_start) FROM tamoss_segments WHERE flow_id=")
+            .push_bind(flow_id)
+            .push(" AND timerange_start<=")
+            .push_bind(start)
+            .push("),")
+            .push_bind(start)
+            .push(") AND timerange_end>")
+            .push_bind(start);
     }
-    if let Some(mut end) = f.timerange_end {
-        if f.timerange_is_point && f.timerange_start == Some(end) {
-            end += 1
-        }
-        q.push(" AND timerange_start<").push_bind(end);
+    if let Some(end) = f.timerange_end {
+        q.push(if f.timerange_is_point {
+            " AND timerange_start<="
+        } else {
+            " AND timerange_start<"
+        })
+        .push_bind(end);
     }
 }
 pub async fn list_segments_page(
@@ -545,24 +554,44 @@ pub async fn list_segments_page(
         "SELECT flow_id,object_id,init_object_id,timerange,timerange_start,timerange_end,record,created FROM tamoss_segments WHERE flow_id=",
     );
     push_segment_filters(&mut q, flow_id, f);
+    if let Some(start) = f.cursor {
+        q.push(if reverse {
+            " AND timerange_start<"
+        } else {
+            " AND timerange_start>"
+        })
+        .push_bind(start);
+    }
     q.push(if reverse {
-        " ORDER BY timerange_start DESC,object_id DESC,timerange DESC"
+        " ORDER BY timerange_start DESC"
     } else {
-        " ORDER BY timerange_start ASC,object_id ASC,timerange ASC"
+        " ORDER BY timerange_start"
     })
     .push(" LIMIT ")
-    .push_bind(page.limit + 1)
-    .push(" OFFSET ")
-    .push_bind(page.offset);
-    Ok(finish_page(
-        q.build()
-            .fetch_all(pool)
-            .await?
-            .into_iter()
-            .map(map_segment)
-            .collect::<Result<_, _>>()?,
-        page,
-    ))
+    .push_bind(page.limit + 1);
+    if page.offset != 0 {
+        q.push(" OFFSET ").push_bind(page.offset);
+    }
+    let mut items = q
+        .build()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(map_segment)
+        .collect::<Result<Vec<_>, _>>()?;
+    let next_page = if items.len() > page.limit as usize {
+        items.pop();
+        items
+            .last()
+            .map(|item| format!("t.{}", item.timerange_start))
+    } else {
+        None
+    };
+    Ok(Page {
+        items,
+        limit: page.limit,
+        next_page,
+    })
 }
 pub async fn append_segment<'e, E>(e: E, v: &SegmentRecord) -> Result<(), DbError>
 where
