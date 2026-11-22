@@ -177,3 +177,34 @@ test('a published draft stays locked across failed reloads and retries only the 
   await expect(page.locator('#draft-status')).toHaveText('All changes saved');
   expect(await page.evaluate(() => (window as any).reloadStats.published)).toBe(1);
 });
+
+test('a second tab can inspect a draft and edit it when the writer closes', async ({ page, context }) => {
+  await page.goto('/'); await ready(page);
+  await named(page, '#new-source', 'Shared draft');
+  await named(page, '#add-audio', 'Stored audio', false);
+  const viewer = await context.newPage();
+  await viewer.goto('/'); await ready(viewer);
+  await expect(viewer.locator('#draft-status')).toContainText('another tab', { timeout: 4000 });
+  await expect(viewer.locator('#save-draft')).toBeDisabled();
+  await page.close();
+  await expect(viewer.locator('#save-draft')).toBeEnabled();
+  await save(viewer);
+  await expect(viewer.locator('.lane-header')).toContainText('Stored audio');
+});
+
+test('an unreadable selected source leaves the other sources and Terminal available', async ({ page }) => {
+  await page.goto('/'); await ready(page);
+  await named(page, '#new-source', 'Healthy');
+  await named(page, '#new-source', 'Damaged');
+  const id = await page.locator('#sources').inputValue();
+  await page.addInitScript(id => {
+    const original = window.fetch;
+    window.fetch = (url, options) => String(url).endsWith('/flows/' + id) ?
+      Promise.resolve(Response.json({ summary: 'Cannot load source' }, { status: 500 })) : original(url, options);
+  }, id);
+  await page.reload();
+  await expect(page.locator('#sources')).toBeEnabled({ timeout: 10000 });
+  await expect(page.locator('#terminal-run')).toBeEnabled();
+  await page.locator('#sources').selectOption({ label: 'Healthy' });
+  await expect(page.locator('#source-title')).toHaveText('Healthy');
+});

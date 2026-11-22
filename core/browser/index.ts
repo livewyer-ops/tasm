@@ -58,6 +58,10 @@ export async function startTasm({ basePath = '/tasm/', backends, signal: supplie
     else if (registration?.active && [...watched].some(w => w.state === 'redundant')) update('The update could not download. Your current version is still available. Retry when connected.');
   };
   const forward = (event: MessageEvent) => {
+    if (event.data?.type === 'tasm-probe' && event.data.base === base.href && event.ports[0]) {
+      event.ports[0].postMessage(worker && !stopping && !closed ? 'ready' : 'unavailable');
+      event.ports[0].close();
+    }
     if (event.data?.type === 'tasm-request' && event.data.base === base.href && event.ports[0]) {
       if (stopping || stopped || !worker) {
         event.ports[0].postMessage({ type: 'response', status: 503, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ summary: 'TASM is shutting down.' }) });
@@ -68,6 +72,7 @@ export async function startTasm({ basePath = '/tasm/', backends, signal: supplie
   const client: TasmClient = { apiUrl: new URL('api/', base).href, close() {
     if (closed) return;
     closed = true; lifetime.abort(new DOMException('TASM client closed', 'AbortError'));
+    navigator.serviceWorker.controller?.postMessage({ type: 'tasm-disconnect', base: base.href });
     navigator.serviceWorker.removeEventListener('message', forward);
     registration?.removeEventListener('updatefound', announceUpdate);
     for (const sw of watched) sw.removeEventListener('statechange', announceUpdate);
@@ -89,6 +94,7 @@ export async function startTasm({ basePath = '/tasm/', backends, signal: supplie
           error.name = 'StoreInUseError'; throw error;
         }
         stopping = true;
+        navigator.serviceWorker.controller?.postMessage({ type: 'tasm-disconnect', base: base.href });
       }
       lifetime.signal.throwIfAborted();
       await prepare?.();
@@ -136,6 +142,7 @@ export async function startTasm({ basePath = '/tasm/', backends, signal: supplie
     navigator.serviceWorker.addEventListener('message', forward);
     worker.port.start(); worker.port.postMessage({ type: 'init', base: base.href, backends });
     await abortable(ready, signal);
+    navigator.serviceWorker.controller?.postMessage({ type: 'tasm-connect', base: base.href });
     // Only a ready update at startup may replace this tab. Later updates wait for refresh.
     if (waiting && !sessionStorage.getItem(reloadKey)) {
       try {

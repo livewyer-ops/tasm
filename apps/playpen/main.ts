@@ -20,6 +20,42 @@ let store!: WorkspaceStore, preview!: Preview, workspace: Workspace | undefined,
 let draft: DraftWorkspace | undefined, draftWrites: Promise<unknown> = Promise.resolve(), draftPending = 0, draftError = false;
 const draftAbort = new AbortController();
 const draftKey = (id: string) => `${store.apiUrl}:${id}`;
+let viewedDraft: { key: string; lifetime: AbortController } | undefined;
+let draftWritable = false;
+async function watchDraft(rootId?: string) {
+  const key = rootId && draftKey(rootId);
+  if (viewedDraft?.key === key) return;
+  viewedDraft?.lifetime.abort();
+  draftWritable = false;
+  viewedDraft = undefined;
+  if (!key) return;
+  const lifetime = new AbortController();
+  viewedDraft = { key, lifetime };
+  const name = `tasm-draft:${key}`;
+  const hold = async () => {
+    if (!lifetime.signal.aborted) await new Promise<void>(release => lifetime.signal.addEventListener('abort', () => release(), { once: true }));
+    await draftWrites;
+  };
+  await new Promise<void>((ready, failed) => {
+    navigator.locks.request(name, { ifAvailable: true }, async lock => {
+      if (lifetime.signal.aborted) { ready(); return; }
+      draftWritable = !!lock;
+      ready();
+      if (lock) { await hold(); return; }
+      void navigator.locks.request(name, { signal: lifetime.signal }, async () => {
+        if (lifetime.signal.aborted) return;
+        try {
+          await store.recover(rootId!);
+          await refresh(rootId);
+          if (lifetime.signal.aborted) return;
+          draftWritable = true;
+          controls();
+          await hold();
+        } catch (error) { if (!lifetime.signal.aborted) notify(String(error), true); }
+      }).catch(error => { if (!lifetime.signal.aborted) notify(String(error), true); });
+    }).catch(failed);
+  });
+}
 let sources: Flow[] = [], selectedLane = '', selectedBlock = '', selectedSample = samples[0].id;
 let filter = 'all', zoom = 1, busy = true, selectedAction = '', selectedRequest = -1;
 let view: 'flows' | 'segments' = 'flows', selectedSegment = -1, previewBusy = false, previewVersion = 0, workspaceVersion = 0;
@@ -70,8 +106,8 @@ function controls() {
   if (resetting) { busy = true; $('runtime-status').textContent = 'Resetting Playpen...'; return; }
   if (!busy && store) setText($('runtime-status'), 'Browser store ready');
   const disable = (id: string, value: boolean) => { const element = $<HTMLButtonElement>(id); if (element) element.disabled = value; };
-  disable('save-draft', busy || libraryBusy || !draft); disable('discard-draft', busy || libraryBusy || !draft);
-  $('draft-status').textContent = draft ? draftError ? 'Unsaved changes · local storage failed' : draftPending ? 'Unsaved changes · storing locally…' : 'Unsaved changes · stored locally' : 'All changes saved';
+  disable('save-draft', busy || libraryBusy || !draftWritable || !draft); disable('discard-draft', busy || libraryBusy || !draftWritable || !draft);
+  $('draft-status').textContent = workspace && !draftWritable ? 'Read only · open in another tab' : draft ? draftError ? 'Unsaved changes · local storage failed' : draftPending ? 'Unsaved changes · storing locally…' : 'Unsaved changes · stored locally' : 'All changes saved';
   const savedMedia = publishedWorkspace?.lanes.some(lane => lane.blocks.length);
   const draftMedia = draft?.workspace.lanes.some(lane => lane.blocks.length);
   $('preview-caption').textContent = draft ? 'Preview shows the saved arrangement. Save to preview your edits.'
@@ -82,14 +118,14 @@ function controls() {
   $('preview-empty').querySelector('p')!.textContent = draftMedia ? 'Save your arrangement to preview these clips.' : 'Add a flow, then place a sample on its timeline.';
   disable('rename-source', busy || libraryBusy || !!draft || !workspace);
   disable('empty-create', busy || libraryBusy);
-  for (const id of ['add-video', 'add-audio']) disable(id, busy || libraryBusy || !workspace);
+  for (const id of ['add-video', 'add-audio']) disable(id, busy || libraryBusy || !draftWritable || !workspace);
   for (const id of ['import-media', 'media-file']) disable(id, !libraryReady || libraryBusy);
   $('library-section').setAttribute('aria-busy', String(libraryBusy));
   $('import-cancel').hidden = !importing;
   document.querySelectorAll<HTMLButtonElement>('[data-remove-sample]').forEach(button => button.disabled = busy || libraryBusy);
-  disable('add-sample', busy || libraryBusy || !workspace?.lanes.some(l => l.id === selectedLane && l.kind === library.find(s => s.id === selectedSample)?.kind));
+  disable('add-sample', busy || libraryBusy || !draftWritable || !workspace?.lanes.some(l => l.id === selectedLane && l.kind === library.find(s => s.id === selectedSample)?.kind));
   for (const id of ['preview-video', 'preview-audio', 'block-target', 'block-start']) ($<HTMLSelectElement>(id)).disabled = busy || !workspace;
-  disable('new-source', busy || libraryBusy); disable('sources', busy || libraryBusy || !workspace);
+  disable('new-source', busy || libraryBusy); disable('sources', busy || libraryBusy || !sources.length);
   disable('read-range', busy || !workspace || !sourceEnd(publishedWorkspace)); disable('play-range', busy || previewBusy || !rangeReady);
   for (const id of ['seek-button', 'seek-time']) disable(id, busy || previewBusy || !workspace);
   for (const id of ['range-start', 'range-end']) disable(id, busy || !workspace);
@@ -97,7 +133,7 @@ function controls() {
   disable('follow-requests', !store?.actions.length);
   disable('storage-refresh', busy || checkingStorage || !mediaObjects().length);
   disable('step-through', busy); disable('asap', busy);
-  disable('move-block', busy || libraryBusy); disable('remove-block', busy || libraryBusy);
+  disable('move-block', busy || libraryBusy || !draftWritable); disable('remove-block', busy || libraryBusy || !draftWritable);
   document.body.classList.toggle('busy', busy);
 }
 function waveform(sample: Sample, label = '') {
@@ -289,6 +325,7 @@ async function refresh(rootId = workspace?.root.id, afterTerminalWrite = false) 
   rangeReady = false; $('range-result').textContent = 'Queries the selected saved preview flows, then reads each matching object once.'; controls();
   sources = await store.sources();
   if (afterTerminalWrite && !draft && !sources.some(source => source.id === rootId)) rootId = sources[0]?.id;
+  await watchDraft(rootId);
   publishedWorkspace = rootId ? await store.load(rootId) : undefined;
   if (!afterTerminalWrite || !draft || draft.workspace.root.id !== rootId) draft = rootId ? await libraryDraft(draftKey(rootId)) : undefined;
   workspace = draft?.workspace ?? publishedWorkspace;
@@ -301,6 +338,19 @@ async function refresh(rootId = workspace?.root.id, afterTerminalWrite = false) 
   renderSources(); renderTimeline();
   void updatePreview();
   void verifyStorage();
+}
+async function openSource(id?: string) {
+  try {
+    if (id) await store.recover(id);
+    await refresh(id);
+  } catch (error) {
+    await watchDraft(undefined);
+    draft = undefined; publishedWorkspace = undefined; workspace = undefined;
+    workspaceVersion++; selectedBlock = ''; selectedLane = '';
+    renderSources(); renderTimeline(); void updatePreview();
+    $<HTMLSelectElement>('sources').selectedIndex = -1;
+    notify(`Could not open source: ${(error as Error).message}`, true, () => void withBusy(() => openSource(id)));
+  }
 }
 async function run(name: string, work: (action: ActionRecord) => Promise<void>, action?: ActionRecord) {
   if (busy) return;
@@ -317,7 +367,7 @@ async function run(name: string, work: (action: ActionRecord) => Promise<void>, 
   });
 }
 function changeDraft(next: Workspace, name: string) {
-  if (!publishedWorkspace || resetting || reloadRequired) return;
+  if (!draftWritable || !publishedWorkspace || resetting || reloadRequired) return;
   const same = next.lanes.length === publishedWorkspace.lanes.length && next.lanes.every((lane, i) => lane.id === publishedWorkspace!.lanes[i].id && laneSnapshot(lane) === laneSnapshot(publishedWorkspace!.lanes[i]));
   draft = same ? undefined : { base: draft?.base ?? structuredClone(publishedWorkspace), workspace: next };
   workspace = next;
@@ -332,7 +382,7 @@ function changeDraft(next: Workspace, name: string) {
   rangeReady = false; renderTimeline();
 }
 async function saveDraft(stepThrough = $<HTMLInputElement>('step-through').checked): Promise<boolean> {
-  if (busy || libraryBusy || !draft) return !draft;
+  if (busy || libraryBusy || !draftWritable || !draft) return !draft;
   $<HTMLDetailsElement>('storage').open = true;
   const saving = structuredClone(draft);
   retryAction = undefined; $('notice').hidden = true; preview.pause();
@@ -355,7 +405,7 @@ async function saveDraft(stepThrough = $<HTMLInputElement>('step-through').check
   });
 }
 async function discardDraft() {
-  if (busy || !draft) return;
+  if (busy || !draftWritable || !draft) return;
   await withBusy(async () => {
     try {
       await draftWrites; await saveLibraryDraft(draftKey(draft!.base.root.id), undefined, draftAbort.signal);
@@ -365,7 +415,7 @@ async function discardDraft() {
   });
 }
 async function leaveDraft(): Promise<boolean> {
-  if (!draft) return true;
+  if (!draft || !draftWritable) return true;
   const dialog = $<HTMLDialogElement>('draft-dialog');
   dialog.returnValue = ''; dialog.showModal();
   const choice = await new Promise<string>(resolve => dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true }));
@@ -541,8 +591,8 @@ function wire() {
     retryAction = undefined; $('notice').hidden = true;
     await withBusy(async () => {
       selectedLane = ''; selectedBlock = '';
-      try { await store.action('Open source', async a => { await store.recover(id, a); workspace = await store.load(id, a); }); if (resetting) return; localStorage.setItem(dataKey, id); await refresh(id); }
-      catch (error) { notify((error as Error).message, true); }
+      await openSource(id);
+      if (workspace?.root.id === id) localStorage.setItem(dataKey, id);
     });
   };
   for (const kind of ['video', 'audio'] as const) $(`preview-${kind}`).onchange = async () => {
@@ -1079,19 +1129,18 @@ try {
   window.addEventListener('tasm-reset', () => {
     if (resetting) return;
     window.tasmStartup.done();
-    resetting = true; busy = true; clearTimeout(noticeTimer); $('notice').hidden = true;
+    viewedDraft?.lifetime.abort(); resetting = true; busy = true; clearTimeout(noticeTimer); $('notice').hidden = true;
     document.querySelector<HTMLElement>('.app-header')!.inert = true;
     document.querySelector<HTMLElement>('.app-layout')!.inert = true;
     controls(); importing?.abort(); draftAbort.abort(); preview.destroy();
     void store.stop();
   });
-  window.addEventListener('pagehide', event => { if (!event.persisted) { void store.stop(); preview.destroy(); client.close(); } });
+  window.addEventListener('pagehide', event => { if (!event.persisted) { viewedDraft?.lifetime.abort(); void store.stop(); preview.destroy(); client.close(); } });
   // Library access also waits for the runtime lease, so a new tab cannot import during reset.
   await window.tasmStartup.wait(openLibrary(), 'Loading sample library');
   sources = await window.tasmStartup.wait(store.sources(), 'Loading saved workspace');
   const selected = sources.find(s => s.id === localStorage.getItem(dataKey)) ?? sources[0];
-  if (selected) await window.tasmStartup.wait(store.recover(selected.id));
-  await window.tasmStartup.wait(refresh(selected?.id));
+  await window.tasmStartup.wait(openSource(selected?.id));
   if (!resetting) {
     busy = false; controls(); $('runtime-status').textContent = 'Browser store ready'; document.body.dataset.ready = 'true';
     $<HTMLButtonElement>('terminal-run').disabled = false;

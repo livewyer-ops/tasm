@@ -245,3 +245,13 @@ test('a live shared worker can reopen its store after startup fails', async ({ p
   }, media);
   expect(result).toEqual({ status: 200, text: 'keep these media bytes' });
 });
+
+test('API navigation uses a window with an open store', async ({ page, context, site }) => {
+  await page.goto(site.url + '/'); await ready(page);
+  const consumer = await context.newPage();
+  const service = await consumer.goto(site.url + '/api/service');
+  expect(service?.status()).toBe(200);
+  await page.close();
+  const unavailable = await consumer.reload();
+  expect(unavailable?.status()).toBe(503);
+});

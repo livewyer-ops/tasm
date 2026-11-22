@@ -117,6 +117,10 @@ export function validateWorkspace(workspace: Workspace) {
     }
   }
 }
+function sameCollection(left: Flow['flow_collection'], right: Flow['flow_collection']): boolean {
+  return (left?.length ?? 0) === (right?.length ?? 0) &&
+    (left ?? []).every((member, i) => member.id === right![i].id && member.role === right![i].role);
+}
 export const laneSnapshot = (lane: Lane) => JSON.stringify({ kind: lane.kind, label: lane.flow.label, blocks: lane.blocks }, (key, value) => key === 'get_urls' ? undefined : typeof value === 'bigint' ? value.toString() : value);
 export function addDraftLane(workspace: Workspace, kind: Kind, label: string): Workspace {
   const technical = samples.find(s => s.kind === kind)!.technical;
@@ -396,7 +400,7 @@ export class WorkspaceStore extends EventTarget {
         try { await this.request(action, `flows/${root.id}/flow_collection`, 'PUT', collection); }
         catch (error) {
           const current = await this.request<Flow>(action, `flows/${root.id}`);
-          if (JSON.stringify(current.flow_collection) !== JSON.stringify(collection)) throw error;
+          if (!sameCollection(current.flow_collection, collection)) throw error;
         }
         change.state = 'published'; this.changed();
       } catch (error) { change.state = 'failed'; this.changed(); throw error;
@@ -438,7 +442,8 @@ export class WorkspaceStore extends EventTarget {
     for (const flow of flows) if (!root.flow_collection?.some(m => m.id === flow.id)) await this.retire(action, flow.id);
   }
   async recover(rootId: string, action?: ActionRecord) {
-    await this.locked(rootId, async () => {
+    await navigator.locks.request(`tasm-playpen:${this.apiUrl}:${rootId}`, { ifAvailable: true }, async lock => {
+      if (!lock) return;
       const root = await this.request<Flow>(action, `flows/${rootId}`), members = new Set(root.flow_collection?.map(m => m.id));
       for (const flow of await this.list<Flow>(action, `flows?tag.tasm.playpen.root=${rootId}&limit=100`)) if (!members.has(flow.id) && !flow.collected_by) await this.retire(action, flow.id);
     });
@@ -475,7 +480,7 @@ export class WorkspaceStore extends EventTarget {
     if (draft.base.root.id !== draft.workspace.root.id) throw new Error('Draft belongs to a different source.');
     return this.locked(draft.base.root.id, async () => {
       const current = await this.load(draft.base.root.id, action);
-      if (JSON.stringify(current.root.flow_collection) !== JSON.stringify(draft.base.root.flow_collection) ||
+      if (!sameCollection(current.root.flow_collection, draft.base.root.flow_collection) ||
           current.lanes.some(l => { const old = draft.base.lanes.find(b => b.id === l.id); return !old || laneSnapshot(l) !== laneSnapshot(old); })) {
         throw new Error('The saved source changed in another tab. Your draft is retained. Discard it and reload before editing the latest source.');
       }
@@ -604,7 +609,7 @@ export class WorkspaceStore extends EventTarget {
           let root: Flow;
           try { root = await this.request<Flow>(action, `flows/${workspace.root.id}`); }
           catch (readError) { publicationUnknown = true; throw readError; }
-          session.published = JSON.stringify(root.flow_collection) === JSON.stringify(collection);
+          session.published = sameCollection(root.flow_collection, collection);
           if (!session.published) throw error;
         }
         for (const flow of action.flows ?? []) if (staged.some(s => s.id === flow.newId)) flow.state = 'published';
