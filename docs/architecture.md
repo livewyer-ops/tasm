@@ -9,6 +9,8 @@ Both runtimes compile the same Rust handlers, domain rules and background jobs a
 | Media | Origin-private file system (OPFS) | Private R2 buckets with signed object URLs |
 | Jobs | A shared worker runs queued work while a client is open | Durable Object alarms |
 
+Each runtime creates its store on first use. When it opens an existing store, it applies pending schema updates in one transaction before serving requests. If an update fails, the store keeps its previous schema and data.
+
 Shared Rust code lives in `core/rust/`. The host implementations live in `core/browser/` and `core/cloudflare/`. Demo and Playpen are separate static sites in `apps/` and use the browser SDK.
 
 ## Browser access and storage
@@ -27,7 +29,7 @@ Cloudflare authenticates API clients with HTTP Basic or OAuth Bearer credentials
 
 | Operation | Client convention |
 |---|---|
-| Allocate Object storage | Put `presigned` and the optional init Object `content_type` in the JSON request body. The released request schema uses the underscore spelling. Cloudflare defaults to signed URLs. |
+| Allocate Object storage | Put `presigned` and the optional init Object `content_type` in the JSON request body. Cloudflare defaults to signed URLs. |
 | Create or read a Profile | Use `/service/profiles` and `/service/profiles/{profileId}`. |
 | Register an external Object | Set its sample timing on first registration. When reusing an Object, the new Segment must fit inside the stored Object time range after applying `ts_offset`. |
 | Write a Flow collection | Each child Flow ID occurs once in the ordered collection. Use its optional `role` for a human-readable label. |

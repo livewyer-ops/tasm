@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { initSync, Tasm } from "../../pkg/cloudflare/tasm_cloudflare.js";
 import module from "../../pkg/cloudflare/tasm_cloudflare_bg.wasm";
 import openapi from "../../pkg/cloudflare/openapi.json";
-import schema from "./schema.sql";
+import { migrateSchema } from "./migrations.ts";
 import uuidSchema from "../../contracts/tams/api/schemas/uuid.json";
 import type { Bindings } from "./worker.ts";
 import { presign } from "./signing.ts";
@@ -59,25 +59,7 @@ export class WasmStore extends DurableObject<Bindings> {
     if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/") throw new Error("Invalid R2 endpoint");
     this.#backends = new Map(entries.map(([binding, b]) => [b.storage_id, { ...b, bucket: env[binding as keyof Bindings] as R2Bucket }]));
     ctx.storage.transactionSync(() => {
-      ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS wasm_schema_versions (version INTEGER PRIMARY KEY)");
-      if (!ctx.storage.sql.exec("SELECT version FROM wasm_schema_versions WHERE version=2").toArray().length) {
-        ctx.storage.sql.exec(schema);
-        if (ctx.storage.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='service_metadata'").toArray().length) {
-          ctx.storage.sql.exec("INSERT OR IGNORE INTO tamoss_service_metadata(id,name,description) SELECT id,name,description FROM service_metadata");
-        }
-        ctx.storage.sql.exec("INSERT INTO wasm_schema_versions VALUES (2)");
-      }
-      if (!ctx.storage.sql.exec("SELECT version FROM wasm_schema_versions WHERE version=3").toArray().length) {
-        // Version 3 adds tamoss_flow_collection_members; fill it from existing collections.
-        ctx.storage.sql.exec(schema);
-        ctx.storage.sql.exec("DELETE FROM tamoss_flow_collection_members");
-        ctx.storage.sql.exec("INSERT INTO tamoss_flow_collection_members(parent_id,position,child_id) SELECT flow.id, member.key, member.value FROM tamoss_flows AS flow, json_each(flow.flow_collection_ids) AS member");
-        ctx.storage.sql.exec("INSERT INTO wasm_schema_versions VALUES (3)");
-      }
-      if (!ctx.storage.sql.exec("SELECT version FROM wasm_schema_versions WHERE version=4").toArray().length) {
-        ctx.storage.sql.exec(schema);
-        ctx.storage.sql.exec("INSERT INTO wasm_schema_versions VALUES (4)");
-      }
+      migrateSchema(ctx.storage.sql);
       for (const old of ctx.storage.sql.exec<{ id: string; bucket_name: string; endpoint_url: string }>("SELECT id,bucket_name,endpoint_url FROM tamoss_storage_backends").toArray()) {
         if (this.#backends.get(old.id)?.bucket_name !== old.bucket_name || old.endpoint_url !== endpoint.origin) throw new Error("Existing storage identities cannot be removed or remapped");
       }

@@ -144,8 +144,14 @@ pub async fn next_unfinished_cleanup(
     pool: &Pool,
     parent: Uuid,
 ) -> Result<Option<(String, Option<String>)>, DbError> {
-    let row = dialect::query("SELECT status,CAST(claim_expires_at AS TEXT) FROM tamoss_object_cleanups WHERE delete_request_id=$1 AND status<>'done' ORDER BY claim_expires_at NULLS FIRST LIMIT 1")
-        .bind(parent).fetch_optional(pool).await?;
+    let row = dialect::query(
+        "SELECT status, CAST(claim_expires_at AS TEXT) AS deadline
+         FROM tamoss_object_cleanups WHERE delete_request_id=$1 AND status<>'done'
+         ORDER BY claim_expires_at NULLS FIRST LIMIT 1",
+    )
+    .bind(parent)
+    .fetch_optional(pool)
+    .await?;
     row.map(|row| Ok((row.try_get(0)?, row.try_get(1)?)))
         .transpose()
 }

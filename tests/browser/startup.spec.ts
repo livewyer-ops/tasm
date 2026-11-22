@@ -4,10 +4,10 @@ import { readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
 import type { Page } from '@playwright/test';
 
-type Site = { url: string; demoURL: string; release: string; failure: string; failedWasmLoads: number };
+type Site = { url: string; demoURL: string; release: string; previousDist?: string; failure: string; failedWasmLoads: number };
 const test = base.extend<{ site: Site }>({
   site: async ({}, use) => {
-    const site = { url: '', demoURL: '', release: 'A', failure: '', failedWasmLoads: 0 };
+    const site: Site = { url: '', demoURL: '', release: 'A', failure: '', failedWasmLoads: 0 };
     const types: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm', '.json': 'application/json', '.svg': 'image/svg+xml', '.otf': 'font/otf', '.ttf': 'font/ttf', '.jpg': 'image/jpeg', '.png': 'image/png', '.ts': 'video/mp2t' };
     const servers = [];
     for (const app of ['playpen', 'demo']) {
@@ -24,7 +24,8 @@ const test = base.extend<{ site: Site }>({
           if ((site.failure === 'asset' && path.endsWith('/samples/black.ts')) ||
               (site.failure === 'module' && path.endsWith('/playpen.js'))) { response.writeHead(503).end(); return; }
           const file = path.slice(1) || 'index.html';
-          let body = await readFile(resolve(process.env.TASM_DIST ?? 'dist', app, file));
+          const previous = site.release === 'A' ? site.previousDist : undefined;
+          let body = await readFile(resolve(previous ?? process.env.TASM_DIST ?? 'dist', app, file));
           if (file === 'service-worker.js') {
             const changed = body.toString().replace(/(var assetCache = [^;]+);/, `$1 + ":test-${site.release}";`);
             expect(changed).not.toBe(body.toString());
@@ -90,6 +91,7 @@ test('startup waits when registration briefly exposes no worker', { tag: '@pr' }
 
 test('ready updates respect other tabs, apply on refresh and preserve offline media', { tag: '@pr' }, async ({ page, context, site, browserName }) => {
   test.setTimeout(browserName === 'webkit' ? 240000 : 90000);
+  site.previousDist = process.env.TASM_PREVIOUS_DIST;
   await page.goto(site.url + '/'); await ready(page);
   await page.locator('#new-source').click(); await page.locator('#entity-name').fill('Saved source'); await page.locator('#dialog-submit').click();
   await expect(page.locator('#source-title')).toHaveText('Saved source', { timeout: 30000 });

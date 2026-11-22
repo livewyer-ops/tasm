@@ -286,3 +286,11 @@ ON tamoss_object_copies(status, claim_expires_at);
 CREATE INDEX IF NOT EXISTS idx_tamoss_object_copies_claimable
 ON tamoss_object_copies(created_at, id)
 WHERE status IN ('pending', 'started', 'error');
+
+CREATE TABLE tasm_schema (version integer PRIMARY KEY);
+INSERT INTO tasm_schema VALUES (1);
+CREATE TABLE tasm_files (
+    backend uuid NOT NULL, object_id text NOT NULL, name text NOT NULL UNIQUE,
+    incarnation text NOT NULL, size bigint NOT NULL, content_type text NOT NULL,
+    checksum text NOT NULL, md5 text NOT NULL, PRIMARY KEY(backend, object_id)
+);

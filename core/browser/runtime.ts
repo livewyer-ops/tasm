@@ -3,11 +3,11 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { md5 } from '@noble/hashes/legacy.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import init, { Tasm } from '../../pkg/browser/tasm.js';
-import schema from './migrations/001.sql';
+import { migrateSchema } from './migrations';
 import operations from '../../pkg/operations.json';
 import * as validators from '../../pkg/validators.js';
 import type { TasmOptions } from './public.d.ts';
-import { SqlHost, createSchema, pgliteParsers } from './sql-host';
+import { SqlHost, pgliteParsers } from './sql-host';
 
 export interface BrowserRequest { method: string; url: string; headers: Record<string, string> }
 export interface BrowserResponse { status: number; headers: Record<string, string>; body: string | Blob | null }
@@ -72,15 +72,9 @@ export class Runtime {
     this.db = await PGlite.create({ dataDir: `idb://tasm-${encodeURIComponent(new URL(this.base).pathname)}`, relaxedDurability: false,
       parsers: pgliteParsers,
       pgliteWasmModule, initdbWasmModule, fsBundle });
+    await migrateSchema(this.db, backends);
     const root = await navigator.storage.getDirectory();
     this.files = await root.getDirectoryHandle(`tasm-${encodeURIComponent(new URL(this.base).pathname)}`, { create: true });
-    const found = await this.db.query<{ present: boolean }>("SELECT to_regclass('tasm_schema') IS NOT NULL AS present");
-    if (found.rows[0].present) {
-      const version = await this.db.query<{ version: number }>('SELECT version FROM tasm_schema');
-      if (version.rows.length !== 1 || version.rows[0].version !== 1) throw new Error('Unsupported TASM database version.');
-    } else {
-      await createSchema(this.db, schema, backends);
-    }
     // Every OPFS filename is generated internally. Unpublished files can be
     // removed after a crash because their SQL publication never committed.
     const names = new Set((await this.db.query<{ name: string }>('SELECT name FROM tasm_files')).rows.map(row => row.name));

@@ -10,7 +10,8 @@ import { readFileSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
 import init, { Tasm } from '../pkg/browser/tasm.js';
 import schema from '../core/browser/migrations/001.sql';
-import { SqlHost, createSchema, pgliteParsers } from '../core/browser/sql-host';
+import { migrateSchema } from '../core/browser/migrations';
+import { SqlHost, pgliteParsers } from '../core/browser/sql-host';
 
 const backend = '81d13d58-5041-4580-91f9-38ce03daef19';
 const origin = 'http://tasm.test';
@@ -22,7 +23,7 @@ type Response = { status: number; headers: Record<string, string>; body: string 
 
 async function store() {
   const db = new PGlite({ parsers: pgliteParsers });
-  await createSchema(db, schema, [{ id: backend, label: 'Browser storage' }]);
+  await migrateSchema(db, [{ id: backend, label: 'Browser storage' }]);
   const sql = new SqlHost(db);
   // In-memory stand-in for OPFS: bytes are never read, only their metadata.
   const files = new Map<string, Stored>();
@@ -73,6 +74,46 @@ async function store() {
 }
 
 await init({ module_or_path: readFileSync('pkg/browser/tasm_bg.wasm') });
+
+test('a populated browser v1 store upgrades atomically and rejects newer versions', async t => {
+  const original = new PGlite();
+  await original.exec(schema);
+  await original.query(`INSERT INTO tamoss_storage_backends(id,label,provider,region,store_product,default_storage,record)
+    VALUES ($1,'Original backend','browser','local','tasm-opfs',true,'{}')`, [backend]);
+  const flow = crypto.randomUUID(), job = crypto.randomUUID();
+  await original.query("INSERT INTO tamoss_flows(id,record,metadata_updated,created) VALUES($1,'{}',NOW(),NOW())", [flow]);
+  await original.query("INSERT INTO tamoss_segments(flow_id,object_id,timerange,timerange_start,timerange_end,record,created) VALUES($1,'clip','[0:0_1:0)',0,1000000000,'{}',NOW())", [flow]);
+  await original.query("INSERT INTO tamoss_media_objects(id,first_referenced_by_flow,referenced_by_flows,record) VALUES('clip',$1,ARRAY[($1::uuid)::text],'{}')", [flow]);
+  await original.query("INSERT INTO tasm_files VALUES($1,'clip','clip.bin','original',188,'video/mp2t','sha256','md5')", [backend]);
+  await original.query("INSERT INTO tamoss_object_cleanups(id,object_id,storage_backend_id,status,record,updated) VALUES($1,'clip',$2,'pending','{}',NOW())", [job, backend]);
+  const snapshot = await original.dumpDataDir();
+  await original.close();
+
+  const db = new PGlite({ loadDataDir: snapshot });
+  t.after(() => db.close());
+  const open = () => migrateSchema(db, [{ id: backend, label: 'Changed default' }]);
+  // Fail the version write after the DDL so both must roll back together.
+  await db.exec(`CREATE FUNCTION fail_version() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'interrupted migration'; END $$ LANGUAGE plpgsql;
+    CREATE TRIGGER interrupt BEFORE UPDATE ON tasm_schema FOR EACH ROW EXECUTE FUNCTION fail_version()`);
+  await assert.rejects(open(), /interrupted migration/);
+  const state = () => db.query("SELECT version,to_regclass('idx_tamoss_unfinished_cleanup') IS NOT NULL AS indexed FROM tasm_schema").then(r => r.rows);
+  assert.deepEqual(await state(), [{ version: 1, indexed: false }]);
+  await db.exec("DROP TRIGGER interrupt ON tasm_schema");
+  await open();
+  await open();
+  assert.deepEqual(await state(), [{ version: 2, indexed: true }]);
+  const saved = await db.query(`SELECT s.flow_id, s.object_id, s.timerange, f.name, b.label, q.id, q.status
+    FROM tamoss_segments s JOIN tamoss_media_objects m ON m.id=s.object_id AND m.first_referenced_by_flow=s.flow_id
+    JOIN tasm_files f ON f.object_id=m.id JOIN tamoss_storage_backends b ON b.id=f.backend
+    JOIN tamoss_object_cleanups q ON q.object_id=m.id`);
+  assert.deepEqual(saved.rows, [{ flow_id: flow, object_id: 'clip', timerange: '[0:0_1:0)', name: 'clip.bin', label: 'Original backend', id: job, status: 'pending' }]);
+
+  await db.exec("UPDATE tasm_schema SET version=99");
+  await assert.rejects(open(), /Unsupported TASM database version/);
+  assert.deepEqual(await state(), [{ version: 99, indexed: true }]);
+  await db.exec('DROP TABLE tasm_schema');
+  await assert.rejects(open(), /existing tables have no revision/);
+});
 
 test('one poll shares its child cleanup budget across parents and resumes after restart', async () => {
   const { db, core, restart, returned } = await store();
