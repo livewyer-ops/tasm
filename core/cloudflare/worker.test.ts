@@ -15,11 +15,12 @@ import type { Bindings } from "./worker.ts";
 const username = "wasm-test";
 const password = "local-test-password-at-least-32-characters";
 const authorization = "Basic " + btoa(`${username}:${password}`);
-const server = createTestHarness({ workers: [{
+const installation = { workers: [{
   configPath: apiConfigPath,
   secrets: { BASIC_AUTH_USERNAME: username, BASIC_AUTH_PASSWORD: password, R2_ACCESS_KEY_ID: "test-key", R2_SECRET_ACCESS_KEY: "test-secret" },
   vars: { API_CORS: '{"origins":["https://client.example"]}', WEBHOOK_ALLOWED_HOSTS: '["hooks.example.com","*.example.net"]' },
-}] });
+}] };
+const server = createTestHarness(installation);
 const api = server.getWorker<Bindings>("cf-tams-wasm");
 const origin = "https://wasm.example";
 type RequestOptions = NonNullable<Parameters<typeof api.fetch>[1]>;
@@ -128,6 +129,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     await sql.exec("DROP TRIGGER tamoss_flow_members_delete");
     await sql.exec("DROP TABLE tamoss_flow_collection_members");
     await sql.exec("DROP INDEX idx_tamoss_unfinished_cleanup");
+    await sql.exec("DROP INDEX wasm_media_allocation");
     await sql.exec("DELETE FROM wasm_schema_versions WHERE version>=3");
     const dangling = crypto.randomUUID();
     await sql.exec("UPDATE tamoss_flows SET flow_collection_ids=? WHERE id=?", JSON.stringify([a.id, b.id, a.id, dangling]), parent.id);
@@ -290,6 +292,21 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     const listed = await request(`/flows/${id}/segments?presigned=true`);
     assert.equal(listed.status, 200, await listed.clone().text());
     assert.equal((await listed.json() as { timerange: string }[])[0].timerange, segment.timerange);
+    const sql = await api.getDurableObjectStorage("STORE", { name: env.STORE_ID });
+    await sql.exec("UPDATE tamoss_media_objects SET access_expires_at=0 WHERE id=?", objectId);
+    await sql.exec("CREATE TABLE observed_lease(deadline INTEGER)");
+    await sql.exec("CREATE TRIGGER count_leases AFTER UPDATE OF access_expires_at ON tamoss_media_objects BEGIN INSERT INTO observed_lease VALUES(NEW.access_expires_at); END");
+    const [links] = await (await request(`/flows/${id}/segments`)).json() as { get_urls: { presigned: boolean }[] }[];
+    assert.deepEqual(links.get_urls.map(link => link.presigned), [true, false]);
+    const leases = await sql.exec<{ deadline: number }>("SELECT deadline FROM observed_lease");
+    assert.equal(leases.length, 1);
+    assert.ok(leases[0].deadline >= Math.floor(Date.now()/1000) + 3630);
+    // A future lease already covers another GET, even across a minute boundary.
+    await sql.exec("UPDATE tamoss_media_objects SET access_expires_at=access_expires_at+60 WHERE id=?", objectId);
+    await request(path);
+    assert.equal((await sql.exec("SELECT deadline FROM observed_lease")).length, 2);
+    await sql.exec("DROP TRIGGER count_leases");
+    await sql.exec("DROP TABLE observed_lease");
     const outside = await (await request(`/flows/${id}?include_timerange=true&timerange=[20:0_21:0)`)).json() as { timerange: string };
     assert.equal(outside.timerange, "()");
     assert.equal((await request(`/flows/${id}/segments?timerange=[10000000000:2_10000000000:3)`, { method: "DELETE" })).status, 204);
@@ -299,7 +316,6 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     const copied = await request(path + "/instances", { method: "POST", body: JSON.stringify({ storage_id: secondary }) });
     assert.equal(copied.status, 201, await copied.text());
     assert.equal((await request(path + "/instances", { method: "POST", body: JSON.stringify({ storage_id: secondary }) })).status, 201);
-    const sql = await api.getDurableObjectStorage("STORE", { name: env.STORE_ID });
     assert.deepEqual(await sql.exec("SELECT COUNT(*) AS n FROM tamoss_object_copies WHERE object_id=?", objectId), [{ n: 1 }]);
     for (let attempt = 0; attempt < 50 && !(await env.MEDIA_SECONDARY.head(key)); attempt++) await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(await (await env.MEDIA_SECONDARY.get(key))?.text(), "media bytes");
@@ -655,6 +671,21 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
   });
 
   await t.test("Webhook segment snapshots use the endpoint's URL filters and Object timeranges", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tasm-webhook-"));
+    await cp(dirname(apiConfigPath), directory, { recursive: true, filter: path => !path.includes("/.wrangler") });
+    const main = join(directory, "receiver.mjs");
+    await writeFile(main, `
+      import { WasmStore as Store } from "./worker.mjs";
+      export { default } from "./worker.mjs";
+      const received = new Map();
+      globalThis.fetch = async (url, options) => {
+        if (url !== "https://hooks.example.com/receive") throw new Error("Unknown test receiver");
+        received.set(options.headers.get("X-Tasm-Delivery-Id"), JSON.parse(options.body));
+        return new Response(null, { status: 204 });
+      };
+      export class WasmStore extends Store { received(id) { return received.get(id); } pollNow() { return super.alarm(); } }
+    `);
+    await server.update({ workers: [{ ...installation.workers[0], configPath: undefined, config: { ...apiConfig, main, base_dir: directory, no_bundle: false } }] });
     const env = await api.getEnv();
     const sql = await api.getDurableObjectStorage("STORE", { name: env.STORE_ID });
     // Keep deliveries queued so this test can inspect their snapshots without contacting a receiver.
@@ -683,8 +714,16 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
         const timerange = `[${index + 20}:0_${index + 21}:0)`;
         const added = await request(`/flows/${id}/segments`, { method: "POST", body: JSON.stringify({ object_id: objectId, init_object_id: initId, timerange, ts_offset: "10:0" }) });
         assert.equal(added.status, 201, await added.text());
-        const [queued] = await sql.exec<{ record: string }>("SELECT record FROM tamoss_webhook_deliveries WHERE webhook_id=?", webhookId);
-        const delivered = JSON.parse(queued.record).payload.event.segments[0];
+        const [queued] = await sql.exec<{ id: string; record: string }>("SELECT id,record FROM tamoss_webhook_deliveries WHERE webhook_id=?", webhookId);
+        const snapshot = JSON.parse(queued.record).payload.event;
+        assert.equal(snapshot._tasm_deferred_urls, true);
+        assert.doesNotMatch(queued.record, /X-Amz-Signature/);
+        await sql.exec("UPDATE tamoss_webhook_deliveries SET next_attempt_at=NULL WHERE id=?", queued.id);
+        const store = env.STORE.getByName(env.STORE_ID) as unknown as { pollNow(): Promise<void>; received(id: string): Promise<any> };
+        await store.pollNow();
+        const event = (await store.received(queued.id)).event;
+        assert.equal(event._tasm_deferred_urls, undefined);
+        const delivered = event.segments[0];
         const query = new URLSearchParams({ object_id: objectId });
         for (const [key, value] of Object.entries(transform)) if (key !== "accept_storage_ids" || !Array.isArray(value) || value.length) query.set(key, Array.isArray(value) ? value.join(",") : String(value));
         const expected = (await (await request(`/flows/${id}/segments?${query}`)).json() as Record<string, unknown>[])[0];
@@ -697,12 +736,23 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
           assert.ok(delivered.init_object.get_urls.length);
         }
         for (const url of [...delivered.get_urls, ...delivered.init_object.get_urls]) if (url.presigned) assert.equal(new URL(url.url).searchParams.get("X-Amz-Expires"), "3630");
+        if (index === 1) {
+          // Replaying an old delivery cannot grant access to replacement bytes under the same object ID.
+          await sql.exec("UPDATE tamoss_media_objects SET allocation_id=lower(hex(randomblob(16))) WHERE id=?", objectId);
+          await sql.exec("UPDATE tamoss_webhook_deliveries SET status='pending',next_attempt_at=NULL,claimed_by=NULL,claim_expires_at=NULL WHERE id=?", queued.id);
+          await store.pollNow();
+          const retried = (await store.received(queued.id)).event.segments[0];
+          assert.deepEqual(retried.get_urls, []);
+          assert.ok(retried.init_object.get_urls[0].url.includes("X-Amz-Signature"));
+        }
         assert.equal((await request(`/service/webhooks/${webhookId}`, { method: "DELETE" })).status, 204);
         webhookId = undefined;
       }
     } finally {
       if (webhookId) await request(`/service/webhooks/${webhookId}`, { method: "DELETE" });
       await sql.exec("DROP TRIGGER test_hold_webhooks");
+      await server.update(installation);
+      await rm(directory, { recursive: true, force: true });
     }
   });
 
@@ -846,7 +896,7 @@ test("a populated SQLite v4 store rolls back an interrupted upgrade and refuses 
   await sql.exec("DROP TRIGGER interrupt");
   await harness.update(() => ({ workers: [current] }));
   sql = await storage();
-  assert.deepEqual(await versions(), [2, 3, 4, 5]);
+  assert.deepEqual(await versions(), [2, 3, 4, 5, 6]);
   const env = await worker.getEnv();
   const result = JSON.parse(await env.STORE.getByName(prototype.name).request(JSON.stringify({ method: "GET", url: origin + "/service", headers: {}, body: null, actor: { subject: username, scopes: ["tams-api/admin"] } })));
   assert.equal(JSON.parse(result.body).name, "Preserved prototype");
@@ -859,7 +909,7 @@ test("a populated SQLite v4 store rolls back an interrupted upgrade and refuses 
   await assert.rejects(sql.exec("SELECT 1"), /Unsupported TASM database version/);
   await harness.update(() => ({ workers: [inspect] }));
   sql = await storage();
-  assert.deepEqual(await versions(), [2, 3, 4, 5, 99]);
+  assert.deepEqual(await versions(), [2, 3, 4, 5, 6, 99]);
   assert.deepEqual(await sql.exec("SELECT label FROM tamoss_storage_backends WHERE id=?", backend), [{ label: "Future label" }]);
   assert.deepEqual(await snapshot(), before);
 });

@@ -55,6 +55,10 @@ impl Tasm {
     pub fn signed_url_lifetime_seconds(&self) -> u32 {
         domain::object::MIN_SIGNED_URL_SECONDS + domain::object::STORAGE_GRACE_SECONDS
     }
+    #[wasm_bindgen(getter, js_name = storageGraceSeconds)]
+    pub fn storage_grace_seconds(&self) -> u32 {
+        domain::object::STORAGE_GRACE_SECONDS
+    }
     pub async fn request(&self, request_json: String) -> Result<String, JsValue> {
         api::request::<Identity>(&self.router, request_json).await
     }

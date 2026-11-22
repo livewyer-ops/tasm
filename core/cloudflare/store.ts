@@ -12,6 +12,9 @@ const storageUuid = new RegExp(uuidSchema.pattern);
 
 type Backend = { storage_id: string; bucket_name: string; label: string; default_storage: boolean; tags?: Record<string, string[]> };
 type Transaction = { finish(): void; rollback(): void; promise: Promise<void> };
+type Allocation = { allocation_id: string; access_expires_at: number };
+type MediaLink = { url: string; label?: string; presigned?: boolean; _tasm_backend?: string };
+type EventObject = { object_id: string; get_urls?: MediaLink[]; init_object?: EventObject };
 type HostPayload = { sql: string; params: SqlStorageValue[]; backend: string; id: string; source: string; destination: string; allocationId: string; method: string; presigned: boolean; contentType: string; allocations: { allocation_id: string; not_before: number }[]; webhook: { url: string; api_key_name?: string; api_key_value?: string }; payload_json: string; timeout: number };
 
 function queueRetentionSeconds(value: Bindings["WORKER_QUEUE_RETENTION_SECONDS"]): number | undefined {
@@ -44,6 +47,7 @@ export class WasmStore extends DurableObject<Bindings> {
   #closing?: Promise<void>;
   readonly #lock = new Lock();
   #polling = false;
+  readonly #leases = new Map<string, number>();
 
   constructor(ctx: DurableObjectState, env: Bindings) {
     super(ctx, env);
@@ -83,8 +87,67 @@ export class WasmStore extends DurableObject<Bindings> {
     return backend;
   }
 
-  #allocation(id: string): string {
-    return this.ctx.storage.sql.exec<{ allocation_id: string }>("SELECT allocation_id FROM tamoss_media_objects WHERE id=?", id).one().allocation_id;
+  #allocation(id: string): Allocation {
+    return this.ctx.storage.sql.exec<Allocation>("SELECT allocation_id,access_expires_at FROM tamoss_media_objects WHERE id=?", id).one();
+  }
+
+  #retain(allocation: Allocation, until: number): void {
+    // Round up so repeated reads within a minute share the same persisted deadline.
+    const deadline = Math.ceil(until / 60) * 60;
+    if (deadline > (this.#leases.get(allocation.allocation_id) ?? allocation.access_expires_at)) this.#leases.set(allocation.allocation_id, deadline);
+  }
+
+  #flushLeases(): void {
+    if (!this.#leases.size) return;
+    this.ctx.storage.sql.exec(`UPDATE tamoss_media_objects SET access_expires_at=lease.value
+      FROM json_each(?) lease WHERE allocation_id=lease.key AND access_expires_at<lease.value`,
+      JSON.stringify(Object.fromEntries(this.#leases)));
+    this.#leases.clear();
+  }
+
+  async #sign(method: string, url: URL, allocation: Allocation, headers: Record<string, string> = {}): Promise<string> {
+    const now = new Date();
+    const lifetime = this.#core.signedUrlLifetimeSeconds;
+    const signed = await presign(method, url, this.env.R2_ACCESS_KEY_ID, this.env.R2_SECRET_ACCESS_KEY, lifetime, headers, now);
+    this.#retain(allocation, now.getTime() / 1000 + lifetime + this.#core.storageGraceSeconds);
+    return signed;
+  }
+
+  async #webhookBody(body: string): Promise<string> {
+    const payload = JSON.parse(body);
+    const event = payload.event;
+    if (!Array.isArray(event?.segments)) return body;
+    const legacy = !event._tasm_deferred_urls;
+    delete event._tasm_deferred_urls;
+    for (const segment of event.segments as EventObject[]) {
+      for (const object of [segment, segment.init_object]) {
+        if (!object?.get_urls) continue;
+        const links: MediaLink[] = [];
+        for (const link of object.get_urls) {
+          const backend = link._tasm_backend ? this.#backends.get(link._tasm_backend)
+            : legacy && link.presigned ? Array.from(this.#backends.values()).find(b => b.label === link.label) : undefined;
+          if (!backend) {
+            if (!link._tasm_backend) links.push(link);
+            continue;
+          }
+          const url = new URL(link.url);
+          if (legacy && (url.origin !== new URL(this.env.R2_ENDPOINT).origin || !url.searchParams.has("X-Amz-Signature") ||
+              !url.pathname.startsWith(`/${backend.bucket_name}/wasm/${this.ctx.id}/`))) { links.push(link); continue; }
+          const [allocation] = this.ctx.storage.sql.exec<Allocation>(`SELECT allocation_id,access_expires_at FROM tamoss_media_objects m
+            WHERE id=? AND json_array_length(referenced_by_flows)>0 AND EXISTS (
+              SELECT 1 FROM json_each(m.record,'$.instances') i WHERE i.value->>'controlled'=1 AND i.value->>'storage_backend_id'=?)`,
+            object.object_id, backend.storage_id).toArray();
+          if (!allocation) continue;
+          const expected = new URL(`/${backend.bucket_name}/${this.#key(allocation.allocation_id)}`, this.env.R2_ENDPOINT);
+          if (url.origin !== expected.origin || url.pathname !== expected.pathname) continue;
+          delete link._tasm_backend;
+          link.url = await this.#sign("GET", expected, allocation);
+          links.push(link);
+        }
+        object.get_urls = links;
+      }
+    }
+    return JSON.stringify(payload);
   }
 
   async #call(operation: string, payload: HostPayload): Promise<unknown> {
@@ -101,6 +164,7 @@ export class WasmStore extends DurableObject<Bindings> {
     }
     if (operation === "begin") {
       if (this.#transaction) throw new Error("Nested transaction");
+      this.#flushLeases();
       let finish!: () => void;
       let rollback!: () => void;
       let entered!: () => void;
@@ -125,21 +189,21 @@ export class WasmStore extends DurableObject<Bindings> {
     }
     if (operation === "url") {
       const backend = this.#backend(payload.backend);
-      const key = this.#key(this.#allocation(payload.id));
+      const allocation = this.#allocation(payload.id);
+      const key = this.#key(allocation.allocation_id);
+      if (payload.method === "PUT") this.#retain(allocation, Date.now() / 1000 + Number(this.#core.allocationLifetimeSeconds));
       const url = new URL(`/${backend.bucket_name}/${key}`, this.env.R2_ENDPOINT);
       if (!payload.presigned) return url.href;
       const headers: Record<string, string> = payload.method === "PUT" ? { "Content-Type": payload.contentType, "If-None-Match": "*" } : {};
-      const signed = await presign(payload.method, url, this.env.R2_ACCESS_KEY_ID, this.env.R2_SECRET_ACCESS_KEY, this.#core.signedUrlLifetimeSeconds, headers);
-      this.ctx.storage.sql.exec("UPDATE tamoss_media_objects SET access_expires_at=MAX(access_expires_at,?) WHERE id=?", Math.floor(Date.now()/1000)+3660, payload.id);
-      return signed;
+      return this.#sign(payload.method, url, allocation, headers);
     }
     if (operation === "head") {
-      const object = await this.#backend(payload.backend).bucket.head(this.#key(this.#allocation(payload.id)));
+      const object = await this.#backend(payload.backend).bucket.head(this.#key(this.#allocation(payload.id).allocation_id));
       if (!object) return null;
       return { size: object.size, contentType: object.httpMetadata?.contentType, etag: object.etag };
     }
     if (operation === "copy") {
-      if (this.#allocation(payload.id) !== payload.allocationId) throw new Error("Stale object copy");
+      if (this.#allocation(payload.id).allocation_id !== payload.allocationId) throw new Error("Stale object copy");
       const key = this.#key(payload.allocationId);
       const destination = this.#backend(payload.destination).bucket;
       this.ctx.storage.sql.exec("INSERT INTO wasm_r2_deletions VALUES(?,?,?) ON CONFLICT(backend,allocation_id) DO UPDATE SET not_before=MAX(not_before,excluded.not_before)", payload.destination, payload.allocationId, Math.floor(Date.now()/1000) + Number(this.#core.allocationLifetimeSeconds));
@@ -169,8 +233,10 @@ export class WasmStore extends DurableObject<Bindings> {
       const headers = new Headers({ "Content-Type": "application/json" });
       if (payload.webhook.api_key_name && payload.webhook.api_key_value !== undefined) headers.set(payload.webhook.api_key_name, payload.webhook.api_key_value);
       headers.set("X-Tasm-Delivery-Id", payload.id);
+      const body = await this.#webhookBody(payload.payload_json);
+      this.#flushLeases();
       const send = async () => {
-        const response = await fetch(payload.webhook.url, { method: "POST", headers, body: payload.payload_json, redirect: "manual", signal: AbortSignal.timeout(Math.min(10_000, payload.timeout*1000)) });
+        const response = await fetch(payload.webhook.url, { method: "POST", headers, body, redirect: "manual", signal: AbortSignal.timeout(Math.min(10_000, payload.timeout*1000)) });
         await response.body?.cancel();
         return { status: response.status, reason: response.statusText };
       };
@@ -188,6 +254,7 @@ export class WasmStore extends DurableObject<Bindings> {
   async #end(commit: boolean): Promise<void> {
     const transaction = this.#transaction;
     if (!transaction) { await this.#closing; return; }
+    if (commit) this.#flushLeases(); else this.#leases.clear();
     this.#transaction = undefined;
     this.#closing = transaction.promise;
     try {
@@ -201,7 +268,7 @@ export class WasmStore extends DurableObject<Bindings> {
     await this.#lock.acquire();
     try { return await action(); }
     finally {
-      try { await this.#end(false); } finally { this.#lock.release(); }
+      try { await this.#end(false); } finally { this.#leases.clear(); this.#lock.release(); }
     }
   }
 
@@ -242,6 +309,7 @@ export class WasmStore extends DurableObject<Bindings> {
     return this.#serial(async () => {
       const response = await this.#core.request(wire);
       await this.#end(false);
+      this.#flushLeases();
       await this.#schedule();
       return response;
     });

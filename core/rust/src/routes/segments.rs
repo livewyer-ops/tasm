@@ -204,6 +204,7 @@ async fn list(
                     storage_ids.as_ref(),
                     &tag_values,
                     &tag_exists,
+                    false,
                 )
                 .await?,
             );
@@ -958,6 +959,9 @@ pub(crate) async fn webhook_event(
     let pool = sqlx::Pool(connection.0.clone());
     let storage = StorageFactory::new(pool.clone());
     let mut event = event.clone();
+    if crate::storage::SIGNED_URLS {
+        event["_tasm_deferred_urls"] = Value::Bool(true);
+    }
     let segments = event["segments"]
         .as_array_mut()
         .ok_or_else(|| internal("Missing event Segments"))?;
@@ -1016,6 +1020,7 @@ pub(crate) async fn webhook_event(
                 storage_ids.as_ref(),
                 &BTreeMap::new(),
                 &BTreeMap::new(),
+                true,
             )
             .await?,
         );

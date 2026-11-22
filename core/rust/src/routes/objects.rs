@@ -190,6 +190,7 @@ async fn get_object(
             accepted_storage.as_ref(),
             &storage_tag_values,
             &storage_tag_exists,
+            false,
         )
         .await?
     };
@@ -245,6 +246,7 @@ async fn get_object(
                 accepted_storage.as_ref(),
                 &storage_tag_values,
                 &storage_tag_exists,
+            false,
             ).await?,
         }))
     } else {
@@ -283,6 +285,7 @@ pub(crate) async fn object_urls(
     accepted_storage: Option<&BTreeSet<Uuid>>,
     storage_tag_values: &BTreeMap<String, BTreeSet<String>>,
     storage_tag_exists: &BTreeMap<String, bool>,
+    webhook_snapshot: bool,
 ) -> Result<Vec<Value>, ApiError> {
     if accepted_labels.is_some_and(BTreeSet::is_empty) {
         return Ok(Vec::new());
@@ -312,33 +315,29 @@ pub(crate) async fn object_urls(
             continue;
         }
         if let Some(backend) = backend.filter(|_| instance.controlled) {
-            if presigned != Some(true) {
-                push_url(
+            for signed in [true, false] {
+                if (signed && !crate::storage::SIGNED_URLS)
+                    || presigned.is_some_and(|wanted| signed != wanted)
+                {
+                    continue;
+                }
+                let deferred = signed && webhook_snapshot;
+                let url = storage
+                    .object_url(backend, object_id, "GET", signed && !deferred, None)
+                    .await
+                    .map_err(internal)?;
+                if let Some(entry) = push_url(
                     &mut result,
                     &mut seen,
-                    storage
-                        .object_url(backend, object_id, "GET", false, None)
-                        .await
-                        .map_err(internal)?,
+                    url,
                     label,
-                    false,
+                    signed,
                     Some(backend),
                     verbose,
-                );
-            }
-            if crate::storage::SIGNED_URLS && presigned != Some(false) {
-                push_url(
-                    &mut result,
-                    &mut seen,
-                    storage
-                        .object_url(backend, object_id, "GET", true, None)
-                        .await
-                        .map_err(internal)?,
-                    label,
-                    true,
-                    Some(backend),
-                    verbose,
-                );
+                ) && deferred
+                {
+                    entry["_tasm_backend"] = json!(backend.id);
+                }
             }
         } else if let Some(url) = instance.url.as_ref()
             && presigned.is_none_or(|wanted| wanted == instance.presigned)
@@ -359,15 +358,15 @@ pub(crate) async fn object_urls(
 
 type ObjectUrlKey = (Option<String>, Option<Uuid>, String, bool, bool);
 
-fn push_url(
-    result: &mut Vec<Value>,
+fn push_url<'a>(
+    result: &'a mut Vec<Value>,
     seen: &mut BTreeSet<ObjectUrlKey>,
     url: String,
     label: Option<&str>,
     presigned: bool,
     backend: Option<&StorageBackend>,
     verbose: bool,
-) {
+) -> Option<&'a mut Value> {
     let controlled = backend.is_some();
     let key = (
         label.map(str::to_owned),
@@ -377,7 +376,7 @@ fn push_url(
         controlled,
     );
     if !seen.insert(key) {
-        return;
+        return None;
     }
     let mut value = json!({"url":url,"label":label,"presigned":presigned});
     if verbose {
@@ -397,6 +396,7 @@ fn push_url(
         .expect("URL response")
         .retain(|_, value| !value.is_null());
     result.push(value);
+    result.last_mut()
 }
 
 fn tags_match(

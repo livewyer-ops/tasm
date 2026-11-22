@@ -2,12 +2,14 @@ import initialSchema from "./migrations/002.sql";
 import collectionMembers from "./migrations/003.sql";
 import retentionIndexes from "./migrations/004.sql";
 import unfinishedCleanup from "./migrations/005.sql";
+import allocationLeases from "./migrations/006.sql";
 
 const revisions = [
   [2, initialSchema],
   [3, collectionMembers],
   [4, retentionIndexes],
   [5, unfinishedCleanup],
+  [6, allocationLeases],
 ] as const;
 
 // The caller holds the Durable Object storage transaction through backend registration.
