@@ -1,6 +1,5 @@
 // Cloudflare adaptation of TASM and rust-tams-api (Apache-2.0); see NOTICE.
 use crate::sql as sqlx;
-use futures_util::StreamExt;
 use std::collections::{BTreeMap, BTreeSet};
 
 use axum::{
@@ -353,25 +352,10 @@ async fn post(
                 .iter()
                 .find(|instance| instance.controlled)
                 .and_then(|instance| instance.storage_backend.clone())?;
-            Some((media.id, backend, record.id.clone()))
+            Some((media.id, backend))
         })
         .collect::<Vec<_>>();
-    let uploads = futures_util::stream::iter(pending.into_iter().map(|(id, backend, object)| {
-        let storage = &storage;
-        async move {
-            let size = storage
-                .head_optional(&backend, &object)
-                .await
-                .map_err(internal)?
-                .map(|metadata| metadata.content_length.unwrap_or(0));
-            Ok::<_, ApiError>((id, size))
-        }
-    }))
-    .buffer_unordered(8)
-    .collect::<Vec<_>>()
-    .await
-    .into_iter()
-    .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let uploads = storage.upload_sizes(pending).await.map_err(internal)?;
     let mut transaction = pool.begin().await.map_err(internal)?;
     db::flows::lock_flow_segments(&mut *transaction, flow_id)
         .await

@@ -1,6 +1,8 @@
 use crate::db::{self, PageRequest, StorageBackend, TagFilters};
 use crate::sql::Pool;
+use futures_util::StreamExt;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -72,6 +74,40 @@ impl StorageFactory {
             .map(str::to_owned)
             .ok_or_else(|| StorageError::Configuration("Invalid object URL".into()))
     }
+    pub async fn upload_sizes(
+        &self,
+        pending: Vec<(String, StorageBackend)>,
+    ) -> Result<BTreeMap<String, Option<i64>>, StorageError> {
+        if pending.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        if !SIGNED_URLS {
+            let objects: Vec<_> = pending
+                .iter()
+                .map(|(id, b)| json!({"id": id, "backend": b.id}))
+                .collect();
+            let result = self
+                .pool
+                .0
+                .call("upload_sizes", json!({ "objects": objects }))
+                .await?;
+            return serde_json::from_value(result)
+                .map_err(|_| StorageError::Configuration("Invalid upload sizes".into()));
+        }
+        futures_util::stream::iter(pending.into_iter().map(|(id, backend)| async move {
+            let size = self
+                .head_optional(&backend, &id)
+                .await?
+                .map(|v| v.content_length.unwrap_or(0));
+            Ok((id, size))
+        }))
+        .buffer_unordered(8)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect()
+    }
+
     pub async fn head_optional(
         &self,
         backend: &StorageBackend,

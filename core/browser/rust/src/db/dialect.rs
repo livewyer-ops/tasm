@@ -1,6 +1,6 @@
 //! PostgreSQL (PGlite) details used by the shared query modules in core/rust/src/db/.
 pub use crate::pglite as sqlx;
-use serde_json::json;
+use serde_json::{Value, json};
 pub use sqlx::{Connection, Engine, Pool, RecordRow, query, query_scalar};
 
 pub fn range_key(value: i128) -> String {
@@ -8,16 +8,16 @@ pub fn range_key(value: i128) -> String {
 }
 
 /// Row lock suffix for a `SELECT` that must hold the row until commit.
-pub const FOR_UPDATE: &str = " FOR UPDATE";
+pub const FOR_UPDATE: &str = "";
 
-/// Serialises transactions that use the same key until the current one ends.
-pub async fn lock<'e, E>(executor: E, key: &str) -> Result<(), super::DbError>
+/// The host serialises database access under the store lock.
+pub async fn lock<'e, E>(executor: E, _key: &str) -> Result<(), super::DbError>
 where
     E: sqlx::Executor<'e, Database = Engine>,
 {
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
-        .bind(key)
-        .execute(executor)
+    executor
+        .host()
+        .call("transaction_check", Value::Null)
         .await?;
     Ok(())
 }
@@ -25,8 +25,7 @@ where
 /// The current time as the engine stores timestamps.
 pub const NOW: &str = "NOW()";
 
-/// Each transaction can run alongside others, so writers take locks.
-pub const SERIALISED: bool = false;
+pub const SERIALISED: bool = true;
 
 /// `column` is one of the values in the array parameter `placeholder`.
 pub fn in_array(column: &str, placeholder: &str) -> String {

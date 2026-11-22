@@ -41,6 +41,7 @@ async function store() {
     }
     switch (op) {
       case 'url': return JSON.stringify(`${origin}/media/${p.backend}?object_id=${encodeURIComponent(p.id)}`);
+      case 'upload_sizes': return JSON.stringify(Object.fromEntries(p.objects.map(({ id, backend }: { id: string; backend: string }) => [id, files.get(key(backend, id))?.size ?? null])));
       case 'head': {
         const file = files.get(key(p.backend, p.id));
         return JSON.stringify(file ? { size: file.size, contentType: file.contentType, etag: `"${file.checksum}"`, checksum: file.checksum } : null);
@@ -74,6 +75,30 @@ async function store() {
 }
 
 await init({ module_or_path: readFileSync('pkg/browser/tasm_bg.wasm') });
+
+test('the SQL bridge flushes at transaction boundaries and drains a dropped rollback', async t => {
+  const db = await PGlite.create();
+  t.after(() => db.close());
+  await db.exec('CREATE TABLE edits (id integer)');
+  const sync = t.mock.method(db, 'syncToFs');
+  const host = new SqlHost(db);
+  const insert = (id: number) => host.call('sql', { sql: 'INSERT INTO edits VALUES ($1)', params: [{ type: 'integer', value: id }] });
+  await host.call('begin', {});
+  const before = sync.mock.callCount();
+  await insert(1);
+  await insert(2);
+  const during = sync.mock.callCount();
+  await host.call('commit', {});
+  assert.equal(during, before, 'statements flushed an open transaction');
+  assert.ok(sync.mock.callCount() > during, 'commit must flush durable writes');
+  await host.call('begin', {});
+  await insert(3);
+  void host.call('rollback', {});
+  await host.call('begin', {});
+  await insert(4);
+  await host.call('commit', {});
+  assert.deepEqual((await db.query('SELECT id FROM edits ORDER BY id')).rows, [{ id: 1 }, { id: 2 }, { id: 4 }]);
+});
 
 test('a populated browser v1 store upgrades atomically and rejects newer versions', async t => {
   const original = new PGlite();

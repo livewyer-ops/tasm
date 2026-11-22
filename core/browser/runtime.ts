@@ -41,6 +41,7 @@ export class Runtime {
   private sqlHost!: SqlHost;
   private timer?: ReturnType<typeof setTimeout>;
   private stopped = false;
+  private pollDelay = 1000;
   readonly api: string;
   readonly media: string;
   constructor(readonly base: string) { this.api = `${base}api/`; this.media = `${base}media/`; }
@@ -109,13 +110,28 @@ export class Runtime {
         if (file.size !== Number(row.size)) throw new Error('Stored object size is inconsistent.');
         return { size: Number(row.size), contentType: row.content_type, etag: `"${row.checksum}"`, checksum: row.checksum };
       }
+      case 'upload_sizes': {
+        const { rows } = await this.sqlHost.connection.query<FileRow>(`SELECT f.* FROM tasm_files f
+          JOIN jsonb_to_recordset($1::jsonb) AS requested(id text, backend uuid)
+            ON f.backend=requested.backend AND f.object_id=requested.id
+          JOIN tamoss_media_objects m ON m.id=f.object_id AND m.created_at::text=f.incarnation`, [JSON.stringify(p.objects)]);
+        const sizes: Record<string, number | null> = Object.fromEntries(p.objects.map(({ id }: { id: string }) => [id, null]));
+        for (let i = 0; i < rows.length; i += 8) {
+          await Promise.all(rows.slice(i, i + 8).map(async row => {
+            const file = await this.file(row);
+            if (file.size !== Number(row.size)) throw new Error('Stored object size is inconsistent.');
+            sizes[row.object_id] = file.size;
+          }));
+        }
+        return sizes;
+      }
       case 'delete': {
         for (const { object_id: id } of p.allocations) {
           const row = await this.fileRow(p.backend, id);
           if (row) {
             // Remove the row first: the startup sweep deletes files without a row,
             // but nothing repairs a row whose file has gone.
-            await this.db.query('DELETE FROM tasm_files WHERE backend=$1 AND object_id=$2 AND name=$3', [p.backend, id, row.name]);
+            await this.sqlHost.connection.query('DELETE FROM tasm_files WHERE backend=$1 AND object_id=$2 AND name=$3', [p.backend, id, row.name]);
             await this.files.removeEntry(row.name).catch(ignoreMissing);
           }
         }
@@ -130,7 +146,7 @@ export class Runtime {
         try {
           const handle = await this.files.getFileHandle(name, { create: true });
           await file.stream().pipeTo(await handle.createWritable());
-          const result = await this.db.query(`INSERT INTO tasm_files (backend,object_id,name,incarnation,size,content_type,checksum,md5)
+          const result = await this.sqlHost.connection.query(`INSERT INTO tasm_files (backend,object_id,name,incarnation,size,content_type,checksum,md5)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (backend,object_id) DO UPDATE SET
               name=EXCLUDED.name,incarnation=EXCLUDED.incarnation,size=EXCLUDED.size,
               content_type=EXCLUDED.content_type,checksum=EXCLUDED.checksum,md5=EXCLUDED.md5
@@ -191,22 +207,33 @@ export class Runtime {
           `${this.api}$2`);
       }
       await this.sqlHost.drained();
+      if (!['GET', 'HEAD'].includes(request.method)) this.wakePoll();
       return result;
     });
   }
-  async poll(): Promise<void> {
-    await this.serial(async () => {
+  async poll(): Promise<bigint> {
+    return this.serial(async () => {
       this.polling = true;
-      try { await this.core.poll(); } finally { this.polling = false; }
-      await this.sqlHost.drained();
+      try { return await this.core.poll(); }
+      finally { await this.sqlHost.drained(); this.polling = false; }
     });
+  }
+  private wakePoll(): void {
+    if (this.pollDelay === 1000) return;
+    this.pollDelay = 1000;
+    if (this.timer !== undefined) {
+      clearTimeout(this.timer);
+      this.schedule();
+    }
   }
   private schedule(): void {
     if (this.stopped) return;
     this.timer = setTimeout(async () => {
-      try { await this.poll(); } catch { /* Durable jobs are retried on the next poll. */ }
+      this.timer = undefined;
+      try { this.pollDelay = await this.poll() === 0n ? Math.min(16000, this.pollDelay * 2) : 1000; }
+      catch { this.pollDelay = 1000; }
       this.schedule();
-    }, 1000);
+    }, this.pollDelay);
   }
   stopPolling(): void { this.stopped = true; clearTimeout(this.timer); }
   async close(): Promise<void> {
@@ -220,12 +247,12 @@ export class Runtime {
     }
   }
   private async fileRow(backend: string, id: string, current = false): Promise<FileRow | undefined> {
-    return (await this.db.query<FileRow>(`SELECT f.* FROM tasm_files f WHERE backend=$1 AND object_id=$2
+    return (await this.sqlHost.connection.query<FileRow>(`SELECT f.* FROM tasm_files f WHERE backend=$1 AND object_id=$2
       ${current ? 'AND EXISTS (SELECT 1 FROM tamoss_media_objects m WHERE m.id=f.object_id AND m.created_at::text=f.incarnation)' : ''}`, [backend, id])).rows[0];
   }
   private async file(row: FileRow): Promise<File> { return (await this.files.getFileHandle(row.name)).getFile(); }
   private async allocation(backend: string, id: string): Promise<any> {
-    const row = (await this.db.query<any>(`SELECT m.record,m.created_at::text AS incarnation,m.referenced_by_flows,m.content_type,f.read_only
+    const row = (await this.sqlHost.connection.query<any>(`SELECT m.record,m.created_at::text AS incarnation,m.referenced_by_flows,m.content_type,f.read_only
       FROM tamoss_media_objects m LEFT JOIN tamoss_flows f ON f.id=(m.record->>'allocated_by_flow')::uuid WHERE m.id=$1`, [id])).rows[0];
     if (!row || !row.record.instances?.some((v: any) => v.controlled && v.storage_backend_id === backend)) throw new HttpError(404, 'Object allocation does not exist.');
     if (row.read_only) throw new HttpError(403, 'Flow is read-only.');
@@ -255,7 +282,7 @@ export class Runtime {
           const current = await this.allocation(backend, id);
           if (current.incarnation !== ticket.incarnation || current.referenced_by_flows.length) throw new HttpError(409, 'Object allocation changed during upload.');
           const old = await this.fileRow(backend, id);
-          await this.db.query(`INSERT INTO tasm_files (backend,object_id,name,incarnation,size,content_type,checksum,md5)
+          await this.sqlHost.connection.query(`INSERT INTO tasm_files (backend,object_id,name,incarnation,size,content_type,checksum,md5)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (backend,object_id) DO UPDATE SET
             name=EXCLUDED.name,incarnation=EXCLUDED.incarnation,size=EXCLUDED.size,content_type=EXCLUDED.content_type,checksum=EXCLUDED.checksum,md5=EXCLUDED.md5`,
             [backend,id,name,ticket.incarnation,size,type,checksum,md5sum]);
