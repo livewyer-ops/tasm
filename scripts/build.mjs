@@ -43,7 +43,7 @@ await rm(core, { recursive: true, force: true });
 await mkdir(core, { recursive: true });
 await writeFile(`${core}/${marker}`, signature);
 buildWasm('tasm-browser', 'browser', 'tasm');
-const ajv = new Ajv({ strict: false, allErrors: true, code: { source: true, esm: true } });
+const ajv = new Ajv({ strict: false, code: { source: true, esm: true } });
 addFormats(ajv);
 const validators = {}, operations = [];
 for (const [path, methods] of Object.entries(spec.paths)) {

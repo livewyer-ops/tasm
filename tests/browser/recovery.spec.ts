@@ -49,6 +49,8 @@ test('failed uploads stay unpublished and webhook retries survive browser restar
       const overwritten = await fetch(put.url, { method: 'PUT', headers: { 'content-type': put['content-type'] }, body: 'overwrite' });
       const head = await fetch(put.url, { method: 'HEAD' });
       const suffix = await fetch(put.url, { headers: { range: 'bytes=-3' } });
+      const multi = await fetch(put.url, { headers: { range: 'bytes=0-1, 4-5' } });
+      if (multi.status !== 200 || (await multi.arrayBuffer()).byteLength !== bytes.length) throw new Error('Multi-range response did not return the full object.');
       const badRange = await fetch(put.url, { headers: { range: 'bytes=999999999-' } });
       const conditional = await fetch(put.url, { headers: { 'if-none-match': head.headers.get('etag')! } });
       const etag = head.headers.get('etag')!;

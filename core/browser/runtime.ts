@@ -310,7 +310,8 @@ export class Runtime {
       const ifNoneMatch = request.headers['if-none-match'];
       if (ifNoneMatch && matchesETag(ifNoneMatch, etag, true)) return { status: 304, headers, body: null };
       const range = request.headers.range;
-      if (range && (!request.headers['if-range'] || request.headers['if-range'] === etag)) {
+      const multiRange = range && /^bytes=(?:\d+-\d*|-\d+)(?:\s*,\s*(?:\d+-\d*|-\d+))+$/.test(range);
+      if (range && !multiRange && (!request.headers['if-range'] || request.headers['if-range'] === etag)) {
         const match = /^bytes=(\d*)-(\d*)$/.exec(range);
         if (!match || !size || (!match[1] && !match[2])) return { status: 416, headers: { ...headers, 'content-range': `bytes */${size}`, 'content-length': '0' }, body: null };
         const start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
