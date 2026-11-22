@@ -198,9 +198,6 @@ pub mod postgres {
 }
 pub trait Row {
     fn try_get<T: Decode, I: TryInto<usize>>(&self, index: I) -> Result<T, Error>;
-    fn get<T: Decode, I: TryInto<usize>>(&self, index: I) -> T {
-        self.try_get(index).expect("typed database column")
-    }
 }
 impl Row for postgres::PgRow {
     fn try_get<T: Decode, I: TryInto<usize>>(&self, index: I) -> Result<T, Error> {

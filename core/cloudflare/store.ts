@@ -5,6 +5,7 @@ import openapi from "../../pkg/cloudflare/openapi.json";
 import { migrateSchema } from "./migrations.ts";
 import uuidSchema from "../../contracts/tams/api/schemas/uuid.json";
 import type { Bindings } from "./worker.ts";
+import { incident } from "../incident.ts";
 import { presign } from "./signing.ts";
 
 initSync({ module });
@@ -151,6 +152,11 @@ export class WasmStore extends DurableObject<Bindings> {
   }
 
   async #call(operation: string, payload: HostPayload): Promise<unknown> {
+    if (operation === "fatal") {
+      const id = incident("runtime", "panic");
+      queueMicrotask(() => this.ctx.abort(`Store runtime stopped (${id})`));
+      return null;
+    }
     if (operation === "openapi") return openapi;
     if (operation === "sql") {
       const cursor = this.ctx.storage.sql.exec(payload.sql, ...payload.params);

@@ -20,7 +20,6 @@ serde_json = "=1.0.154"
 thiserror = "=2.0.21"
 time = { version = "=0.3.55", features = ["formatting", "parsing", "serde"] }
 tower = { version = "=0.5.3", default-features = false, features = ["util"] }
-tracing = "=0.1.44"
 url = "=2.5.9"
 uuid = { version = "=1.29.2", features = ["serde", "v4", "js"] }
 wasm-bindgen = "=0.2.104"

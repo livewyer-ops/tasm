@@ -77,7 +77,7 @@ fn replace_query_value(url: &str, name: &str, value: &str) -> String {
 fn insert(headers: &mut HeaderMap, name: &'static str, value: &str) -> Result<(), ApiError> {
     headers.insert(
         name,
-        HeaderValue::from_str(value).map_err(|_| ApiError::internal(&"invalid response header"))?,
+        HeaderValue::from_str(value).map_err(|_| ApiError::internal("response_header"))?,
     );
     Ok(())
 }

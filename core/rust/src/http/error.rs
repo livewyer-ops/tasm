@@ -68,9 +68,8 @@ impl ApiError {
         )
     }
 
-    pub fn internal(cause: &dyn std::fmt::Display) -> Self {
-        let incident_id = Uuid::new_v4();
-        tracing::error!(%incident_id, error=%cause, "TAMS request failed");
+    pub fn internal(category: &'static str) -> Self {
+        let incident_id = crate::host::incident("request", category);
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             kind: "internal_server_error".into(),

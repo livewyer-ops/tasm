@@ -1,4 +1,5 @@
 import type { WasmStore } from "./store.ts";
+import { incident } from "../incident.ts";
 import { cors } from "./cors.ts";
 export { WasmStore } from "./store.ts";
 
@@ -25,8 +26,8 @@ const maximumBodyBytes = 4 * 1024 * 1024;
 const encoder = new TextEncoder();
 const challenge = 'Basic realm="cf-tams", charset="UTF-8"';
 
-function error(status: number, type: string, summary: string, scheme = challenge): Response {
-  return Response.json({ type, summary, time: new Date().toISOString() }, {
+function error(status: number, type: string, summary: string, scheme = challenge, incident_id?: string): Response {
+  return Response.json({ type, summary, incident_id, time: new Date().toISOString() }, {
     status,
     headers: status === 401 ? { "WWW-Authenticate": scheme } : {},
   });
@@ -91,7 +92,7 @@ export default {
     }
     let policy: ReturnType<typeof cors>;
     try { policy = cors(env.API_CORS, request); }
-    catch { return error(503, "configuration_error", "CORS is not configured correctly."); }
+    catch { return error(503, "configuration_error", "CORS is not configured correctly.", challenge, incident("cors", "configuration")); }
     if (policy.preflight) return policy.preflight;
     return policy.apply(await authenticated(request, env));
   },
@@ -121,7 +122,7 @@ async function authenticated(request: Request, env: Bindings): Promise<Response>
           } finally { clearTimeout(timer!); }
         }
       } else { throw new Error("Invalid authentication mode"); }
-    } catch { return error(503, "configuration_error", "Authentication is unavailable."); }
+    } catch { return error(503, "configuration_error", "Authentication is unavailable.", scheme, incident("authentication", "configuration")); }
     if (!actor && env.ANONYMOUS_READ === "true" && !request.headers.has("Authorization") && ["GET", "HEAD"].includes(request.method)) {
       actor = { subject: "anonymous", scopes: ["tams-api/read"] };
     }
@@ -139,6 +140,6 @@ async function authenticated(request: Request, env: Bindings): Promise<Response>
       return new Response(request.method === "HEAD" ? null : result.body, { status: result.status, headers });
     } catch (cause) {
       if (cause instanceof Response) return cause;
-      return error(500, "internal_server_error", "The store could not complete the request.");
+      return error(500, "internal_server_error", "The store could not complete the request.", scheme, incident("request", "storage"));
     }
 }

@@ -20,10 +20,13 @@ pub async fn get_metadata(pool: &sqlx::Pool) -> Result<Option<ServiceMetadata>, 
     )
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|r| ServiceMetadata {
-        name: r.get(0),
-        description: r.get(1),
-    }))
+    row.map(|r| {
+        Ok(ServiceMetadata {
+            name: r.try_get(0)?,
+            description: r.try_get(1)?,
+        })
+    })
+    .transpose()
 }
 pub async fn save_metadata<'e, E>(
     executor: E,

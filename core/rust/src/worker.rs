@@ -66,10 +66,10 @@ impl Worker {
         // cannot stop the others. The first error is returned afterwards.
         let mut processed = 0;
         let mut first_error = None;
-        let mut stage = |name: &str, result: Result<u64, WorkerError>| match result {
+        let mut stage = |name: &'static str, result: Result<u64, WorkerError>| match result {
             Ok(count) => processed += count,
             Err(error) => {
-                tracing::error!(stage = name, error = %redacted(&error.to_string()), "worker stage failed");
+                error.report(name);
                 first_error.get_or_insert(error);
             }
         };
@@ -112,7 +112,7 @@ impl Worker {
                 )
                 .await
             {
-                tracing::error!(request_id=%request.id, error=%redacted(&error.to_string()), "delete request processing failed");
+                error.report("delete_request");
                 db::queues::fail_delete_request(
                     &self.pool,
                     request.id,
@@ -403,7 +403,7 @@ impl Worker {
                         .await?;
                 }
                 Err(error) => {
-                    tracing::error!(copy_id=%copy.id, error=%redacted(&error.to_string()), "object copy failed");
+                    error.report("copy");
                     db::queues::fail_copy(
                         &self.pool,
                         copy.id,
@@ -575,6 +575,9 @@ impl Worker {
                 .storage
                 .delete(&backend, batch.iter().map(|item| item.record.clone()))
                 .await;
+            if result.is_err() {
+                crate::host::incident("cleanup", "storage");
+            }
             for cleanup in batch {
                 if result.is_ok() {
                     db::queues::complete_cleanup(&self.pool, cleanup.id, &self.settings.worker_id)
@@ -878,8 +881,17 @@ fn delete_range(record: &Value, delete_flow: bool) -> Result<Option<(i128, i128)
     )))
 }
 
-fn redacted(value: &str) -> String {
-    value.to_owned()
+impl WorkerError {
+    fn report(&self, stage: &'static str) {
+        crate::host::incident(
+            stage,
+            match self {
+                Self::Db(_) => "database",
+                Self::Storage(_) => "storage",
+                Self::Bounds => "configuration",
+            },
+        );
+    }
 }
 
 #[cfg(test)]

@@ -172,9 +172,6 @@ impl<T: DeserializeOwned> Decode for types::Json<T> {
 pub struct SqliteRow(pub Vec<Value>);
 pub trait Row {
     fn try_get<T: Decode, I: TryInto<usize>>(&self, index: I) -> Result<T, Error>;
-    fn get<T: Decode, I: TryInto<usize>>(&self, index: I) -> T {
-        self.try_get(index).expect("typed database column")
-    }
 }
 impl Row for SqliteRow {
     fn try_get<T: Decode, I: TryInto<usize>>(&self, index: I) -> Result<T, Error> {

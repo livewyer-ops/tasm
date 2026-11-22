@@ -135,6 +135,10 @@ export async function startTasm({ basePath = '/tasm/', backends, signal: supplie
     const ready = new Promise<void>((resolve, reject) => {
       worker!.onerror = () => reject(new Error('TASM worker failed to load.'));
       worker!.port.onmessage = ({ data }) => {
+        if (data.type === 'fatal') {
+          const message = 'Browser storage stopped. Reload to reopen this store.';
+          reject(new Error(message)); update(message); client.close(); return;
+        }
         if (data.type === 'ready') resolve();
         if (data.type === 'error') reject(new Error(data.message));
       };

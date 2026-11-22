@@ -30,6 +30,7 @@ impl RequestIdentity for Identity {
 }
 #[wasm_bindgen]
 pub struct Tasm {
+    host: host::Host,
     router: Router,
     worker: worker::Worker,
 }
@@ -40,15 +41,21 @@ impl Tasm {
         let pool = sql::Pool(host::Host::new(bridge));
         let settings = Arc::new(config::Settings::browser());
         Self {
+            host: pool.0.clone(),
             router: http::router(pool.clone(), settings.clone()),
             worker: worker::Worker::new(pool, settings),
         }
     }
     pub async fn request(&self, request_json: String) -> Result<String, JsValue> {
-        api::request::<Identity>(&self.router, request_json).await
+        self.host
+            .guard(api::request::<Identity>(&self.router, request_json))
+            .await
     }
     pub async fn poll(&self) -> Result<u64, JsValue> {
-        self.worker.poll_once().await.map_err(js_error)
+        self.host
+            .guard(self.worker.poll_once())
+            .await
+            .map_err(js_error)
     }
 }
 

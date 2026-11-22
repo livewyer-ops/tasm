@@ -7,6 +7,8 @@ import { migrateSchema } from './migrations';
 import operations from '../../pkg/operations.json';
 import * as validators from '../../pkg/validators.js';
 import type { TasmOptions } from './public.d.ts';
+import { abortable } from './lifecycle';
+import { incident } from '../incident';
 import { SqlHost, pgliteParsers } from './sql-host';
 
 export interface BrowserRequest { method: string; url: string; headers: Record<string, string> }
@@ -41,10 +43,11 @@ export class Runtime {
   private sqlHost!: SqlHost;
   private timer?: ReturnType<typeof setTimeout>;
   private stopped = false;
+  private readonly failed = new AbortController();
   private pollDelay = 1000;
   readonly api: string;
   readonly media: string;
-  constructor(readonly base: string) { this.api = `${base}api/`; this.media = `${base}media/`; }
+  constructor(readonly base: string, private readonly onFatal: () => void) { this.api = `${base}api/`; this.media = `${base}media/`; }
 
   async open(backends: TasmOptions['backends'] = [{ id: defaultBackend, label: 'Browser storage' }]): Promise<void> {
     if (!backends.length || backends.length > 1000 || new Set(backends.map(b => b.id.toLowerCase())).size !== backends.length ||
@@ -93,9 +96,17 @@ export class Runtime {
   private async serial<T>(run: () => Promise<T>): Promise<T> {
     // API calls and background jobs share one PostgreSQL connection.
     await this.lock.acquire();
-    try { return await run(); } finally { this.lock.release(); }
+    try { this.failed.signal.throwIfAborted(); return await run(); } finally { this.lock.release(); }
   }
   private async bridge(op: string, p: any): Promise<unknown> {
+    if (op === 'fatal') {
+      const id = incident('runtime', 'panic');
+      this.stopPolling();
+      this.failed.abort(new HttpError(503, `Store stopped. Reload to reopen it. Incident ${id}.`));
+      this.onFatal();
+      return null;
+    }
+    this.failed.signal.throwIfAborted();
     if (this.sqlHost.handles(op)) return this.sqlHost.call(op, p);
     switch (op) {
       case 'url': {
@@ -165,7 +176,7 @@ export class Runtime {
         headers.set('X-Tasm-Delivery-Id', p.id);
         const send = async () => {
           const response = await fetch(p.webhook.url, { method: 'POST', body: p.payload_json, headers,
-            credentials: 'omit', redirect: 'manual', signal: AbortSignal.timeout(p.timeout * 1000) });
+            credentials: 'omit', redirect: 'manual', signal: AbortSignal.any([AbortSignal.timeout(p.timeout * 1000), this.failed.signal]) });
           await response.body?.cancel();
           return { status: response.status, reason: response.statusText, redirected: response.type === 'opaqueredirect' };
         };
@@ -200,7 +211,8 @@ export class Runtime {
         }
       } else if (!body && operation?.required) throw new HttpError(400, 'JSON body is required.');
       url.pathname = path;
-      const result = JSON.parse(await this.core.request(JSON.stringify({ ...request, url: url.href, body: body || null }))) as BrowserResponse;
+      const wire = JSON.stringify({ ...request, url: url.href, body: body || null });
+      const result = JSON.parse(await abortable(this.core.request(wire), this.failed.signal)) as BrowserResponse;
       // Routers operate on TAMS API paths; transport mounting is handled once here.
       for (const header of ['location', 'link']) {
         if (result.headers[header]) result.headers[header] = result.headers[header].replace(
@@ -215,7 +227,7 @@ export class Runtime {
   async poll(): Promise<bigint> {
     return this.serial(async () => {
       this.polling = true;
-      try { return await this.core.poll(); }
+      try { return await abortable(this.core.poll(), this.failed.signal); }
       finally { await this.sqlHost.drained(); this.polling = false; }
     });
   }
@@ -232,7 +244,7 @@ export class Runtime {
     this.timer = setTimeout(async () => {
       this.timer = undefined;
       try { this.pollDelay = await this.poll() === 0n ? Math.min(16000, this.pollDelay * 2) : 1000; }
-      catch { this.pollDelay = 1000; }
+      catch { if (!this.stopped) incident('poll', 'storage'); this.pollDelay = Math.min(16000, this.pollDelay * 2); }
       this.schedule();
     }, this.pollDelay);
   }
@@ -240,7 +252,9 @@ export class Runtime {
   async close(): Promise<void> {
     this.stopPolling();
     try {
-      await this.serial(async () => {});
+      await this.lock.acquire();
+      this.lock.release();
+      if (this.failed.signal.aborted) await this.sqlHost?.call('rollback', {});
       await this.sqlHost?.drained();
       await this.db?.close();
     } finally {

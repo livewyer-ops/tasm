@@ -38,8 +38,15 @@ impl MetadataState {
     }
 }
 
-pub(crate) fn internal(error: impl std::fmt::Display) -> ApiError {
-    ApiError::internal(&error)
+pub(crate) fn internal(error: impl std::any::Any) -> ApiError {
+    let cause = &error as &dyn std::any::Any;
+    ApiError::internal(if cause.is::<db::DbError>() || cause.is::<sqlx::Error>() {
+        "database"
+    } else if cause.is::<crate::storage::StorageError>() {
+        "storage"
+    } else {
+        "internal"
+    })
 }
 pub(crate) fn query(
     request: &Request<Body>,

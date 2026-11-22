@@ -19,7 +19,7 @@
     "ui:preview": "node scripts/serve.mjs --ui-preview",
     "ui:check": "tsc --noEmit",
     "demo:check": "tsc --noEmit",
-    "test:pglite": "esbuild tests/pglite-core.test.ts --bundle --platform=node --format=esm --packages=external --loader:.sql=text --outfile=.local/pglite-core.test.mjs && node --test .local/pglite-core.test.mjs",
+    "test:pglite": "esbuild tests/pglite-core.test.ts --bundle --platform=node --format=esm --packages=external --loader:.sql=text --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=.local/pglite-core.test.mjs && node --test .local/pglite-core.test.mjs",
     "test:logic": "esbuild tests/app-logic.test.ts --bundle --platform=node --format=esm --packages=external --outfile=.local/app-logic.test.mjs && node --test .local/app-logic.test.mjs",
     "test:segments": "node tests/segmentation.mjs",
     "build:core": "node scripts/build.mjs core",

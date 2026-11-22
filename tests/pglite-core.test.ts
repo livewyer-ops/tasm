@@ -11,6 +11,7 @@ import { PGlite } from '@electric-sql/pglite';
 import init, { Tasm } from '../pkg/browser/tasm.js';
 import schema from '../core/browser/migrations/001.sql';
 import { migrateSchema } from '../core/browser/migrations';
+import { Runtime } from '../core/browser/runtime';
 import { SqlHost, pgliteParsers } from '../core/browser/sql-host';
 
 const backend = '81d13d58-5041-4580-91f9-38ce03daef19';
@@ -75,6 +76,42 @@ async function store() {
 }
 
 await init({ module_or_path: readFileSync('pkg/browser/tasm_bg.wasm') });
+
+test('a failed service read logs its incident ID and keeps the host error private', async t => {
+  const errors: string[] = [];
+  t.mock.method(console, 'error', (event: string) => errors.push(event));
+  const core = new Tasm(async () => { throw new Error('private fixture value'); }, origin);
+  const response = JSON.parse(await core.request(JSON.stringify({ method: 'GET', url: origin + '/service', headers: {}, body: null })));
+  assert.equal(response.status, 500);
+  const id = JSON.parse(response.body).incident_id;
+  assert.ok(id);
+  assert.deepEqual(errors.map(event => JSON.parse(event)), [{ stage: 'request', category: 'database', incident_id: id }]);
+  assert.doesNotMatch(response.body, /private fixture value/);
+});
+
+test('a fatal runtime signal settles active and queued reads and releases browser storage', { timeout: 10000 }, async t => {
+  const events: string[] = [];
+  t.mock.method(console, 'error', (event: string) => events.push(event));
+  const db = await PGlite.create();
+  const sql = new SqlHost(db);
+  await sql.call('begin', {});
+  let closing: Promise<void> | undefined;
+  const runtime = new Runtime(origin + '/', () => { closing = runtime.close(); });
+  let started!: () => void;
+  const entered = new Promise<void>(resolve => { started = resolve; });
+  let released = false;
+  Object.assign(runtime, { db, sqlHost: sql, releaseStore: () => { released = true; },
+    core: { request() { started(); return new Promise<string>(() => {}); } } });
+  const read = () => runtime.request({ method: 'GET', url: origin + '/api/service', headers: {} }, (async function* () {})());
+  const active = read(), queued = read();
+  await entered;
+  await (runtime as unknown as { bridge(op: string, p: unknown): Promise<unknown> }).bridge('fatal', null);
+  for (const request of [active, queued, read()]) await assert.rejects(request, /Reload to reopen/);
+  await closing;
+  assert.equal(sql.inTransaction, false);
+  assert.equal(released, true);
+  assert.equal(JSON.parse(events[0]).category, 'panic');
+});
 
 test('the SQL bridge flushes at transaction boundaries and drains a dropped rollback', async t => {
   const db = await PGlite.create();

@@ -1,12 +1,17 @@
 import { Runtime, HttpError, type BrowserRequest } from './runtime';
 
+import { incident } from '../incident';
+
 const scope = globalThis as unknown as SharedWorkerGlobalScope;
 let runtime: Runtime | undefined;
 let opening: Promise<void> | undefined;
 let stopping = false;
+const connections = new Set<MessagePort>();
 const requests = new Set<Promise<void>>();
 scope.onconnect = ({ ports }) => {
   const connection = ports[0]; connection.start();
+  connections.add(connection);
+  connection.addEventListener('close', () => connections.delete(connection));
   connection.onmessage = async event => {
     const data = event.data;
     if (data.type === 'reset' && data.base === new URL('./', scope.location.href).href) {
@@ -14,7 +19,7 @@ scope.onconnect = ({ ports }) => {
       stopping = true; runtime?.stopPolling();
       connection.postMessage({ type: 'reset-stopped' }); scope.close(); return;
     }
-    if (data.type === 'disconnect') { connection.close(); return; }
+    if (data.type === 'disconnect') { connections.delete(connection); connection.close(); return; }
     if (data.type === 'shutdown' && event.ports[0]) {
       const reply = event.ports[0];
       try {
@@ -29,11 +34,15 @@ scope.onconnect = ({ ports }) => {
       try {
         if (stopping) throw new Error('TASM is shutting down. Reload after reset completes.');
         if (!runtime) {
-          const candidate = new Runtime(data.base);
+          const candidate = new Runtime(data.base, () => {
+            stopping = true;
+            for (const port of connections) port.postMessage({ type: 'fatal' });
+            void candidate.close().catch(() => incident('shutdown', 'storage')).finally(() => scope.close());
+          });
           runtime = candidate;
           opening = candidate.open(data.backends).catch(async error => {
             try { await candidate.close(); }
-            catch (closeError) { console.warn('Failed to close the store after startup failed.', closeError); }
+            catch { incident('shutdown', 'storage'); }
             finally {
               if (runtime === candidate) { runtime = undefined; opening = undefined; }
             }
@@ -55,6 +64,7 @@ scope.onconnect = ({ ports }) => {
           const status = error instanceof HttpError ? error.status : error instanceof DOMException && error.name === 'QuotaExceededError' ? 507 : 500;
           port.postMessage({ type: 'response', status, headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ type: status === 500 ? 'internal_server_error' : 'request_error',
+              incident_id: status === 500 ? incident('request', 'storage') : undefined,
               summary: status === 500 ? 'Browser storage operation failed.' : String(error), time: new Date().toISOString() }) });
         } finally { port.close(); }
       })();
