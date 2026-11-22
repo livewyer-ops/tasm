@@ -38,6 +38,10 @@ test('split saved clips can supply a complete sample without uploading it again'
       ts_offset: '8:0', object_timerange: range((2n + n) * NS, (4n + n) * NS) })) };
   const lane = { id: 'video', kind: 'video' as const, flow: { id: 'flow', source_id: 'source', format: sample.technical.format }, blocks: [block], segments: block.segments };
   const workspace: Workspace = { root: lane.flow, lanes: [lane] };
+  const earlier = editWorkspace(workspace, { laneId: lane.id, fromLaneId: lane.id, key: block.key, start: NS });
+  expect(earlier.lanes[0].segments[0]).toMatchObject({
+    timerange: '[1:0_3:0)', ts_offset: '-1:0', object_timerange: '[2:0_4:0)',
+  });
   const split = editWorkspace(workspace, { laneId: lane.id, start: 12n * NS, sample: { ...sample, id: 'B' }, insert: true });
   const parts = split.lanes[0].blocks.filter(b => b.sample.id === sample.id);
   const reusable = reusableSample(parts, sample)!;
@@ -185,4 +189,20 @@ test('pagination follows the link on its own response while another request fini
   await store.request(action, 'background');
   release();
   expect(await pages).toEqual([1, 2]);
+});
+
+test('storage checks distinguish zero bytes, missing objects and unknown lengths', async t => {
+  const store = new WorkspaceStore('https://example.test/api/');
+  const action = store.beginAction('Verify stored media');
+  const signal = new AbortController().signal;
+  const responses = [
+    new Response(null, { headers: { 'content-length': '0' } }),
+    new Response(null, { status: 404 }),
+    new Response(null),
+  ];
+  t.mock.method(globalThis, 'fetch', async () => responses.shift()!);
+  for (const result of [{ state: 'stored', bytes: 0 }, { state: 'missing' }, { state: 'unknown' }]) {
+    expect(await store.checkStorage(action, 'asset', '/media/asset', signal)).toEqual(result);
+  }
+  expect(action.requests.map(r => r.method)).toEqual(['HEAD', 'HEAD', 'HEAD']);
 });

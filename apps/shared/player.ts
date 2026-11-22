@@ -1,12 +1,11 @@
 import { OmakasePlayer, MainMediaType, FileFormatType, PlayerEventType, ChromingTheme } from '@byomakase/omakase-player';
 import Hls, { type LoaderContext, type LoaderConfiguration, type LoaderCallbacks } from 'hls.js';
 import { firstValueFrom, timeout } from 'rxjs';
-import { parseTimestamp, seconds, type ActionRecord, type Kind, type WorkspaceStore, type Workspace } from './workspace-store';
+import { bounds, parseTimestamp, seconds, type ActionRecord, type Kind, type WorkspaceStore, type Workspace } from './workspace-store';
 
 interface Chunk { kind: Kind; start: number; end: number; offset: number; url: string; filler: boolean; flowId?: string; objectId?: string; timerange?: string }
 export type Selection = Record<Kind, string>;
-const bounds = (range: string) => range.slice(1, -1).split('_').map(t => seconds(parseTimestamp(t)));
-export const sourceEnd = (workspace?: Workspace) => Math.max(0, ...workspace?.lanes.flatMap(l => l.segments.map(s => bounds(s.timerange)[1])) ?? []);
+export const sourceEnd = (workspace?: Workspace) => Math.max(0, ...workspace?.lanes.flatMap(l => l.segments.map(s => seconds(bounds(s.timerange)[1]))) ?? []);
 
 // Virtual HLS is private to this player. It never adds media or endpoints to TAMS.
 class TimelineMedia {
@@ -30,7 +29,7 @@ class TimelineMedia {
       };
       let cursor = 0;
       for (const segment of lane?.segments ?? []) {
-        const [start, stop] = bounds(segment.timerange);
+        const [start, stop] = bounds(segment.timerange).map(seconds);
         if (start < cursor - 0.000001 || stop <= start) throw new Error('Preview requires ordered, non-overlapping segments');
         fill(cursor, start);
         const url = segment.get_urls?.[0]?.url;

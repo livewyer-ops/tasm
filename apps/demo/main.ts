@@ -1,7 +1,7 @@
 import { onFrame, setText } from '../shared/render';
 import { startTasm } from '../../core/browser/index';
 import type { TasmClient } from '../../core/browser/public.d.ts';
-import { WorkspaceStore, RequestError, samples, bounds, seconds, type Workspace, type ActionRecord, type RequestRecord, type Flow, type Lane, type Segment } from '../shared/workspace-store';
+import { WorkspaceStore, type StorageCheck, RequestError, samples, bounds, seconds, type Workspace, type ActionRecord, type RequestRecord, type Flow, type Lane, type Segment } from '../shared/workspace-store';
 import { Preview, sourceEnd } from '../shared/player';
 import { ChromingTheme } from '@byomakase/omakase-player';
 import type {} from '../shared/startup';
@@ -27,7 +27,7 @@ interface DeleteRequest { id: string; flow_id: string; status: string; error?: u
 let deletion: Deletion | undefined;
 const flowTemplate = $('flow').cloneNode(true) as HTMLElement;
 const outcomes = new Map<string, string>();
-const storageChecks = new Map<string, { state: string; bytes?: number }>();
+const storageChecks = new Map<string, StorageCheck>();
 let checkingStorage = false;
 const videoLanes = () => workspace?.lanes.filter(l => l.kind === 'video' && !(deletion?.accepted && deletion.flowId === l.flow.id)) ?? [];
 const lane = () => videoLanes().find(l => l.flow.id === selectedFlow) ?? videoLanes()[0];
@@ -81,7 +81,7 @@ function renderStorage() {
     const state = deletion?.accepted && deletion.objects.some(s => s.object_id === id) ? 'deleting' : check?.state ?? (upload?.error ? 'failed' : upload && upload.ms === undefined ? 'uploading'
       : object && !object.reused && ['uploaded', 'registered'].includes(object.state) ? 'stored'
       : object && !object.reused ? 'waiting' : 'unchecked');
-    const size = check?.bytes ?? (state === 'stored' && object && !object.reused ? object.bytes : undefined);
+    const size = check?.state === 'stored' ? check.bytes : (state === 'stored' && object && !object.reused ? object.bytes : undefined);
     if (state === 'stored') { count++; bytes += size ?? 0; }
     let row = $('storage-objects').querySelector<HTMLTableRowElement>('[data-object="' + CSS.escape(id) + '"]');
     if (!row) {
@@ -115,15 +115,7 @@ async function verifyStorage() {
       for (const segment of objects) {
         const id = segment.object_id;
         const url = segment.get_urls?.[0]?.url ?? store.actions.flatMap(a => a.requests).find(r => r.objectId === id && r.stage === 'upload')?.url;
-        if (!url) { storageChecks.set(id, { state: 'unknown' }); continue; }
-        try {
-          const { record } = await store.requestWithRecord(action, url, 'HEAD', undefined, undefined, { objectId: id, signal: AbortSignal.timeout(30000) });
-          const length = record.responseHeaders?.['content-length'];
-          const bytes = length && /^\d+$/.test(length) ? Number(length) : NaN;
-          storageChecks.set(id, Number.isSafeInteger(bytes) ? { state: 'stored', bytes } : { state: 'unknown' });
-        } catch (error) {
-          storageChecks.set(id, { state: error instanceof RequestError && error.record.status === 404 ? 'missing' : 'unknown' });
-        }
+        storageChecks.set(id, await store.checkStorage(action, id, url, AbortSignal.timeout(30000)));
         renderStorage();
       }
     });

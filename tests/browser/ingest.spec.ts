@@ -175,3 +175,44 @@ test('cancel and registration failure preserve the published source; lost public
   await page.locator('#discard-draft').click(); await ready(page);
   await expect.poll(() => page.evaluate(async () => (await (await fetch('/api/flows')).json()).length)).toBe(2);
 });
+
+test('switching workspaces discards a pending storage result', async ({ page }) => {
+  await open(page);
+  await add(page, 'orbit');
+  await ready(page);
+  const stored = page.locator('#objects tr[data-state="stored"]');
+  await expect(stored).toHaveCount(4);
+  if (!await page.locator('#storage-refresh').isVisible()) await page.locator('#storage > summary').click();
+  const original = await page.locator('#sources').inputValue();
+  await named(page, '#new-source', 'Empty');
+  const empty = await page.locator('#sources').inputValue();
+  await page.locator('#sources').selectOption(original);
+  await expect(page.locator('#storage-refresh')).toBeEnabled();
+
+  const pending: (() => void)[] = [];
+  await page.exposeFunction('holdStorageRead', () => new Promise<void>(resolve => pending.push(resolve)));
+  await page.evaluate(() => {
+    const real = window.fetch;
+    let reads = 0;
+    window.fetch = async (input, init) => {
+      if (init?.method === 'HEAD' && String(input).includes('/media/') && ++reads <= 2) {
+        const stale = reads === 1;
+        await (window as typeof window & { holdStorageRead(): Promise<void> }).holdStorageRead();
+        if (stale) return new Response(null, { status: 404 });
+      }
+      return real(input, init);
+    };
+  });
+  await page.locator('#storage-refresh').click();
+  await expect.poll(() => pending.length).toBe(1);
+  await page.locator('#sources').selectOption(empty);
+  await expect(page.locator('#source-title')).toHaveText('Empty');
+  await page.locator('#sources').selectOption(original);
+  await expect(page.locator('#source-title')).toHaveText('Ingest laboratory');
+  pending[0]();
+  await expect.poll(() => pending.length).toBe(2);
+  await expect(stored).toHaveCount(4);
+  pending[1]();
+  await expect(page.locator('#storage-refresh')).toBeEnabled();
+  await expect(stored).toHaveCount(4);
+});

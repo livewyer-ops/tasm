@@ -1,5 +1,5 @@
 import { onFrame, setText } from '../shared/render';
-import { WorkspaceStore, RequestError, samples, seconds, blockEnd, bounds, parseTimestamp, planPlacement, reusableSample, addDraftLane, editWorkspace, laneSnapshot, type DraftWorkspace, type MovingItem, type ActionRecord, type Block, type Flow, type Kind, type Lane, type Sample, type Workspace } from '../shared/workspace-store';
+import { WorkspaceStore, type StorageCheck, samples, seconds, blockEnd, bounds, parseTimestamp, planPlacement, reusableSample, addDraftLane, editWorkspace, laneSnapshot, type DraftWorkspace, type MovingItem, type ActionRecord, type Block, type Flow, type Kind, type Lane, type Sample, type Workspace } from '../shared/workspace-store';
 import { Preview, sourceEnd } from '../shared/player';
 import { librarySamples, saveLibrarySamples, removeLibrarySample, mediaWorker, libraryDraft, saveLibraryDraft } from '../shared/sample-library';
 import { escape, requestDetails, resourceButton, wireReview } from './api-review';
@@ -27,7 +27,7 @@ let noticeTimer: ReturnType<typeof setTimeout>;
 let followRequests = true, retryAction: (() => void) | undefined;
 let historyHtml = '', detailKey = '', detailHtml = '', selectedObject = '', ingestId = '';
 let inspectIngest = false, rangeReady = false;
-const storageChecks = new Map<string, { state: string; bytes?: number }>();
+const storageChecks = new Map<string, StorageCheck>();
 let checkingStorage = false;
 let library: Sample[] = [...samples], libraryReady = false, libraryBusy = false;
 let importing: AbortController | undefined;
@@ -829,14 +829,9 @@ async function verifyStorage() {
       for (const { id, refs } of objects) {
         if (resetting || version !== workspaceVersion) return;
         const url = refs[0].segment.get_urls?.[0]?.url;
-        if (!url) { storageChecks.set(id, { state: 'unknown' }); continue; }
-        try {
-          const { record } = await store.requestWithRecord(action, url, 'HEAD', undefined, undefined, { objectId: id, signal: AbortSignal.timeout(10000) });
-          if (resetting || version !== workspaceVersion) return;
-          const length = record.responseHeaders?.['content-length'];
-          const bytes = length && /^\d+$/.test(length) ? Number(length) : NaN;
-          storageChecks.set(id, Number.isSafeInteger(bytes) ? { state: 'stored', bytes } : { state: 'unknown' });
-        } catch (error) { if (!resetting && version === workspaceVersion) storageChecks.set(id, { state: error instanceof RequestError && error.record.status === 404 ? 'missing' : 'unknown' }); }
+        const check = await store.checkStorage(action, id, url, AbortSignal.timeout(10000));
+        if (resetting || version !== workspaceVersion) return;
+        storageChecks.set(id, check);
       }
     });
   } catch (error) { if (!resetting) notify(`Storage check could not finish: ${(error as Error).message}`, true); }
@@ -853,7 +848,7 @@ function renderObjects() {
   $('objects').innerHTML = !objects.length ? '' : `<table><thead><tr><th scope="col">Object UUID</th><th scope="col">Media</th><th scope="col">Flow / segments</th><th scope="col">Size</th><th scope="col">State</th></tr></thead><tbody>${objects.map(({ id, refs, pending }) => {
     const check = storageChecks.get(id), uploaded = pending && !pending.reused && ['uploaded', 'registered'].includes(pending.state);
     const state = check?.state ?? (uploaded ? 'stored' : pending && !pending.reused ? pending.state : 'unchecked');
-    const size = check?.bytes ?? (uploaded ? pending.bytes : undefined);
+    const size = check?.state === 'stored' ? check.bytes : (uploaded ? pending.bytes : undefined);
     if (state === 'stored') { stored++; bytes += size ?? 0; }
     const label = ({ stored: 'Stored', missing: 'Missing', unknown: 'Not confirmed', unchecked: 'Not checked', prepared: 'Waiting', allocated: 'Uploading' } as Record<string, string>)[state] ?? state;
     return `<tr data-state="${state}" class="${selectedObject === id ? 'selected' : ''}"><td><button data-object="${escape(id)}" aria-pressed="${selectedObject === id}" title="${escape(id)}">${escape(id.split(':').at(-1))}</button></td><td>${[...new Set(refs.map(r => escape(r.block.sample.name)))].join('<br>') || escape(pending?.sample?.name ?? 'Save in progress')}</td><td>${refs.map(r => `${escape(r.lane.flow.label)} · ${r.index + 1}<small>${bounds(r.segment.timerange).map(n => seconds(n).toFixed(3)).join('–')} s</small>`).join('') || 'Not published'}</td><td>${size === undefined ? '—' : size.toLocaleString() + ' B'}</td><td>${label}${uploaded && !refs.length ? '<small>Not published</small>' : ''}</td></tr>`;

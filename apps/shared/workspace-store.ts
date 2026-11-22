@@ -31,6 +31,7 @@ export interface RequestRecord extends RequestContext {
 export interface NarrativeEvent { position: number; title: string; detail: string; state: 'Pending' | 'Succeeded' | 'Failed' | 'Cancelled'; ms?: number }
 export interface FlowChange { laneId: string; oldId?: string; newId: string; state: 'creating' | 'created' | 'published' | 'failed' | 'unconfirmed'; retirement?: 'pending' | 'deleted' | 'failed'; error?: string }
 export interface ActionRecord { id: string; name: string; requests: RequestRecord[]; events?: NarrativeEvent[]; flows?: FlowChange[]; error?: string; pending: boolean; playback?: boolean }
+export type StorageCheck = { state: 'stored'; bytes: number } | { state: 'missing' | 'unknown' };
 export class RequestError extends Error {
   constructor(readonly record: RequestRecord, message: string) { super(message); }
 }
@@ -50,9 +51,13 @@ export const range = (start: bigint, end: bigint) => `[${timestamp(start)}_${tim
 export const blockEnd = (b: Block) => b.segments.length ? bounds(b.segments.at(-1)!.timerange)[1] : b.start + (b.sourceRange ? b.sourceRange[1] - b.sourceRange[0] : BigInt(b.sample.durationNs));
 export const blockBoundaries = (b: Block): bigint[] => b.segments.length ? [b.start, ...b.segments.map(s => bounds(s.timerange)[1])]
   : (b.boundaries ?? []).filter(t => !b.sourceRange || t >= b.sourceRange[0] && t <= b.sourceRange[1]).map(t => b.start + t - (b.sourceRange?.[0] ?? 0n));
+function shiftSegment(segment: Segment, shift: bigint): Segment {
+  const [start, end] = bounds(segment.timerange);
+  const offset = parseTimestamp(segment.ts_offset ?? '0:0');
+  return { ...segment, timerange: range(start + shift, end + shift), ts_offset: timestamp(offset + shift) };
+}
 function shiftedBlock(block: Block, shift: bigint): Block {
-  return { ...block, start: block.start + shift, segments: block.segments.map(s => ({ ...s,
-    timerange: range(bounds(s.timerange)[0] + shift, bounds(s.timerange)[1] + shift), ts_offset: timestamp(parseTimestamp(s.ts_offset ?? '0:0') + shift) })) };
+  return { ...block, start: block.start + shift, segments: block.segments.map(segment => shiftSegment(segment, shift)) };
 }
 function splitBlock(block: Block, at: bigint): Block[] {
   if (!blockBoundaries(block).includes(at)) throw new Error('Insert at a segment boundary.');
@@ -300,6 +305,17 @@ export class WorkspaceStore extends EventTarget {
     } catch (error) { record.error = error instanceof Error ? error.message : String(error); throw error; }
     finally { record.ms = Math.round(performance.now() - started); this.changed(); }
   }
+  async checkStorage(action: ActionRecord, objectId: string, url: string | undefined, signal: AbortSignal): Promise<StorageCheck> {
+    if (!url) return { state: 'unknown' };
+    try {
+      const { record } = await this.requestWithRecord(action, url, 'HEAD', undefined, undefined, { objectId, signal });
+      const length = record.responseHeaders?.['content-length'];
+      const bytes = length && /^\d+$/.test(length) ? Number(length) : NaN;
+      return Number.isSafeInteger(bytes) ? { state: 'stored', bytes } : { state: 'unknown' };
+    } catch (error) {
+      return { state: error instanceof RequestError && error.record.status === 404 ? 'missing' : 'unknown' };
+    }
+  }
   async list<T>(action: ActionRecord | undefined, path: string, options?: RequestOptions): Promise<T[]> {
     const result: T[] = []; let next: string | undefined = path;
     while (next) {
@@ -507,7 +523,7 @@ export class WorkspaceStore extends EventTarget {
           block.segments = template.segments.filter(s => {
             const [start, end] = bounds(s.timerange);
             return !block.sourceRange || start >= template!.start + sourceIn && end <= template!.start + sourceOut;
-          }).map(s => ({ ...s, timerange: range(bounds(s.timerange)[0] + shift, bounds(s.timerange)[1] + shift), ts_offset: timestamp(parseTimestamp(s.ts_offset ?? '0:0') + shift) }));
+          }).map(segment => shiftSegment(segment, shift));
           if (!block.segments.length) throw new Error('Draft media range contains no complete segments.');
           delete block.sourceRange; delete block.boundaries;
         }
