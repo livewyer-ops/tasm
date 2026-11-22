@@ -34,6 +34,8 @@ function words(line: string, allowIncomplete = false) {
       else if (!quoted && (c === "'" || c === '"')) quoted = c;
       else if (c === '\\' && quoted !== "'") {
         if (i === line.length && !allowIncomplete) throw new Error('Complete the escaped character.');
+        if (quoted === '"' && !['"', '$', '`', '\\', '\n'].includes(line[i])) value += '\\';
+        else if (line[i] === '\n') { i++; continue; }
         value += line[i++] ?? '';
       } else value += c;
     }

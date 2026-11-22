@@ -25,7 +25,7 @@ impl Settings {
             service_version: env!("CARGO_PKG_VERSION").into(),
             service_name: "TASM".into(),
             service_description: "Browser-local Time Addressable Media Store".into(),
-            min_object_timeout: "300:0".into(),
+            min_object_timeout: "86400:0".into(),
             storage_allocation_max_objects: 1000,
             storage_object_id_max_length: 1024,
             worker_id: "tasm".into(),

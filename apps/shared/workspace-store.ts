@@ -236,7 +236,14 @@ export class WorkspaceStore extends EventTarget {
   private abort = new AbortController();
   private work = new Set<Promise<unknown>>();
   private counts = new WeakMap<ActionRecord, number>();
-  constructor(readonly apiUrl: string) { super(); }
+  readonly mediaBase: string;
+  constructor(readonly apiUrl: string) { super(); this.mediaBase = new URL('../media/', apiUrl).href; }
+  mediaUrl(segment: Pick<Segment, 'get_urls'>): string | undefined {
+    for (const { url } of segment.get_urls ?? []) {
+      const target = URL.parse(url, this.apiUrl);
+      if (target?.href.startsWith(this.mediaBase)) return target.href;
+    }
+  }
   beginAction(name: string, playback = false): ActionRecord {
     this.abort.signal.throwIfAborted();
     const action: ActionRecord = { id: crypto.randomUUID(), name, requests: [], pending: false, playback };
@@ -286,6 +293,7 @@ export class WorkspaceStore extends EventTarget {
   }
   async requestWithRecord<T = any>(action: ActionRecord | undefined, path: string, method = 'GET', body?: unknown, upload?: { bytes: Blob; name: string; type: string }, options: RequestOptions = {}): Promise<{ value: T; record: RequestRecord }> {
     const url = new URL(path, this.apiUrl).href;
+    if (!url.startsWith(this.apiUrl) && !url.startsWith(this.mediaBase)) throw new Error('Choose a URL in this browser store.');
     const headers: Record<string, string> = options.headers ?? (upload ? { 'content-type': upload.type } : body === undefined ? {} : { 'content-type': 'application/json' });
     const { signal: requestedSignal, binary, headers: _headers, ...context } = options;
     const signal = requestedSignal ? AbortSignal.any([this.abort.signal, requestedSignal]) : this.abort.signal;
@@ -296,7 +304,7 @@ export class WorkspaceStore extends EventTarget {
     this.changed();
     const started = performance.now();
     try {
-      const response = await fetch(url, { method, headers, body: upload?.bytes ?? options.rawBody ?? (body === undefined ? undefined : JSON.stringify(body)), signal });
+      const response = await fetch(url, { method, headers, redirect: 'error', body: upload?.bytes ?? options.rawBody ?? (body === undefined ? undefined : JSON.stringify(body)), signal });
       record.status = response.status; record.responseHeaders = Object.fromEntries(response.headers);
       if (binary && response.ok) {
         const bytes = await response.arrayBuffer(); record.response = { bytes: bytes.byteLength, contentType: response.headers.get('content-type') }; return { value: bytes as T, record };
@@ -427,13 +435,25 @@ export class WorkspaceStore extends EventTarget {
   }
   private async monitorDeletion(action: ActionRecord | undefined, flowId: string, jobId: string, change?: FlowChange) {
     try {
-      while (!this.abort.signal.aborted) {
+      const deadline = Date.now() + 60000;
+      while (Date.now() < deadline) {
         await abortable(new Promise(resolve => setTimeout(resolve, 1000)), this.abort.signal);
-        const job = await this.request(action, `flow-delete-requests/${jobId}`, 'GET', undefined, undefined, { flowId });
+        const options = { flowId, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())) };
+        const job = await this.request(action, `flow-delete-requests/${jobId}`, 'GET', undefined, undefined, options)
+          .catch(async error => {
+            if (!(error instanceof RequestError) || error.record.status !== 404) throw error;
+            if (await this.flowExists(action, flowId, options.signal)) throw error;
+            return { status: 'done' };
+          });
         if (job.status === 'failed') throw new Error(`FLOW deletion failed: ${JSON.stringify(job.error)}`);
         if (job.status === 'done') { if (change) change.retirement = 'deleted'; this.changed(); return; }
       }
+      throw new Error('Flow deletion is still pending. Reopen the Source to check progress.');
     } catch (error) { if (change && !this.abort.signal.aborted) { change.retirement = 'failed'; change.error = (error as Error).message; this.changed(); } }
+  }
+  async flowExists(action: ActionRecord | undefined, id: string, signal: AbortSignal) {
+    try { await this.request(action, `flows/${id}`, 'HEAD', undefined, undefined, { signal }); return true; }
+    catch (error) { if (error instanceof RequestError && error.record.status === 404) return false; throw error; }
   }
   private async discardUnpublished(action: ActionRecord | undefined, rootId: string, flows: Flow[]) {
     // A lost publication response is not proof of failure. Leave everything if the root cannot be read.
@@ -535,6 +555,7 @@ export class WorkspaceStore extends EventTarget {
         validateWorkspace(draft);
         session.block = affected.flatMap(l => l.blocks)[0];
         session.objects = [...new Map(affected.flatMap(l => l.blocks.flatMap(b => b.segments.map(segment => [segment.object_id, { segment, sample: b.sample, bytes: prepared.get(segment.object_id)?.byteLength ?? 0, reused: !prepared.has(segment.object_id), state: 'prepared' as const }] as const)))).values()];
+        const objectsById = new Map(session.objects.map(o => [o.segment.object_id, o]));
         if (session.objects.some(o => o.reused)) await this.narrative(action, 'Reuse stored media', `Reuse ${session.objects.filter(o => o.reused).length} stored objects without uploading their bytes.`, async () => {});
         session.completed.add('segment'); session.changed();
         const collection = draft.lanes.map(l => ({ ...(workspace.root.flow_collection?.find(m => m.id === l.flow.id) ?? { role: l.kind }), id: l.flow.id }));
@@ -558,7 +579,7 @@ export class WorkspaceStore extends EventTarget {
                 for (const object of allocation.media_objects) locations.set(object.object_id, object.put_url);
               }
               for (const { block, segment } of fresh) {
-                const object = session.objects.find(o => o.segment.object_id === segment.object_id);
+                const object = objectsById.get(segment.object_id);
                 if (object) { object.state = 'allocated'; session.changed(); }
                 const put = locations.get(segment.object_id), bytes = prepared.get(segment.object_id);
                 if (!put?.url || !bytes) throw new Error('Missing allocated storage or prepared media bytes');
@@ -576,7 +597,7 @@ export class WorkspaceStore extends EventTarget {
               await write('register', `flows/${flow.id}/segments`, 'POST', registrations, undefined, { flowId: flow.id, objectIds: entries.map(e => e.segment.object_id) });
               for (const { segment } of entries) {
                 knownObjects.add(segment.object_id);
-                const object = session.objects.find(o => o.segment.object_id === segment.object_id);
+                const object = objectsById.get(segment.object_id);
                 if (object) object.state = 'registered';
               }
               session.changed();
@@ -586,13 +607,13 @@ export class WorkspaceStore extends EventTarget {
               for (const segment of block.segments) {
                 const { object_id, timerange, ts_offset, object_timerange } = segment;
                 const first = !knownObjects.has(object_id), context = { blockId: block.key, flowId: flow.id, objectId: object_id };
-                const object = session.objects.find(o => o.segment.object_id === segment.object_id);
+                const object = objectsById.get(segment.object_id);
                 if (first) {
                   const allocation = await write('allocate', `flows/${flow.id}/storage`, 'POST', { object_ids: [object_id] }, undefined, context);
                   if (object) { object.state = 'allocated'; session.changed(); }
                   const put = allocation.media_objects[0].put_url, bytes = prepared.get(object_id);
                   if (!bytes) throw new Error('Missing prepared media bytes');
-                  await write('upload', put.url, 'PUT', undefined, { bytes: new Blob([bytes]), name: `${block.sample.name}-${session.objects.findIndex(o => o.segment.object_id === object_id) + 1}.ts`, type: put['content-type'] }, context);
+                  await write('upload', put.url, 'PUT', undefined, { bytes: new Blob([bytes]), name: `${block.sample.name}.ts`, type: put['content-type'] }, context);
                   session.uploadedBytes += bytes.byteLength;
                   prepared.delete(object_id);
                   if (object) { object.state = 'uploaded'; session.changed(); }
@@ -637,8 +658,9 @@ export class WorkspaceStore extends EventTarget {
     }
     const unique = new Map(segments.map(s => [s.object_id, s])), objectBytes = new Map<string, number>(); let bytes = 0;
     for (const s of unique.values()) {
-      if (!s.get_urls?.[0]) throw new Error('Segment has no readable object URL');
-      const size = (await this.request<ArrayBuffer>(action, s.get_urls[0].url, 'GET', undefined, undefined, { binary: true, stage: 'read', objectId: s.object_id })).byteLength;
+      const url = this.mediaUrl(s);
+      if (!url) throw new Error('Segment has no media URL in this browser store.');
+      const size = (await this.request<ArrayBuffer>(action, url, 'GET', undefined, undefined, { binary: true, stage: 'read', objectId: s.object_id })).byteLength;
       objectBytes.set(s.object_id, size); bytes += size;
     }
     return { segments, objects: unique.size, bytes, flows, objectBytes };

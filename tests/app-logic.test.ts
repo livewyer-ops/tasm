@@ -206,3 +206,16 @@ test('storage checks distinguish zero bytes, missing objects and unknown lengths
   }
   expect(action.requests.map(r => r.method)).toEqual(['HEAD', 'HEAD', 'HEAD']);
 });
+
+test('sample playback chooses a URL in its mounted store', async () => {
+  const store = new WorkspaceStore('https://example.test/show/api/');
+  const local = 'https://example.test/show/media/backend?object_id=clip';
+  const urls = ['https://other.test/show/media/backend', 'https://example.test/other/media/backend', local];
+  expect(store.mediaUrl({ get_urls: urls.map(url => ({ url })) })).toBe(local);
+  expect(store.mediaUrl({ get_urls: [{ url: urls[0] }] })).toBeUndefined();
+});
+
+test('double-quoted curl data preserves JSON escapes', () => {
+  const command = String.raw`curl -d "{\"label\":\"two\nlines\"}" /api/service`;
+  expect(parseCurl(command, 'https://example.test/api/').data).toBe(JSON.stringify({ label: 'two\nlines' }));
+});

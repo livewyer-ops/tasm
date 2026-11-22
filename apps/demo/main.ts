@@ -114,7 +114,7 @@ async function verifyStorage() {
     await store.action('Verify stored media', async action => {
       for (const segment of objects) {
         const id = segment.object_id;
-        const url = segment.get_urls?.[0]?.url ?? store.actions.flatMap(a => a.requests).find(r => r.objectId === id && r.stage === 'upload')?.url;
+        const url = store.mediaUrl(segment) ?? store.actions.flatMap(a => a.requests).find(r => r.objectId === id && r.stage === 'upload')?.url;
         storageChecks.set(id, await store.checkStorage(action, id, url, AbortSignal.timeout(30000)));
         renderStorage();
       }
@@ -536,12 +536,16 @@ async function deletePrevious() {
     let removed = false;
     while (Date.now() < deadline) {
       const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
-      const job = deletion.requestId ? await store.request<DeleteRequest>(record, `flow-delete-requests/${deletion.requestId}`, 'GET', undefined, undefined, { signal }) : undefined;
+      const job = deletion.requestId ? await store.request<DeleteRequest>(record, `flow-delete-requests/${deletion.requestId}`, 'GET', undefined, undefined, { signal })
+        .catch(async error => {
+          if (!(error instanceof RequestError) || error.record.status !== 404 || await store.flowExists(record, deletion!.flowId, signal)) throw error;
+          return undefined;
+        }) : undefined;
       if (job?.status === 'failed') throw new Error('Background deletion failed: ' + JSON.stringify(job.error));
       if (!job || job.status === 'done') {
         let missing = 0;
         for (const object of deletion.objects) {
-          const url = object.get_urls?.[0]?.url;
+          const url = store.mediaUrl(object);
           if (!url) throw new Error('The deleted object has no storage URL to verify.');
           try { await store.request(record, url, 'HEAD', undefined, undefined, { objectId: object.object_id, signal }); }
           catch (error) {

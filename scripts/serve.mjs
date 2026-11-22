@@ -9,13 +9,25 @@ const preview = process.argv.includes('--ui-preview');
 const port = Number(process.env.PORT ?? (app === 'demo' ? 4174 : 4173));
 const address = process.env.TASM_BIND_ADDRESS ?? '127.0.0.1';
 // Use the production policy for every local response, including live preview.
-const globalHeaders = (await readFile(new URL('../deploy/_headers', import.meta.url), 'utf8')).split('\n/')[0].trim().split('\n').slice(1)
-  .map(line => { const i = line.indexOf(':'); return [line.slice(0, i).trim(), line.slice(i + 1).trim()]; });
+const headerRules = (await readFile(new URL('../deploy/_headers', import.meta.url), 'utf8')).trim().split(/\n(?=\/)/).map(block => {
+  const [path, ...lines] = block.split('\n');
+  const [prefix, suffix] = path.split('*');
+  const matches = value => suffix === undefined ? value === path : value.startsWith(prefix) && value.endsWith(suffix);
+  return { matches, lines: lines.map(line => line.trim()) };
+});
 let bundle;
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.otf': 'font/otf', '.ttf': 'font/ttf', '.ts': 'video/mp2t', '.wasm': 'application/wasm', '.json': 'application/json', '.map': 'application/json' };
 const server = createServer(async (req, res) => {
-  for (const [name, value] of globalHeaders) res.setHeader(name, value);
-  const url = new URL(req.url, 'http://localhost');
+  let url;
+  try { url = new URL(req.url, 'http://localhost'); }
+  catch { res.writeHead(400).end(); return; }
+  for (const { matches, lines } of headerRules) if (matches(url.pathname)) {
+    for (const line of lines) {
+      if (line.startsWith('! ')) { res.removeHeader(line.slice(2)); continue; }
+      const colon = line.indexOf(':');
+      res.setHeader(line.slice(0, colon), line.slice(colon + 1).trim());
+    }
+  }
   if (!['GET', 'HEAD'].includes(req.method)) { res.writeHead(405).end(); return; }
   // Live UI bypasses the worker cache; all runtime files still use the built release.
   const live = url.pathname.match(/^\/preview\.(html|css|js)$/);

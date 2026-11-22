@@ -32,8 +32,8 @@ class TimelineMedia {
         const [start, stop] = bounds(segment.timerange).map(seconds);
         if (start < cursor - 0.000001 || stop <= start) throw new Error('Preview requires ordered, non-overlapping segments');
         fill(cursor, start);
-        const url = segment.get_urls?.[0]?.url;
-        if (!url) throw new Error('TAMS segment has no readable object URL');
+        const url = store.mediaUrl(segment);
+        if (!url) throw new Error('Segment has no media URL in this browser store.');
         chunks.push({ kind, start, end: stop, offset: seconds(parseTimestamp(segment.ts_offset ?? '0:0')), url, filler: false,
           flowId: lane!.flow.id, objectId: segment.object_id, timerange: segment.timerange });
         cursor = stop;

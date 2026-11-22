@@ -11,7 +11,10 @@ import { createTour } from './tour';
 
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${(s % 60).toFixed(3).padStart(6, '0')}`;
+const fmt = (s: number) => {
+  const ms = Math.round(s * 1000);
+  return `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${((ms % 60000) / 1000).toFixed(3).padStart(6, '0')}`;
+};
 const nsInput = (value: string) => {
   if (!/^\d+(\.\d{1,9})?$/.test(value) || Number(value) > 86400) throw new Error('Enter a start time between 0 and 86400 seconds.');
   const [s, ns = ''] = value.split('.'); return BigInt(s) * 1000000000n + BigInt(ns.padEnd(9, '0'));
@@ -866,8 +869,9 @@ function mediaObjects() {
   const objects = new Map<string, typeof refs>();
   for (const ref of refs) { const list = objects.get(ref.segment.object_id) ?? []; list.push(ref); objects.set(ref.segment.object_id, list); }
   const session = store?.ingest, active = session && ['running', 'paused'].includes(session.status);
-  if (active) for (const object of session.objects) if (!objects.has(object.segment.object_id)) objects.set(object.segment.object_id, []);
-  return [...objects].map(([id, refs]) => ({ id, refs, pending: active ? session.objects.find(o => o.segment.object_id === id) : undefined }));
+  const pending = new Map((active ? session.objects : []).map(o => [o.segment.object_id, o]));
+  for (const id of pending.keys()) if (!objects.has(id)) objects.set(id, []);
+  return [...objects].map(([id, refs]) => ({ id, refs, pending: pending.get(id) }));
 }
 async function verifyStorage() {
   const objects = mediaObjects().filter(o => o.refs.length);
@@ -878,7 +882,7 @@ async function verifyStorage() {
     await store.action('Verify stored media', async action => {
       for (const { id, refs } of objects) {
         if (resetting || version !== workspaceVersion) return;
-        const url = refs[0].segment.get_urls?.[0]?.url;
+        const url = store.mediaUrl(refs[0].segment);
         const check = await store.checkStorage(action, id, url, AbortSignal.timeout(10000));
         if (resetting || version !== workspaceVersion) return;
         storageChecks.set(id, check);
@@ -887,6 +891,7 @@ async function verifyStorage() {
   } catch (error) { if (!resetting) notify(`Storage check could not finish: ${(error as Error).message}`, true); }
   finally { checkingStorage = false; if (!resetting) { renderObjects(); if (version !== workspaceVersion) void verifyStorage(); } }
 }
+const renderedRows = new WeakMap<HTMLTableRowElement, string>();
 function renderObjects() {
   const focused = (document.activeElement as HTMLElement)?.dataset.object;
   const objects = mediaObjects(); let stored = 0, bytes = 0;
@@ -895,14 +900,27 @@ function renderObjects() {
   $<HTMLButtonElement>('storage-refresh').disabled = busy || checkingStorage || !objects.length;
   $('storage-count').textContent = `${objects.length} object${objects.length === 1 ? '' : 's'}`;
   $('selected-object').hidden = !objects.length;
-  $('objects').innerHTML = !objects.length ? '' : `<table><thead><tr><th scope="col">Object UUID</th><th scope="col">Media</th><th scope="col">Flow / segments</th><th scope="col">Size</th><th scope="col">State</th></tr></thead><tbody>${objects.map(({ id, refs, pending }) => {
+  const list = $('objects');
+  let table = list.querySelector('tbody');
+  if (objects.length && !table) {
+    list.innerHTML = '<table><thead><tr><th scope="col">Object UUID</th><th scope="col">Media</th><th scope="col">Flow / segments</th><th scope="col">Size</th><th scope="col">State</th></tr></thead><tbody></tbody></table>';
+    table = list.querySelector('tbody')!;
+  }
+  const rows = table?.rows;
+  objects.forEach(({ id, refs, pending }, index) => {
     const check = storageChecks.get(id), uploaded = pending && !pending.reused && ['uploaded', 'registered'].includes(pending.state);
     const state = check?.state ?? (uploaded ? 'stored' : pending && !pending.reused ? pending.state : 'unchecked');
     const size = check?.state === 'stored' ? check.bytes : (uploaded ? pending.bytes : undefined);
     if (state === 'stored') { stored++; bytes += size ?? 0; }
     const label = ({ stored: 'Stored', missing: 'Missing', unknown: 'Not confirmed', unchecked: 'Not checked', prepared: 'Waiting', allocated: 'Uploading' } as Record<string, string>)[state] ?? state;
-    return `<tr data-state="${state}" class="${selectedObject === id ? 'selected' : ''}"><td><button data-object="${escape(id)}" aria-pressed="${selectedObject === id}" title="${escape(id)}">${escape(id.split(':').at(-1))}</button></td><td>${[...new Set(refs.map(r => escape(r.block.sample.name)))].join('<br>') || escape(pending?.sample?.name ?? 'Save in progress')}</td><td>${refs.map(r => `${escape(r.lane.flow.label)} · ${r.index + 1}<small>${bounds(r.segment.timerange).map(n => seconds(n).toFixed(3)).join('–')} s</small>`).join('') || 'Not published'}</td><td>${size === undefined ? '—' : size.toLocaleString() + ' B'}</td><td>${label}${uploaded && !refs.length ? '<small>Not published</small>' : ''}</td></tr>`;
-  }).join('')}</tbody></table>`;
+    const row = rows![index] ?? table!.insertRow();
+    row.dataset.state = state;
+    row.classList.toggle('selected', selectedObject === id);
+    const html = `<td><button data-object="${escape(id)}" aria-pressed="${selectedObject === id}" title="${escape(id)}">${escape(id.split(':').at(-1))}</button></td><td>${[...new Set(refs.map(r => escape(r.block.sample.name)))].join('<br>') || escape(pending?.sample?.name ?? 'Save in progress')}</td><td>${refs.map(r => `${escape(r.lane.flow.label)} · ${r.index + 1}<small>${bounds(r.segment.timerange).map(n => seconds(n).toFixed(3)).join('–')} s</small>`).join('') || 'Not published'}</td><td>${size === undefined ? '—' : size.toLocaleString() + ' B'}</td><td>${label}${uploaded && !refs.length ? '<small>Not published</small>' : ''}</td>`;
+    if (renderedRows.get(row) !== html) { row.innerHTML = html; renderedRows.set(row, html); }
+  });
+  if (!objects.length) list.replaceChildren();
+  else while (rows!.length > objects.length) table!.deleteRow(-1);
   $('storage-summary').textContent = !objects.length ? 'No objects stored yet.' : checkingStorage ? 'Checking storage...' : `${stored} of ${objects.length} objects stored · ${bytes.toLocaleString()} bytes`;
   if (focused) $('objects').querySelector<HTMLButtonElement>(`[data-object="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
   $('selected-object-id').textContent = selectedObject;
@@ -1120,7 +1138,7 @@ renderSamples(); wire(); renderSources(); renderTimeline();
 try {
   const client = await window.tasmStartup.wait((window as unknown as { tasmReady: Promise<TasmClient> }).tasmReady);
   store = new WorkspaceStore(client.apiUrl); store.addEventListener('requests', onFrame(() => { if (resetting) return; renderRequests(); if (busy && !reloadRequired) { const request = store.actions[0]?.requests.at(-1); setText($('runtime-status'), store.actions[0]?.playback ? 'Preparing preview…' : request?.method === 'PUT' && request.url.includes('/media/') && request.ms === undefined ? 'Uploading…' : 'Saving…'); } }));
-  store.addEventListener('ingest', () => { const session = store.ingest!; if (session.actionId !== ingestId) { ingestId = session.actionId; inspectIngest = true; selectedObject = ''; followRequests = true; } renderIngest(); renderRequests(); renderPending(); });
+  store.addEventListener('ingest', onFrame(() => { const session = store.ingest!; if (session.actionId !== ingestId) { ingestId = session.actionId; inspectIngest = true; selectedObject = ''; followRequests = true; } renderIngest(); renderRequests(); renderPending(); }));
   preview = new Preview(store); preview.addEventListener('time', updatePlayhead);
   preview.addEventListener('error', event => {
     $('preview-status').textContent = 'Preview could not play';
