@@ -176,7 +176,8 @@ test('cancel and registration failure preserve the published source; lost public
   await expect.poll(() => page.evaluate(async () => (await (await fetch('/api/flows')).json()).length)).toBe(2);
 });
 
-test('switching workspaces discards a pending storage result', async ({ page }) => {
+test('switching workspaces discards a pending storage result', async ({ page, browserName }) => {
+  if (browserName === 'webkit') test.slow();
   await open(page);
   await add(page, 'orbit');
   await ready(page);

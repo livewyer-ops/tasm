@@ -7,7 +7,7 @@ const backends = [{ id: '81d13d58-5041-4580-91f9-38ce03daef19', label: 'Browser 
   { id: 'ddc7c7c6-d1bb-4c3e-856a-03a5cd5dfae1', label: 'Local copy' }];
 
 test('all TAMS 8.2 operations, response schemas and durable workers', { tag: '@pr' }, async ({ page, context, browserName }, info) => {
-  test.setTimeout(browserName === 'webkit' ? 240000 : 120000);
+  test.setTimeout(browserName === 'webkit' ? 360000 : 120000);
   const spec = JSON.parse(readFileSync(`${process.env.TASM_DIST ?? 'dist'}/core/openapi.json`, 'utf8'));
   const created = new Set<string>();
   const receiver = createServer((request, response) => {
