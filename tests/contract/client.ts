@@ -91,6 +91,11 @@ export async function runContract(spec: Contract, host: ContractHost) {
   const profile = randomUUID();
   await call(`/service/profiles/${profile}`, 'POST', { id: profile, label: 'AAC', flow_metadata: audio }, 201);
   await get('/service/profiles'); await get(`/service/profiles/${profile}`);
+  for (const path of ['/flows', '/service/profiles']) {
+    for (const [codec, status] of [['video/h264;profile', 400], ['unknown/h264', 400], ['x-archive/x.clip+raw', 200]] as const) {
+      await call(path + '?codec=' + encodeURIComponent(codec), 'GET', undefined, status);
+    }
+  }
   const mappingId = randomUUID();
   const invalidMapping = { mp2ts_container: { pid: '100' } };
   await call(`/service/profiles/${mappingId}`, 'POST', { id: mappingId, flow_metadata: { ...audio, container_mapping: invalidMapping } }, 400);

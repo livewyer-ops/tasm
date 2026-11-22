@@ -170,15 +170,8 @@ async fn list(
         .map_err(|_| invalid_query())?
         .unwrap_or_default();
     let codec = q.last("codec");
-    if let Some(value) = codec {
-        let (kind, subtype) = value.split_once('/').ok_or_else(invalid_query)?;
-        if kind.is_empty()
-            || subtype.is_empty()
-            || subtype.contains('/')
-            || value.chars().any(char::is_whitespace)
-        {
-            return Err(invalid_query());
-        }
+    if codec.is_some_and(|value| !crate::domain::valid_mime_type(value)) {
+        return Err(invalid_query());
     }
     let collected = q.last("collected_by_ids");
     let filters = FlowFilters {

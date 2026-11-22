@@ -35,32 +35,6 @@ fn valid_id(value: &str, max: u64) -> bool {
             .split('/')
             .all(|part| !matches!(part, "" | "." | ".."))
 }
-fn valid_mime_type(value: &str) -> bool {
-    let Some((kind, subtype)) = value.split_once('/') else {
-        return false;
-    };
-    let token = |value: &str| {
-        !value.is_empty()
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+.^_`|~-".contains(&byte))
-    };
-    let kind = matches!(
-        kind,
-        "application"
-            | "audio"
-            | "font"
-            | "example"
-            | "image"
-            | "message"
-            | "model"
-            | "multipart"
-            | "text"
-            | "video"
-    ) || kind.strip_prefix("x-").is_some_and(token);
-    kind && token(subtype)
-}
-
 async fn allocate(
     State(state): State<MetadataState>,
     Extension(factory): Extension<StorageFactory>,
@@ -126,7 +100,7 @@ async fn allocate(
         .get("content_type")
         .map(|v| v.as_str().ok_or_else(invalid))
         .transpose()?;
-    if requested_content_type.is_some_and(|value| !valid_mime_type(value)) {
+    if requested_content_type.is_some_and(|value| !crate::domain::valid_mime_type(value)) {
         return Err(invalid());
     }
     if requested_content_type.is_some_and(|v| !flow.init_segments || v == container) {

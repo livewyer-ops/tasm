@@ -35,32 +35,6 @@ fn profile_id(value: &str) -> Result<Uuid, ApiError> {
 fn missing() -> ApiError {
     ApiError::not_found("The requested Profile does not exist.")
 }
-fn mime_type(value: &str) -> bool {
-    let Some((kind, subtype)) = value.split_once('/') else {
-        return false;
-    };
-    let token = |part: &str| {
-        !part.is_empty()
-            && part
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+.^_`|~-".contains(&byte))
-    };
-    matches!(
-        kind,
-        "application"
-            | "audio"
-            | "font"
-            | "example"
-            | "image"
-            | "message"
-            | "model"
-            | "multipart"
-            | "text"
-            | "video"
-    ) && token(subtype)
-        || kind.starts_with("x-") && token(&kind[2..]) && token(subtype)
-}
-
 async fn list(
     State(state): State<MetadataState>,
     request: Request<Body>,
@@ -73,7 +47,7 @@ async fn list(
     let format = query.last("format");
     let codec = query.last("codec");
     if format.is_some_and(|value| !model::FORMATS[..4].contains(&value))
-        || codec.is_some_and(|value| !mime_type(value))
+        || codec.is_some_and(|value| !crate::domain::valid_mime_type(value))
     {
         return Err(invalid_query());
     }
