@@ -39,7 +39,11 @@ pub const OBJECT_SEGMENTS: &str = "SELECT flow_id,object_id,init_object_id,timer
 
 pub const SEGMENT_SELECTION: &str = "SELECT MIN(timerange_start),MAX(timerange_end),COUNT(*),MIN(timerange) FROM tamoss_segments WHERE flow_id=?1 AND timerange_start>=?2 AND timerange_end<=?3";
 
-pub const FLOW_SEGMENT_BOUNDS: &str = "SELECT timerange_start,timerange_end FROM tamoss_segments WHERE flow_id=?1 AND timerange_end>?2 AND timerange_start<?3";
+pub const FLOW_SEGMENT_BOUNDS: &str = "SELECT DISTINCT hit.timerange_start,hit.timerange_end
+    FROM json_each(?2) candidate JOIN tamoss_segments hit ON hit.rowid=(
+        SELECT rowid FROM tamoss_segments WHERE flow_id=?1 AND timerange_start < (candidate.value->>1)
+        ORDER BY timerange_start DESC LIMIT 1)
+    WHERE hit.timerange_end > (candidate.value->>0)";
 
 pub const HAS_REFERENCES: &str = "SELECT EXISTS(SELECT 1 FROM tamoss_segments WHERE flow_id=?1 AND (object_id=?2 OR init_object_id=?2))";
 

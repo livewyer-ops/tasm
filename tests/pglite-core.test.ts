@@ -439,6 +439,27 @@ test('flow timerange searches include the segments of collection members', async
   assert.deepEqual(named(paged), ['a', 'b', 'collection', 'own']);
 });
 
+test('sparse segment ingest reads only intersecting stored ranges', async () => {
+  const { request, returned } = await store();
+  const flow = crypto.randomUUID(), path = '/flows/' + flow;
+  assert.equal((await request('PUT', path, { ...videoFlow, id: flow, source_id: crypto.randomUUID() })).status, 201);
+  const clip = (n: number) => ({ object_id: crypto.randomUUID(), timerange: `[${n}:0_${n+1}:0)`,
+    get_urls: [{ label: 'Archive', url: 'https://archive.example/media' }] });
+  const register = (clips: ReturnType<typeof clip>[]) => request('POST', path + '/segments', clips);
+  assert.equal((await register(Array.from({ length: 48 }, (_, i) => clip(i + 100)))).status, 201);
+  returned.rows = 0;
+  assert.equal((await register([clip(150), clip(151)])).status, 201);
+  const adjacent = returned.rows;
+  returned.rows = 0;
+  assert.equal((await register([clip(99), clip(152)])).status, 201);
+  assert.equal(returned.rows, adjacent, 'the 48 unrelated segments never cross the SQL bridge');
+  const candidates = [clip(98), clip(100), clip(98)];
+  const mixed = await register(candidates);
+  assert.equal(mixed.status, 200);
+  assert.deepEqual(JSON.parse(mixed.body).failed_segments.map((s: { object_id: string }) => s.object_id),
+    [candidates[1].object_id, candidates[2].object_id]);
+});
+
 test('segment deletion selects matching segments in the database', async () => {
   const { request, upload, returned } = await store();
   const flow = crypto.randomUUID();

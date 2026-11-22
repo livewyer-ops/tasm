@@ -151,6 +151,12 @@ export async function runContract(spec: Contract, host: ContractHost) {
     await call(`/flows/${flow}/${field}`, 'DELETE', undefined, 204);
   }
   await call(`/flows/${flow}/flow_collection`, 'PUT', [{ id: other, role: 'alternative' }], 204);
+  const absent = randomUUID();
+  await call(`/flows/${flow}/flow_collection`, 'PUT', [{ id: other }, { id: absent }], 400);
+  assert.deepEqual((await get(`/flows/${flow}/flow_collection`)).value, [{ id: other, role: 'alternative' }]);
+  await call(`/flows/${absent}`, 'PUT', { ...audio, id: absent, source_id: randomUUID(),
+    flow_collection: [{ id: other }, { id: randomUUID() }] }, 400);
+  await call(`/flows/${absent}`, 'GET', undefined, 404);
   await get(`/flows/${flow}/flow_collection`);
   await call(`/flows/${flow}/flow_collection`, 'DELETE', undefined, 204);
   await call(`/flows/${flow}/read_only`, 'PUT', true, 204); await get(`/flows/${flow}/read_only`);

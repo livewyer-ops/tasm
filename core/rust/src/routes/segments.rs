@@ -329,17 +329,22 @@ async fn post(
         .flatten()
         .map(str::to_owned)
         .collect::<BTreeSet<_>>();
-    let pre = db::objects::get_many(&pool, &ids.iter().cloned().collect::<Vec<_>>())
+    let mut pre = db::objects::get_many(&pool, &ids.iter().cloned().collect::<Vec<_>>())
         .await
         .map_err(internal)?;
-    for record in &pre {
-        if let Some(id) = record.record.get("init_object_id").and_then(Value::as_str) {
-            ids.insert(id.into());
-        }
+    let new_init_ids = pre
+        .iter()
+        .filter_map(|record| record.record.get("init_object_id")?.as_str())
+        .filter(|id| ids.insert((*id).to_owned()))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if !new_init_ids.is_empty() {
+        pre.extend(
+            db::objects::get_many(&pool, &new_init_ids)
+                .await
+                .map_err(internal)?,
+        );
     }
-    let pre = db::objects::get_many(&pool, &ids.iter().cloned().collect::<Vec<_>>())
-        .await
-        .map_err(internal)?;
     // Check newly uploaded objects a few at a time rather than one by one.
     let pending = pre
         .iter()
@@ -388,25 +393,23 @@ async fn post(
         .clone()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ApiError::bad_request("Bad request. The Flow 'container' is not set."))?;
-    // Only stored segments within the batch's extent can overlap it.
+    // Stored ranges are disjoint. Only the latest start before each proposed
+    // end can intersect it, even when the batch spans a long gap.
     let mut ranges = Occupied::default();
-    let extent = values
+    let candidates: BTreeSet<_> = values
         .iter()
         .filter_map(|value| {
-            segment::validate_post(value)
-                .ok()
-                .map(|(_, _, bounds)| bounds)
+            let (_, _, bounds) = segment::validate_post(value).ok()?;
+            Some([
+                crate::db::dialect::range_key(bounds.start),
+                crate::db::dialect::range_key(bounds.end),
+            ])
         })
-        .fold(None, |extent: Option<(i128, i128)>, bounds| {
-            Some(extent.map_or((bounds.start, bounds.end), |(start, end)| {
-                (start.min(bounds.start), end.max(bounds.end))
-            }))
-        });
-    if let Some((start, end)) = extent {
+        .collect();
+    if !candidates.is_empty() {
         for row in sqlx::query(crate::db::statements::FLOW_SEGMENT_BOUNDS)
             .bind(flow_id)
-            .bind(start)
-            .bind(end)
+            .bind(sqlx::types::Json(candidates))
             .fetch_all(&mut *transaction)
             .await
             .map_err(internal)?

@@ -476,14 +476,11 @@ async fn put_flow(
         .map_err(internal)?;
     let collection_ids = if let Some(collection) = map.get("flow_collection") {
         let ids = rules::validate_collection(collection, flow_id).map_err(|_| invalid_flow())?;
-        for id in &ids {
-            if db::flows::get_flow_with(&mut *tx, *id)
-                .await
-                .map_err(internal)?
-                .is_none()
-            {
-                return Err(invalid_flow());
-            }
+        if !db::flows::all_flow_ids_exist(&mut *tx, &ids)
+            .await
+            .map_err(internal)?
+        {
+            return Err(invalid_flow());
         }
         ids
     } else {
@@ -844,16 +841,13 @@ async fn set_collection(
     if flow.read_only {
         return Err(readonly());
     }
-    for child in &ids {
-        if db::flows::get_flow_with(&mut *tx, *child)
-            .await
-            .map_err(internal)?
-            .is_none()
-        {
-            return Err(ApiError::bad_request(
-                "Bad request. Invalid Flow collection.",
-            ));
-        }
+    if !db::flows::all_flow_ids_exist(&mut *tx, &ids)
+        .await
+        .map_err(internal)?
+    {
+        return Err(ApiError::bad_request(
+            "Bad request. Invalid Flow collection.",
+        ));
     }
     let mut payload = data(&flow);
     if clear {

@@ -62,6 +62,24 @@ pub struct SourceFilters {
     pub tags: TagFilters,
 }
 
+pub async fn all_flow_ids_exist<'e, E>(executor: E, ids: &[Uuid]) -> Result<bool, DbError>
+where
+    E: sqlx::Executor<'e, Database = Engine>,
+{
+    if ids.is_empty() {
+        return Ok(true);
+    }
+    let sql = format!(
+        "SELECT COUNT(*) FROM tamoss_flows WHERE {}",
+        dialect::in_array("id", "$1")
+    );
+    let count: i64 = dialect::query_scalar(&sql)
+        .bind(ids)
+        .fetch_one(executor)
+        .await?;
+    Ok(count as usize == ids.len())
+}
+
 pub async fn get_flow(pool: &Pool, id: Uuid) -> Result<Option<FlowRecord>, DbError> {
     get_flow_with(pool, id).await
 }

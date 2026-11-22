@@ -3,6 +3,10 @@ pub use crate::pglite as sqlx;
 use serde_json::json;
 pub use sqlx::{Connection, Engine, Pool, RecordRow, query, query_scalar};
 
+pub fn range_key(value: i128) -> String {
+    value.to_string()
+}
+
 /// Row lock suffix for a `SELECT` that must hold the row until commit.
 pub const FOR_UPDATE: &str = " FOR UPDATE";
 

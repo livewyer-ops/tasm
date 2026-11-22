@@ -41,10 +41,13 @@ impl Bind for i64 {
         json!(self.to_string())
     }
 }
+/// Fixed-width, sign-biased decimal text preserves ordering and all 128 bits.
+pub fn range_key(value: i128) -> String {
+    format!("{:039}", (value as u128) ^ (1_u128 << 127))
+}
 impl Bind for i128 {
     fn value(&self) -> Value {
-        // Fixed-width, sign-biased decimal text preserves ordering and all 128 bits.
-        json!(format!("{:039}", (*self as u128) ^ (1_u128 << 127)))
+        json!(range_key(*self))
     }
 }
 impl Bind for OffsetDateTime {

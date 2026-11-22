@@ -4,6 +4,8 @@ use serde_json::Value;
 pub use sqlx::{Connection, Engine, Pool, RecordRow};
 use std::borrow::Cow;
 
+pub use sqlx::range_key;
+
 /// The Durable Object runs one transaction at a time, so rows need no lock.
 pub const FOR_UPDATE: &str = "";
 
