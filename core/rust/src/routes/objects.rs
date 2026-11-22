@@ -11,7 +11,7 @@ use axum::{
     routing::any,
 };
 use serde_json::{Value, json};
-use sqlx::{Engine, Row, Transaction};
+use sqlx::{Row, Transaction};
 use uuid::Uuid;
 
 use crate::{
@@ -166,7 +166,7 @@ async fn get_object(
     let storage_tag_exists = params.dynamic_bool("storage_backend_tag_exists.")?;
     let page = super::service::page(&params)?;
 
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let record = db::objects::get(&pool, &object_id)
         .await
         .map_err(internal)?
@@ -452,7 +452,7 @@ async fn post_instance(
     }
 
     let backends = storage.backends().await.map_err(internal)?;
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let mut transaction = pool.begin().await.map_err(internal)?;
     db::objects::lock_sorted(&mut transaction, [object_id.clone()])
         .await
@@ -564,7 +564,7 @@ async fn delete_instance(
         return Err(invalid_query());
     }
     let backends = storage.backends().await.map_err(internal)?;
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let mut transaction = pool.begin().await.map_err(internal)?;
     db::objects::lock_sorted(&mut transaction, [object_id.clone()])
         .await
@@ -655,7 +655,7 @@ fn invalid_instance_json() -> ApiError {
 }
 
 async fn media_record_in(
-    transaction: &mut Transaction<'_, Engine>,
+    transaction: &mut Transaction,
     object_id: &str,
 ) -> Result<Option<MediaObjectRecord>, ApiError> {
     let row = sqlx::query(crate::db::statements::GET_OBJECT)

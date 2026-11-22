@@ -37,11 +37,11 @@ pub struct Tasm {
 impl Tasm {
     #[wasm_bindgen(constructor)]
     pub fn new(bridge: js_sys::Function, media_base: String) -> Self {
-        let database = db::Database(host::Host::new(bridge));
+        let pool = sql::Pool(host::Host::new(bridge));
         let settings = Arc::new(config::Settings::browser(media_base));
         Self {
-            router: http::router(database.clone(), settings.clone()),
-            worker: worker::Worker::new(database, settings),
+            router: http::router(pool.clone(), settings.clone()),
+            worker: worker::Worker::new(pool, settings),
         }
     }
     pub async fn request(&self, request_json: String) -> Result<String, JsValue> {

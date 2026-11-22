@@ -53,14 +53,10 @@ async fn list(
     )?;
     let reverse = query.bool("reverse_order")?.unwrap_or(false);
     let page_request = page(&query)?;
-    let result = db::service::list_webhooks(
-        &state.pool().await?,
-        &tag_filters(&query)?,
-        reverse,
-        &page_request,
-    )
-    .await
-    .map_err(internal)?;
+    let result =
+        db::service::list_webhooks(&state.pool, &tag_filters(&query)?, reverse, &page_request)
+            .await
+            .map_err(internal)?;
     let count = result.items.len();
     paged_response(
         &request,
@@ -78,7 +74,7 @@ async fn get_webhook(
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
     query(&request, &[], &[])?;
-    let record = db::service::get_webhook(&state.pool().await?, id(&raw)?)
+    let record = db::service::get_webhook(&state.pool, id(&raw)?)
         .await
         .map_err(internal)?
         .ok_or_else(not_found)?;
@@ -172,7 +168,7 @@ async fn create(
         tags,
         record: envelope,
     };
-    db::service::save_webhook(&state.pool().await?, &record)
+    db::service::save_webhook(&state.pool, &record)
         .await
         .map_err(internal)?;
     Ok((StatusCode::CREATED, Json(model::webhook(&record))).into_response())
@@ -193,8 +189,7 @@ async fn update(
     if model::uuid_field(map, "id").map_err(|_| invalid())? != path {
         return Err(not_found());
     }
-    let pool = state.pool().await?;
-    let mut tx = pool.begin().await.map_err(internal)?;
+    let mut tx = state.pool.begin().await.map_err(internal)?;
     let existing = db::service::get_webhook_with(&mut *tx, path)
         .await
         .map_err(internal)?
@@ -238,8 +233,7 @@ async fn remove(
 ) -> Result<Response, ApiError> {
     query(&request, &[], &[])?;
     let id = id(&raw)?;
-    let pool = state.pool().await?;
-    let mut tx = pool.begin().await.map_err(internal)?;
+    let mut tx = state.pool.begin().await.map_err(internal)?;
     if db::service::get_webhook_with(&mut *tx, id)
         .await
         .map_err(internal)?

@@ -21,12 +21,4 @@ pub enum DbError {
     Page,
 }
 
-#[derive(Clone)]
-pub struct Database(pub crate::host::Host);
-impl Database {
-    pub async fn pool(&self) -> Result<crate::pglite::PgPool, DbError> {
-        Ok(crate::pglite::PgPool(self.0.clone()))
-    }
-}
-
 pub(crate) mod statements;

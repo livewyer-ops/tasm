@@ -38,13 +38,13 @@ pub struct Tasm {
 impl Tasm {
     #[wasm_bindgen(constructor)]
     pub fn new(bridge: js_sys::Function, configuration: String) -> Result<Tasm, JsValue> {
-        let database = db::Database(host::Host::new(bridge));
+        let pool = sql::Pool(host::Host::new(bridge));
         let settings =
             Arc::new(serde_json::from_str::<config::Settings>(&configuration).map_err(js_error)?);
         Ok(Self {
-            router: http::router(database.clone(), settings.clone()),
+            router: http::router(pool.clone(), settings.clone()),
             queue_retention_seconds: settings.worker_queue_retention_seconds,
-            worker: worker::Worker::new(database, settings),
+            worker: worker::Worker::new(pool, settings),
         })
     }
     #[wasm_bindgen(getter, js_name = allocationLifetimeSeconds)]

@@ -74,7 +74,7 @@ async fn list(
     };
     let page = super::service::page(&params)?;
     let result = db::queues::list_delete_requests(
-        &state.pool().await?,
+        &state.pool,
         sort,
         reverse,
         i64::try_from(state.settings.worker_queue_retention_seconds).unwrap_or(i64::MAX),
@@ -107,7 +107,7 @@ async fn detail(
     let id: Uuid = id
         .parse()
         .map_err(|_| ApiError::not_found("The requested flow delete request does not exist."))?;
-    let value = db::queues::get_delete_request(&state.pool().await?, id)
+    let value = db::queues::get_delete_request(&state.pool, id)
         .await
         .map_err(internal)?
         .ok_or_else(|| ApiError::not_found("The requested flow delete request does not exist."))?;

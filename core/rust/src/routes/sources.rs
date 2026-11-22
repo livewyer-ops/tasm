@@ -95,7 +95,7 @@ async fn list(
         tags: tag_filters(&query)?,
     };
     let page_request = page(&query)?;
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let result = db::flows::list_sources_page(&pool, &filters, sort, reverse, &page_request)
         .await
         .map_err(internal)?;
@@ -129,7 +129,7 @@ async fn get_source(
 ) -> Result<Response, ApiError> {
     query(&request, &[], &[])?;
     let id = id(&raw)?;
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let source = db::flows::get_source(&pool, id)
         .await
         .map_err(internal)?
@@ -147,7 +147,7 @@ async fn scalar(
     name: &str,
 ) -> Result<Response, ApiError> {
     query(&request, &[], &[])?;
-    let source = db::flows::get_source(&state.pool().await?, id(&raw)?)
+    let source = db::flows::get_source(&state.pool, id(&raw)?)
         .await
         .map_err(internal)?
         .ok_or_else(missing)?;
@@ -200,7 +200,7 @@ async fn edit_source(
     edit: SourceEdit,
 ) -> Result<Response, ApiError> {
     let source_id = id(&raw)?;
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let mut tx = pool.begin().await.map_err(internal)?;
     let mut source = db::flows::get_source_for_update(&mut *tx, source_id)
         .await
@@ -267,7 +267,7 @@ async fn get_tags(
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
     query(&request, &[], &[])?;
-    let source = db::flows::get_source(&state.pool().await?, id(&raw)?)
+    let source = db::flows::get_source(&state.pool, id(&raw)?)
         .await
         .map_err(internal)?
         .ok_or_else(missing)?;
@@ -279,7 +279,7 @@ async fn get_tag(
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
     query(&request, &[], &[])?;
-    let source = db::flows::get_source(&state.pool().await?, id(&raw)?)
+    let source = db::flows::get_source(&state.pool, id(&raw)?)
         .await
         .map_err(internal)?
         .ok_or_else(missing)?;

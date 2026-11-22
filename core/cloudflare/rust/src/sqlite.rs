@@ -2,17 +2,12 @@
 use crate::host::Host;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-use std::{
-    marker::PhantomData,
-    ops::{Deref, DerefMut},
-};
+use std::marker::PhantomData;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
+pub use tasm_core::db::transaction::{Connection, Pool, Transaction};
 pub use tasm_core::host::Error;
-#[derive(Clone)]
-pub struct Pool(pub Host);
-pub struct Connection(pub Host);
 pub struct Sqlite;
 pub trait Executor<'a>: Send {
     type Database;
@@ -28,52 +23,6 @@ impl<'a> Executor<'a> for &mut Connection {
     type Database = Sqlite;
     fn host(&self) -> Host {
         self.0.clone()
-    }
-}
-
-pub struct Transaction<'a, D> {
-    connection: Connection,
-    finished: bool,
-    marker: PhantomData<&'a D>,
-}
-impl Pool {
-    pub async fn begin(&self) -> Result<Transaction<'_, Sqlite>, Error> {
-        self.0.call("begin", Value::Null).await?;
-        Ok(Transaction {
-            connection: Connection(self.0.clone()),
-            finished: false,
-            marker: PhantomData,
-        })
-    }
-}
-impl<D> Deref for Transaction<'_, D> {
-    type Target = Connection;
-    fn deref(&self) -> &Connection {
-        &self.connection
-    }
-}
-impl<D> DerefMut for Transaction<'_, D> {
-    fn deref_mut(&mut self) -> &mut Connection {
-        &mut self.connection
-    }
-}
-impl<D> Transaction<'_, D> {
-    pub async fn commit(mut self) -> Result<(), Error> {
-        self.connection.0.call("commit", Value::Null).await?;
-        self.finished = true;
-        Ok(())
-    }
-    pub async fn rollback(mut self) -> Result<(), Error> {
-        self.connection.0.call("rollback", Value::Null).await?;
-        self.finished = true;
-        Ok(())
-    }
-}
-impl<D> Drop for Transaction<'_, D> {
-    fn drop(&mut self) {
-        if !self.finished {
-            self.connection.0.fire("rollback", Value::Null);
-        }
     }
 }
 

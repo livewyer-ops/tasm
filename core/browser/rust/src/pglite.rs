@@ -3,79 +3,28 @@
 use crate::host::Host;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-use std::{
-    marker::PhantomData,
-    ops::{Deref, DerefMut},
-};
+use std::marker::PhantomData;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 pub use tasm_core::host::Error;
 
-#[derive(Clone)]
-pub struct PgPool(pub Host);
-pub struct PgConnection(pub Host);
+pub use tasm_core::db::transaction::{Connection, Pool, Transaction};
 pub struct Postgres;
 pub trait Executor<'a>: Send {
     type Database;
     fn host(&self) -> Host;
 }
-impl<'a> Executor<'a> for &PgPool {
+impl<'a> Executor<'a> for &Pool {
     type Database = Postgres;
     fn host(&self) -> Host {
         self.0.clone()
     }
 }
-impl<'a> Executor<'a> for &mut PgConnection {
+impl<'a> Executor<'a> for &mut Connection {
     type Database = Postgres;
     fn host(&self) -> Host {
         self.0.clone()
-    }
-}
-
-pub struct Transaction<'a, D> {
-    connection: PgConnection,
-    finished: bool,
-    marker: PhantomData<&'a D>,
-}
-impl PgPool {
-    pub async fn begin(&self) -> Result<Transaction<'_, Postgres>, Error> {
-        self.0.call("begin", Value::Null).await?;
-        Ok(Transaction {
-            connection: PgConnection(self.0.clone()),
-            finished: false,
-            marker: PhantomData,
-        })
-    }
-}
-impl<D> Deref for Transaction<'_, D> {
-    type Target = PgConnection;
-    fn deref(&self) -> &PgConnection {
-        &self.connection
-    }
-}
-impl<D> DerefMut for Transaction<'_, D> {
-    fn deref_mut(&mut self) -> &mut PgConnection {
-        &mut self.connection
-    }
-}
-impl<D> Transaction<'_, D> {
-    pub async fn commit(mut self) -> Result<(), Error> {
-        self.connection.0.call("commit", Value::Null).await?;
-        self.finished = true;
-        Ok(())
-    }
-    pub async fn rollback(mut self) -> Result<(), Error> {
-        self.connection.0.call("rollback", Value::Null).await?;
-        self.finished = true;
-        Ok(())
-    }
-}
-impl<D> Drop for Transaction<'_, D> {
-    fn drop(&mut self) {
-        if !self.finished {
-            self.connection.0.fire("rollback", Value::Null);
-        }
     }
 }
 
@@ -357,6 +306,4 @@ impl<D> QueryBuilder<'_, D> {
     }
 }
 
-pub use {
-    PgConnection as Connection, PgPool as Pool, Postgres as Engine, postgres::PgRow as RecordRow,
-};
+pub use {Postgres as Engine, postgres::PgRow as RecordRow};

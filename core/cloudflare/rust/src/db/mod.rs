@@ -21,12 +21,4 @@ pub enum DbError {
     Page,
 }
 
-#[derive(Clone)]
-pub struct Database(pub crate::host::Host);
-impl Database {
-    pub async fn pool(&self) -> Result<crate::sqlite::Pool, DbError> {
-        Ok(crate::sqlite::Pool(self.0.clone()))
-    }
-}
-
 pub(crate) mod statements;

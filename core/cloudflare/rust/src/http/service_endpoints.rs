@@ -27,7 +27,7 @@ async fn openapi(
 ) -> Result<Response, ApiError> {
     query(&request, &[], &[])?;
     let document = state
-        .database
+        .pool
         .0
         .call("openapi", Value::Null)
         .await
@@ -41,7 +41,7 @@ async fn ready(
 ) -> Result<Response, ApiError> {
     query(&request, &[], &[])?;
     state
-        .database
+        .pool
         .0
         .call("ready", Value::Null)
         .await

@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::{
     config::Settings,
-    db::{self, Database, PageRequest, ServiceMetadata, TagFilters, WebhookDelivery},
+    db::{self, PageRequest, ServiceMetadata, TagFilters, WebhookDelivery},
     domain::model,
     http::{
         MAX_JSON_BODY_BYTES,
@@ -28,16 +28,13 @@ use crate::{
 
 #[derive(Clone)]
 pub struct MetadataState {
-    pub database: Database,
+    pub pool: Pool,
     pub settings: Arc<Settings>,
 }
 
 impl MetadataState {
-    pub fn new(database: Database, settings: Arc<Settings>) -> Self {
-        Self { database, settings }
-    }
-    pub(crate) async fn pool(&self) -> Result<Pool, ApiError> {
-        self.database.pool().await.map_err(internal)
+    pub fn new(pool: Pool, settings: Arc<Settings>) -> Self {
+        Self { pool, settings }
     }
 }
 
@@ -105,7 +102,7 @@ pub(crate) async fn service(
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
     query(&request, &[], &[])?;
-    let metadata = db::service::get_metadata(&state.pool().await?)
+    let metadata = db::service::get_metadata(&state.pool)
         .await
         .map_err(internal)?;
     let name = metadata.as_ref().map_or_else(
@@ -149,7 +146,7 @@ pub(crate) async fn update_service(
         }
     };
     db::service::save_metadata(
-        &state.pool().await?,
+        &state.pool,
         &ServiceMetadata {
             name: field("name")?,
             description: field("description")?,
@@ -172,7 +169,7 @@ pub(crate) async fn storage_backends(
     let reverse = query.bool("reverse_order")?.unwrap_or(false);
     let page_request = page(&query)?;
     let result = db::service::list_storage_backends(
-        &state.pool().await?,
+        &state.pool,
         &tag_filters(&query)?,
         reverse,
         &page_request,

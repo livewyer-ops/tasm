@@ -12,7 +12,7 @@ use axum::{
     routing::get,
 };
 use serde_json::{Value, json};
-use sqlx::{Engine, Row, Transaction};
+use sqlx::{Row, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -148,7 +148,7 @@ async fn list(
         .map_err(|_| invalid_query())?
         .unwrap_or_default();
     let page_request = page(&params)?;
-    let pool = state.pool().await?;
+    let pool = state.pool;
     // Filter, order and page in SQL so a request costs one page, not the
     // whole flow. Segments in a flow never overlap, so ordering by start is
     // the same as ordering by end.
@@ -316,7 +316,7 @@ async fn post(
     if values.iter().any(|value| !valid_post_shape(value)) {
         return Err(invalid_json());
     }
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let backends = storage.backends().await.map_err(internal)?;
     let mut ids = values
         .iter()
@@ -471,7 +471,7 @@ async fn register_one(
     backends: &[crate::db::StorageBackend],
     flow: &crate::db::FlowRecord,
     container: &str,
-    transaction: &mut Transaction<'_, Engine>,
+    transaction: &mut Transaction,
     objects: &mut BTreeMap<String, MediaObjectRecord>,
     ranges: &mut Occupied,
     uploads: &BTreeMap<String, Option<i64>>,
@@ -782,7 +782,7 @@ async fn delete(
         .map_err(|_| invalid_query())?;
     let object_id = params.last("object_id").map(str::to_owned);
     let backends = storage.backends().await.map_err(internal)?;
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let mut transaction = pool.begin().await.map_err(internal)?;
     db::flows::lock_flow_segments(&mut *transaction, flow_id)
         .await
@@ -933,7 +933,7 @@ async fn delete(
 }
 
 async fn segment_events(
-    transaction: &mut Transaction<'_, Engine>,
+    transaction: &mut Transaction,
     flow: &crate::db::FlowRecord,
     kind: &str,
     segments: &[SegmentRecord],
@@ -959,7 +959,7 @@ pub(crate) async fn webhook_event(
     options: &serde_json::Map<String, Value>,
 ) -> Result<Value, ApiError> {
     let pool = sqlx::Pool(connection.0.clone());
-    let storage = StorageFactory::new(db::Database(connection.0.clone()));
+    let storage = StorageFactory::new(pool.clone());
     let mut event = event.clone();
     let segments = event["segments"]
         .as_array_mut()
@@ -1055,7 +1055,7 @@ pub(crate) async fn webhook_event(
 }
 
 async fn queue_cleanup(
-    transaction: &mut Transaction<'_, Engine>,
+    transaction: &mut Transaction,
     media: &MediaObject,
     now: OffsetDateTime,
 ) -> Result<(), ApiError> {
@@ -1076,7 +1076,7 @@ async fn queue_cleanup(
 }
 
 async fn segments_in(
-    transaction: &mut Transaction<'_, Engine>,
+    transaction: &mut Transaction,
     flow_id: Uuid,
     object_id: &str,
     start: i128,
@@ -1109,7 +1109,7 @@ async fn segments_in(
         .collect()
 }
 async fn media_records_in(
-    transaction: &mut Transaction<'_, Engine>,
+    transaction: &mut Transaction,
     ids: &BTreeSet<String>,
 ) -> Result<Vec<MediaObjectRecord>, ApiError> {
     sqlx::query(crate::db::statements::GET_OBJECTS)
@@ -1136,7 +1136,7 @@ async fn media_records_in(
         .collect()
 }
 async fn object_ranges(
-    transaction: &mut Transaction<'_, Engine>,
+    transaction: &mut Transaction,
     object_id: &str,
 ) -> Result<Vec<String>, ApiError> {
     let rows = sqlx::query(crate::db::statements::OBJECT_RANGES)

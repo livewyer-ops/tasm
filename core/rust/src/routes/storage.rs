@@ -103,7 +103,7 @@ async fn allocate(
             "Bad request. Use content_type instead of the unsupported content-type field.",
         ));
     }
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let mut transaction = pool.begin().await.map_err(internal)?;
     db::flows::lock_flow_segments(&mut *transaction, flow_id)
         .await

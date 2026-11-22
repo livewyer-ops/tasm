@@ -208,7 +208,7 @@ async fn list(
     };
     let include = q.bool("include_timerange")?.unwrap_or(false);
     let page_request = page(&q)?;
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let result = db::flows::list_flows_page(&pool, &filters, sort, reverse, &page_request)
         .await
         .map_err(internal)?;
@@ -268,7 +268,7 @@ async fn get_flow(
         .map_err(|_| invalid_query())?
         .unwrap_or_default();
     let id = id(&raw)?;
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let flow = db::flows::get_flow(&pool, id)
         .await
         .map_err(internal)?
@@ -353,7 +353,7 @@ async fn put_flow(
         .get::<Actor>()
         .cloned()
         .expect("auth identity");
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let mut tx = pool.begin().await.map_err(internal)?;
     db::flows::lock_flow_segments(&mut *tx, flow_id)
         .await
@@ -665,7 +665,7 @@ async fn delete_flow(
         .get::<Actor>()
         .cloned()
         .expect("auth identity");
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let mut tx = pool.begin().await.map_err(internal)?;
     db::flows::lock_flow_segments(&mut *tx, flow_id)
         .await
@@ -792,7 +792,7 @@ async fn delete_flow(
 }
 
 async fn load(state: &MetadataState, raw: &str) -> Result<FlowRecord, ApiError> {
-    db::flows::get_flow(&state.pool().await?, id(raw)?)
+    db::flows::get_flow(&state.pool, id(raw)?)
         .await
         .map_err(internal)?
         .ok_or_else(missing)
@@ -839,7 +839,7 @@ async fn set_collection(
     };
     let ids = rules::validate_collection(&value, flow_id)
         .map_err(|_| ApiError::bad_request("Bad request. Invalid Flow collection."))?;
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let mut tx = pool.begin().await.map_err(internal)?;
     db::flows::lock_flow_segments(&mut *tx, flow_id)
         .await
@@ -966,7 +966,7 @@ async fn set_property(
         }
         Some(value)
     };
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let mut tx = pool.begin().await.map_err(internal)?;
     db::flows::lock_flow_segments(&mut *tx, flow_id)
         .await
@@ -1080,7 +1080,7 @@ async fn set_tag(
         }
         Some(value)
     };
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let mut tx = pool.begin().await.map_err(internal)?;
     db::flows::lock_flow_segments(&mut *tx, flow_id)
         .await

@@ -79,7 +79,7 @@ async fn list(
     }
     let page_request = page(&query)?;
     let result = db::profiles::list(
-        &state.pool().await?,
+        &state.pool,
         format,
         codec,
         query.last("label"),
@@ -104,7 +104,7 @@ async fn get_profile(
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
     query(&request, &[], &[])?;
-    let record = db::profiles::get(&state.pool().await?, profile_id(&id)?)
+    let record = db::profiles::get(&state.pool, profile_id(&id)?)
         .await
         .map_err(internal)?
         .ok_or_else(missing)?;
@@ -183,7 +183,7 @@ async fn create(
         record: record_value,
         created,
     };
-    let pool = state.pool().await?;
+    let pool = state.pool;
     let mut tx = pool.begin().await.map_err(internal)?;
     db::profiles::lock(&mut *tx, path).await.map_err(internal)?;
     if db::profiles::get_with(&mut *tx, path)

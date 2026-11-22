@@ -7,16 +7,13 @@ use std::{
 use web_time::Instant;
 
 use serde_json::{Value, json};
-use sqlx::Row;
+use sqlx::{Pool, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
     config::Settings,
-    db::{
-        self, Database, MediaObjectRecord, ObjectCleanup, SegmentRecord, StorageBackend,
-        WebhookDelivery,
-    },
+    db::{self, MediaObjectRecord, ObjectCleanup, SegmentRecord, StorageBackend, WebhookDelivery},
     domain::{
         model,
         object::{MediaObject, ObjectInstance},
@@ -38,16 +35,16 @@ pub enum WorkerError {
 
 #[derive(Clone)]
 pub struct Worker {
-    database: Database,
+    pool: Pool,
     storage: StorageFactory,
     settings: Arc<Settings>,
 }
 
 impl Worker {
-    pub fn new(database: Database, settings: Arc<Settings>) -> Self {
-        let storage = StorageFactory::new(database.clone());
+    pub fn new(pool: Pool, settings: Arc<Settings>) -> Self {
+        let storage = StorageFactory::new(pool.clone());
         Self {
-            database,
+            pool,
             storage,
             settings,
         }
@@ -93,8 +90,7 @@ impl Worker {
             stage("webhooks", self.process_webhooks(limit, lease).await);
         }
         let purged = async {
-            let pool = self.database.pool().await?;
-            db::queues::purge(&pool, retention, 1000).await?;
+            db::queues::purge(&self.pool, retention, 1000).await?;
             Ok(0)
         };
         stage("purge", purged.await);
@@ -102,9 +98,8 @@ impl Worker {
     }
 
     async fn process_delete_requests(&self, limit: i64, lease: i64) -> Result<u64, WorkerError> {
-        let pool = self.database.pool().await?;
         let requests =
-            db::queues::claim_delete_requests(&pool, &self.settings.worker_id, limit, lease)
+            db::queues::claim_delete_requests(&self.pool, &self.settings.worker_id, limit, lease)
                 .await?;
         for request in &requests {
             if let Err(error) = self
@@ -113,7 +108,7 @@ impl Worker {
             {
                 tracing::error!(request_id=%request.id, error=%redacted(&error.to_string()), "delete request processing failed");
                 db::queues::fail_delete_request(
-                    &pool,
+                    &self.pool,
                     request.id,
                     &self.settings.worker_id,
                     queue_error(
@@ -134,7 +129,6 @@ impl Worker {
         record: &Value,
         lease: i64,
     ) -> Result<(), WorkerError> {
-        let pool = self.database.pool().await?;
         let delete_flow = record
             .get("delete_flow")
             .and_then(Value::as_bool)
@@ -143,7 +137,7 @@ impl Worker {
             // The segment phase committed earlier; only object cleanup is left.
             return self.finish_delete_request(id, lease).await;
         };
-        let mut transaction = pool.begin().await.map_err(db::DbError::from)?;
+        let mut transaction = self.pool.begin().await.map_err(db::DbError::from)?;
         db::flows::lock_flow_segments(&mut *transaction, flow_id).await?;
         let mut flow = db::flows::get_flow_with(&mut *transaction, flow_id).await?;
         let mut parents = db::flows::list_flows_collecting(&mut *transaction, &[flow_id]).await?;
@@ -355,7 +349,7 @@ impl Worker {
         }
         transaction.commit().await.map_err(db::DbError::from)?;
         if remaining {
-            db::queues::release_delete_request(&pool, id, &self.settings.worker_id).await?;
+            db::queues::release_delete_request(&self.pool, id, &self.settings.worker_id).await?;
             Ok(())
         } else {
             self.finish_delete_request(id, lease).await
@@ -363,26 +357,26 @@ impl Worker {
     }
 
     async fn finish_delete_request(&self, id: Uuid, lease: i64) -> Result<(), WorkerError> {
-        let pool = self.database.pool().await?;
         {
             sqlx::query(crate::db::statements::CLAIM_CLEANUPS)
                 .bind(id)
                 .bind(&self.settings.worker_id)
                 .bind(lease)
-                .execute(&pool)
+                .execute(&self.pool)
                 .await
                 .map_err(db::DbError::from)?;
-            let cleanups = db::queues::list_parent_cleanups(&pool, id).await?;
+            let cleanups = db::queues::list_parent_cleanups(&self.pool, id).await?;
             self.run_cleanup_batch(cleanups).await?;
-            if db::queues::list_parent_cleanups(&pool, id)
+            if db::queues::list_parent_cleanups(&self.pool, id)
                 .await?
                 .iter()
                 .all(|item| item.status == "done")
             {
-                db::queues::complete_delete_request(&pool, id, &self.settings.worker_id).await?;
+                db::queues::complete_delete_request(&self.pool, id, &self.settings.worker_id)
+                    .await?;
             } else {
                 db::queues::fail_delete_request(
-                    &pool,
+                    &self.pool,
                     id,
                     &self.settings.worker_id,
                     queue_error(
@@ -397,11 +391,12 @@ impl Worker {
     }
 
     async fn process_copies(&self, limit: i64, lease: i64) -> Result<u64, WorkerError> {
-        let pool = self.database.pool().await?;
         let copies =
-            db::queues::claim_copies(&pool, &self.settings.worker_id, limit, lease).await?;
+            db::queues::claim_copies(&self.pool, &self.settings.worker_id, limit, lease).await?;
         for copy in &copies {
-            if !db::queues::begin_copy_attempt(&pool, copy.id, &self.settings.worker_id).await? {
+            if !db::queues::begin_copy_attempt(&self.pool, copy.id, &self.settings.worker_id)
+                .await?
+            {
                 continue;
             }
             let result = self
@@ -414,12 +409,13 @@ impl Worker {
                 .await;
             match result {
                 Ok(()) => {
-                    db::queues::complete_copy(&pool, copy.id, &self.settings.worker_id).await?;
+                    db::queues::complete_copy(&self.pool, copy.id, &self.settings.worker_id)
+                        .await?;
                 }
                 Err(error) => {
                     tracing::error!(copy_id=%copy.id, error=%redacted(&error.to_string()), "object copy failed");
                     db::queues::fail_copy(
-                        &pool,
+                        &self.pool,
                         copy.id,
                         &self.settings.worker_id,
                         queue_error(
@@ -441,11 +437,10 @@ impl Worker {
         destination_id: Uuid,
         copy_record: &Value,
     ) -> Result<(), WorkerError> {
-        let pool = self.database.pool().await?;
         let backends = self.storage.backends().await?;
         let source = backend(&backends, source_id)?;
         let destination = backend(&backends, destination_id)?;
-        let Some(record) = db::objects::get(&pool, &object_id).await? else {
+        let Some(record) = db::objects::get(&self.pool, &object_id).await? else {
             return Ok(());
         };
         if record.record.get("allocation_id") != copy_record.get("allocation_id") {
@@ -470,7 +465,7 @@ impl Worker {
         self.storage
             .copy(source, destination, &object_id, allocation_id)
             .await?;
-        let mut transaction = pool.begin().await.map_err(db::DbError::from)?;
+        let mut transaction = self.pool.begin().await.map_err(db::DbError::from)?;
         db::objects::lock_sorted(&mut transaction, [object_id.clone()]).await?;
         let row = sqlx::query(crate::db::statements::GET_OBJECT)
             .bind(&object_id)
@@ -505,10 +500,9 @@ impl Worker {
     }
 
     async fn queue_stale_allocations(&self, limit: i64) -> Result<u64, WorkerError> {
-        let pool = self.database.pool().await?;
         let seconds =
             i64::try_from(self.allocation_lifetime_seconds()).map_err(|_| WorkerError::Bounds)?;
-        let mut transaction = pool.begin().await.map_err(db::DbError::from)?;
+        let mut transaction = self.pool.begin().await.map_err(db::DbError::from)?;
         let rows = sqlx::query(crate::db::statements::EXPIRED_ALLOCATIONS)
             .bind(seconds)
             .bind(limit)
@@ -537,25 +531,23 @@ impl Worker {
     }
 
     async fn process_cleanups(&self, limit: i64, lease: i64) -> Result<u64, WorkerError> {
-        let pool = self.database.pool().await?;
         let cleanups =
-            db::queues::claim_cleanups(&pool, &self.settings.worker_id, limit, lease).await?;
+            db::queues::claim_cleanups(&self.pool, &self.settings.worker_id, limit, lease).await?;
         let count = cleanups.len() as u64;
         self.run_cleanup_batch(cleanups).await?;
         Ok(count)
     }
 
     async fn run_cleanup_batch(&self, cleanups: Vec<ObjectCleanup>) -> Result<(), WorkerError> {
-        let pool = self.database.pool().await?;
         let backends = self.storage.backends().await?;
         let mut batches: BTreeMap<Uuid, (StorageBackend, Vec<ObjectCleanup>)> = BTreeMap::new();
         for cleanup in cleanups {
-            if !db::queues::begin_cleanup_attempt(&pool, cleanup.id, &self.settings.worker_id)
+            if !db::queues::begin_cleanup_attempt(&self.pool, cleanup.id, &self.settings.worker_id)
                 .await?
             {
                 continue;
             }
-            let advertised = db::objects::get(&pool, &cleanup.object_id)
+            let advertised = db::objects::get(&self.pool, &cleanup.object_id)
                 .await?
                 .is_some_and(|record| {
                     record.record.get("allocation_id") == cleanup.record.get("allocation_id")
@@ -563,7 +555,8 @@ impl Worker {
                             .contains(&cleanup.storage_backend_id)
                 });
             if advertised {
-                db::queues::complete_cleanup(&pool, cleanup.id, &self.settings.worker_id).await?;
+                db::queues::complete_cleanup(&self.pool, cleanup.id, &self.settings.worker_id)
+                    .await?;
             } else if let Some(value) = backends
                 .iter()
                 .find(|value| value.id == cleanup.storage_backend_id)
@@ -576,7 +569,7 @@ impl Worker {
                     .push(cleanup);
             } else {
                 db::queues::fail_cleanup(
-                    &pool,
+                    &self.pool,
                     cleanup.id,
                     &self.settings.worker_id,
                     queue_error(
@@ -594,11 +587,11 @@ impl Worker {
                 .await;
             for cleanup in batch {
                 if result.is_ok() {
-                    db::queues::complete_cleanup(&pool, cleanup.id, &self.settings.worker_id)
+                    db::queues::complete_cleanup(&self.pool, cleanup.id, &self.settings.worker_id)
                         .await?;
                 } else {
                     db::queues::fail_cleanup(
-                        &pool,
+                        &self.pool,
                         cleanup.id,
                         &self.settings.worker_id,
                         queue_error(
@@ -614,9 +607,8 @@ impl Worker {
     }
 
     async fn process_webhooks(&self, limit: i64, lease: i64) -> Result<u64, WorkerError> {
-        let pool = self.database.pool().await?;
         let deliveries =
-            db::queues::claim_webhooks(&pool, &self.settings.worker_id, limit, lease).await?;
+            db::queues::claim_webhooks(&self.pool, &self.settings.worker_id, limit, lease).await?;
         let count = deliveries.len() as u64;
         // One delivery at a time: the hosts release the store lock while a
         // receiver answers, which is only safe with a single request in flight.
@@ -633,8 +625,9 @@ impl Worker {
     }
 
     async fn process_webhook(&self, delivery: WebhookDelivery) -> Result<(), WorkerError> {
-        let pool = self.database.pool().await?;
-        if !db::queues::begin_webhook_attempt(&pool, delivery.id, &self.settings.worker_id).await? {
+        if !db::queues::begin_webhook_attempt(&self.pool, delivery.id, &self.settings.worker_id)
+            .await?
+        {
             return Ok(());
         }
         let attempt = delivery
@@ -643,9 +636,9 @@ impl Worker {
             .and_then(Value::as_u64)
             .unwrap_or(0)
             + 1;
-        let Some(live) = db::service::get_webhook(&pool, delivery.webhook_id).await? else {
+        let Some(live) = db::service::get_webhook(&self.pool, delivery.webhook_id).await? else {
             db::queues::terminal_webhook(
-                &pool,
+                &self.pool,
                 delivery.id,
                 &self.settings.worker_id,
                 "dead",
@@ -657,7 +650,7 @@ impl Worker {
         };
         if !matches!(live.status.as_str(), "created" | "started") {
             db::queues::terminal_webhook(
-                &pool,
+                &self.pool,
                 delivery.id,
                 &self.settings.worker_id,
                 "dead",
@@ -688,7 +681,7 @@ impl Worker {
         let policy = WebhookPolicy::from_settings(&self.settings);
         let started = Instant::now();
         let result = webhooks::deliver(
-            &self.database.0,
+            &self.pool.0,
             delivery.id,
             &webhook,
             &payload,
@@ -760,7 +753,7 @@ impl Worker {
                 let failure = error
                     .clone()
                     .unwrap_or_else(|| queue_error("RequestError", "Webhook request failed"));
-                let mut transaction = pool.begin().await.map_err(db::DbError::from)?;
+                let mut transaction = self.pool.begin().await.map_err(db::DbError::from)?;
                 let finished = sqlx::query(crate::db::statements::FAIL_WEBHOOK)
                     .bind(delivery.id)
                     .bind(&self.settings.worker_id)
@@ -787,7 +780,7 @@ impl Worker {
                 transaction.commit().await.map_err(db::DbError::from)?;
             } else {
                 db::queues::terminal_webhook(
-                    &pool,
+                    &self.pool,
                     delivery.id,
                     &self.settings.worker_id,
                     status,
@@ -798,7 +791,7 @@ impl Worker {
             }
         } else {
             db::queues::retry_webhook(
-                &pool,
+                &self.pool,
                 delivery.id,
                 &self.settings.worker_id,
                 webhooks::retry_delay(attempt),
@@ -811,7 +804,7 @@ impl Worker {
     }
 }
 async fn enqueue_event(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Engine>,
+    transaction: &mut sqlx::Transaction,
     event_type: &str,
     event: Value,
     flow_ids: &[Uuid],

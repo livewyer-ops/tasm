@@ -1,4 +1,5 @@
-use crate::db::{self, Database, PageRequest, StorageBackend, TagFilters};
+use crate::db::{self, PageRequest, StorageBackend, TagFilters};
+use crate::sql::Pool;
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -22,15 +23,15 @@ pub struct ObjectMetadata {
 }
 #[derive(Clone)]
 pub struct StorageFactory {
-    database: Database,
+    pool: Pool,
 }
 impl StorageFactory {
-    pub fn new(database: Database) -> Self {
-        Self { database }
+    pub fn new(pool: Pool) -> Self {
+        Self { pool }
     }
     pub async fn backends(&self) -> Result<Vec<StorageBackend>, StorageError> {
         Ok(db::service::list_storage_backends(
-            &self.database.pool().await?,
+            &self.pool,
             &TagFilters::default(),
             false,
             &PageRequest {
@@ -42,10 +43,10 @@ impl StorageFactory {
         .items)
     }
     pub async fn backend(&self, id: Uuid) -> Result<Option<StorageBackend>, StorageError> {
-        Ok(db::service::get_storage_backend(&self.database.pool().await?, id).await?)
+        Ok(db::service::get_storage_backend(&self.pool, id).await?)
     }
     pub async fn default_backend(&self) -> Result<Option<StorageBackend>, StorageError> {
-        Ok(db::service::default_storage_backend(&self.database.pool().await?).await?)
+        Ok(db::service::default_storage_backend(&self.pool).await?)
     }
     pub async fn object_url(
         &self,
@@ -56,7 +57,7 @@ impl StorageFactory {
         content_type: Option<&str>,
     ) -> Result<String, StorageError> {
         let value = self
-            .database
+            .pool
             .0
             .call(
                 "url",
@@ -77,7 +78,7 @@ impl StorageFactory {
         id: &str,
     ) -> Result<Option<ObjectMetadata>, StorageError> {
         let v = self
-            .database
+            .pool
             .0
             .call("head", json!({"backend":backend.id, "id":id}))
             .await?;
@@ -109,7 +110,7 @@ impl StorageFactory {
         id: &str,
         allocation_id: &str,
     ) -> Result<(), StorageError> {
-        self.database
+        self.pool
             .0
             .call(
                 "copy",
@@ -123,7 +124,7 @@ impl StorageFactory {
         backend: &StorageBackend,
         allocations: impl IntoIterator<Item = Value>,
     ) -> Result<(), StorageError> {
-        self.database
+        self.pool
             .0
             .call(
                 "delete",
