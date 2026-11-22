@@ -91,6 +91,13 @@ export async function runContract(spec: Contract, host: ContractHost) {
   const profile = randomUUID();
   await call(`/service/profiles/${profile}`, 'POST', { id: profile, label: 'AAC', flow_metadata: audio }, 201);
   await get('/service/profiles'); await get(`/service/profiles/${profile}`);
+  const mappingId = randomUUID();
+  const invalidMapping = { mp2ts_container: { pid: '100' } };
+  await call(`/service/profiles/${mappingId}`, 'POST', { id: mappingId, flow_metadata: { ...audio, container_mapping: invalidMapping } }, 400);
+  await call(`/service/profiles/${mappingId}`, 'GET', undefined, 404);
+  await call(`/flows/${mappingId}`, 'PUT', { ...audio, id: mappingId, source_id: randomUUID(),
+    container_mapping: { mxf_container: { package_uid: 'not a UMID' } } }, 400);
+  await call(`/flows/${mappingId}`, 'GET', undefined, 404);
   const hook = await call('/service/webhooks', 'POST', {
     url: host.webhookURL, events: ['flows/created'] }, 201);
   const webhookId = hook.value.id;
@@ -123,6 +130,8 @@ export async function runContract(spec: Contract, host: ContractHost) {
   await call(`/flows/${flow}/read_only`, 'PUT', true, 204); await get(`/flows/${flow}/read_only`);
   await call(`/flows/${flow}/label`, 'PUT', 'forbidden', 403);
   await call(`/flows/${flow}/read_only`, 'PUT', false, 204);
+  await call(`/flows/${flow}/flow_collection`, 'PUT', [{ id: other,
+    container_mapping: { isobmff_container: { track_id: '1' } } }], 400);
   // Rejected transaction must leave the connection usable.
   await call(`/flows/${flow}/flow_collection`, 'PUT', [{ id: flow }], 400);
   await call(`/flows/${flow}/label`, 'PUT', 'still writable', 204);

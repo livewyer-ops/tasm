@@ -491,6 +491,7 @@ async fn put_flow(
                 .get("flow_metadata")
                 .and_then(Value::as_object)
                 .ok_or_else(invalid_flow)?;
+            rules::validate_direct(metadata).map_err(|_| invalid_flow())?;
             for (key, value) in metadata {
                 payload.insert(key.clone(), value.clone());
             }

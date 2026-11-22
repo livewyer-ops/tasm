@@ -116,6 +116,24 @@ fn rational(value: &Value, denominator_required: bool) -> Result<(), ValidationE
     Ok(())
 }
 
+fn package_uid(value: &str) -> bool {
+    if let Some(id) = value.strip_prefix("urn:uuid:") {
+        return id.len() == 36 && Uuid::try_parse(id).is_ok();
+    }
+    let Some(umid) = value.strip_prefix("urn:smpte:umid:") else {
+        return false;
+    };
+    // The released schema allows one separator between eight groups of eight hex digits.
+    let mut chars = umid.chars();
+    (0..8).all(|group| {
+        (group == 0
+            || chars
+                .next()
+                .is_some_and(|c| !matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}')))
+            && (0..8).all(|_| chars.next().is_some_and(|c| c.is_ascii_hexdigit()))
+    }) && chars.next().is_none()
+}
+
 fn container_mapping(value: &Value) -> Result<(), ValidationError> {
     let map = value.as_object().ok_or(ValidationError)?;
     for name in ["track_index", "format_track_index"] {
@@ -126,9 +144,26 @@ fn container_mapping(value: &Value) -> Result<(), ValidationError> {
             return Err(ValidationError);
         }
     }
-    for name in ["mp2ts_container", "mxf_container", "isobmff_container"] {
-        if map.get(name).is_some_and(|value| !value.is_object()) {
-            return Err(ValidationError);
+    for (name, field) in [
+        ("mp2ts_container", "pid"),
+        ("mxf_container", "track_id"),
+        ("isobmff_container", "track_id"),
+    ] {
+        if let Some(container) = map.get(name) {
+            let fields = container.as_object().ok_or(ValidationError)?;
+            if fields
+                .get(field)
+                .is_some_and(|v| v.as_f64().is_none_or(|n| n.fract() != 0.0))
+            {
+                return Err(ValidationError);
+            }
+            if name == "mxf_container"
+                && fields
+                    .get("package_uid")
+                    .is_some_and(|v| v.as_str().is_none_or(|s| !package_uid(s)))
+            {
+                return Err(ValidationError);
+            }
         }
     }
     if let Some(audio) = map.get("audio_track") {
@@ -150,7 +185,9 @@ fn container_mapping(value: &Value) -> Result<(), ValidationError> {
                 .as_str()
                 .and_then(|value| value.split_once('_'))
                 .is_none_or(|(start, end)| {
-                    start.parse::<u64>().is_err() || end.parse::<u64>().is_err()
+                    [start, end]
+                        .iter()
+                        .any(|s| s.is_empty() || !s.bytes().all(|c| c.is_ascii_digit()))
                 })
         }) {
             return Err(ValidationError);
@@ -421,11 +458,8 @@ pub fn validate_collection(value: &Value, parent: Uuid) -> Result<Vec<Uuid>, Val
         if item.get("role").is_some_and(|value| !value.is_string()) {
             return Err(ValidationError);
         }
-        if item
-            .get("container_mapping")
-            .is_some_and(|value| !value.is_object())
-        {
-            return Err(ValidationError);
+        if let Some(mapping) = item.get("container_mapping") {
+            container_mapping(mapping)?;
         }
         ids.push(id);
     }
