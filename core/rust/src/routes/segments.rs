@@ -158,28 +158,17 @@ async fn list(
         timerange_end: requested.end,
         timerange_is_point: requested.point,
     };
-    let (page_items, summary) = if requested.empty {
-        (Vec::new(), db::flows::SegmentSummary::default())
+    let (items, next_page) = if requested.empty {
+        (Vec::new(), None)
     } else {
-        let summary = db::flows::segment_summary(&pool, flow_id, &filters)
-            .await
-            .map_err(internal)?;
         let page = db::flows::list_segments_page(&pool, flow_id, &filters, reverse, &page_request)
             .await
             .map_err(|error| match error {
                 db::DbError::Page => invalid_query(),
                 error => internal(error),
             })?;
-        (page.items, summary)
+        (page.items, page.next_page)
     };
-    let all_timerange = match summary.count {
-        0 => "()".into(),
-        1 => summary.timerange.unwrap_or_else(|| "()".into()),
-        _ => crate::domain::timerange::from_bounds(summary.start, summary.end),
-    };
-    let items = page_items.as_slice();
-    let shown = page_request.offset.saturating_add(items.len() as i64);
-    let next_page = (shown < summary.count).then(|| shown.to_string());
     let mut responses = Vec::new();
     if request.method() != Method::HEAD {
         let ids = items
@@ -215,7 +204,7 @@ async fn list(
                 .await?,
             );
         }
-        for item in items {
+        for item in &items {
             let init = item.init_object_id.as_deref().and_then(|id| {
                 objects.get(id).map(|object| {
                     (
@@ -246,9 +235,9 @@ async fn list(
     );
     response.headers_mut().insert(
         HeaderName::from_static("x-paging-timerange"),
-        HeaderValue::from_str(&all_timerange).map_err(internal)?,
+        HeaderValue::from_str(&timerange_union(&items)).map_err(internal)?,
     );
-    let gaps = segment::coverage_gaps(items)
+    let gaps = segment::coverage_gaps(&items)
         .map_err(|_| ApiError::bad_request("Bad request. Invalid stored Segment timerange."))?;
     if !gaps.is_empty() {
         response.headers_mut().insert(
@@ -266,13 +255,9 @@ fn timerange_union(values: &[SegmentRecord]) -> String {
     if values.len() == 1 {
         return values[0].timerange.clone();
     }
-    let ranges = values
-        .iter()
-        .filter_map(|value| segment::bounds(&value.timerange).ok())
-        .collect::<Vec<_>>();
     crate::domain::timerange::from_bounds(
-        ranges.iter().map(|value| value.start).min(),
-        ranges.iter().map(|value| value.end).max(),
+        values.iter().map(|row| row.timerange_start).min(),
+        values.iter().map(|row| row.timerange_end).max(),
     )
 }
 
@@ -533,7 +518,16 @@ async fn register_one(
         return Err("Bad request. Init Objects cannot be used as media.".into());
     }
     if had_references
-        && (data.get("object_timerange").is_some()
+        && (data
+            .get("object_timerange")
+            .and_then(Value::as_str)
+            .is_some_and(|range| {
+                segment::bounds(range).ok()
+                    != media
+                        .timerange
+                        .as_deref()
+                        .and_then(|stored| segment::bounds(stored).ok())
+            })
             || data
                 .get("key_frame_count")
                 .is_some_and(|value| value.as_i64() != media.key_frame_count))

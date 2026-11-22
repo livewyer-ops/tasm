@@ -154,7 +154,7 @@ pub fn validate_post(value: &Value) -> Result<(&str, &str, SegmentBounds), Valid
         .and_then(Value::as_str)
         .ok_or(ValidationError)?;
     let parsed = bounds(timerange_value)?;
-    if !timerange_value.starts_with('[') {
+    if !parsed.point && !timerange_value.starts_with('[') {
         return Err(ValidationError);
     }
     for field in [
@@ -183,7 +183,7 @@ pub fn validate_post(value: &Value) -> Result<(&str, &str, SegmentBounds), Valid
     }
     if let Some(last_duration) = object.get("last_duration").and_then(Value::as_str) {
         let duration = timerange::timestamp(last_duration)?;
-        if duration < 0 || timerange_value.ends_with(']') {
+        if duration < 0 || parsed.point || timerange_value.ends_with(']') {
             return Err(ValidationError);
         }
     }
@@ -191,10 +191,7 @@ pub fn validate_post(value: &Value) -> Result<(&str, &str, SegmentBounds), Valid
         bounds(value)?;
     }
     if let Some(urls) = object.get("get_urls") {
-        let urls = urls
-            .as_array()
-            .filter(|urls| !urls.is_empty())
-            .ok_or(ValidationError)?;
+        let urls = urls.as_array().ok_or(ValidationError)?;
         let mut labels = BTreeSet::new();
         for value in urls {
             let entry = value.as_object().ok_or(ValidationError)?;

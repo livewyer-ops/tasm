@@ -165,6 +165,22 @@ export async function runContract(spec: Contract, host: ContractHost) {
   if (!headers.has('content-type') && put['content-type']) headers.set('content-type', put['content-type']);
   const write = await host.media({ url: put.url, method: 'PUT', headers: Object.fromEntries(headers), bytes });
   assert.equal(write.status, 200, 'upload to the allocated storage URL');
+  const dataFlow = randomUUID(), pointObject = randomUUID(), reused = randomUUID();
+  await call(`/flows/${dataFlow}`, 'PUT', { id: dataFlow, source_id: randomUUID(), format: 'urn:x-nmos:format:data',
+    codec: 'application/json', container: 'application/json', essence_parameters: {} }, 201);
+  const dataSegments = `/flows/${dataFlow}/segments`;
+  const get_urls = [{ label: 'archive', url: 'https://media.example/fixture' }];
+  await call(dataSegments, 'POST', { object_id: pointObject, timerange: '10:0', get_urls }, 201);
+  await call(dataSegments, 'POST', { object_id: reused, timerange: '[20:0_21:0)', get_urls }, 201);
+  await call(dataSegments, 'POST', { object_id: reused, timerange: '[30:0_31:0)', ts_offset: '10:0',
+    object_timerange: '[20:0_22:0)', get_urls: [] }, 400);
+  await call(dataSegments, 'POST', { object_id: reused, timerange: '[30:0_31:0)', ts_offset: '10:0',
+    object_timerange: '[20:0_21:0)', get_urls: [] }, 201);
+  await call(dataSegments, 'POST', { object_id: randomUUID(), timerange: '[40:0_41:0)', get_urls: [] }, 400);
+  for (const [query, expected] of [['limit=1', '10:0'], ['limit=1&reverse_order=true', '[30:0_31:0)'],
+    ['limit=2', '[10:0_21:0)'], ['page=8', '()']]) {
+    for (const method of ['GET', 'HEAD']) assert.equal((await call(dataSegments + '?' + query, method)).headers['x-paging-timerange'], expected);
+  }
   const timerange = '[281474976710654:0_281474976710655:999999999)';
   await call(`/flows/${flow}/segments`, 'POST', { object_id: objectId, timerange }, 201);
   const segments = await get(`/flows/${flow}/segments`);

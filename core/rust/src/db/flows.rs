@@ -41,13 +41,6 @@ pub struct FlowFilters {
     pub tags: TagFilters,
 }
 #[derive(Debug, Clone, Default)]
-pub struct SegmentSummary {
-    pub count: i64,
-    pub start: Option<i128>,
-    pub end: Option<i128>,
-    pub timerange: Option<String>,
-}
-#[derive(Debug, Clone, Default)]
 pub struct SegmentFilters {
     pub object_id: Option<String>,
     pub timerange_start: Option<i128>,
@@ -545,24 +538,6 @@ pub async fn list_segments_page(
             .collect::<Result<_, _>>()?,
         page,
     ))
-}
-/// Count and outer bounds of the segments matching a segment list query.
-pub async fn segment_summary(
-    pool: &Pool,
-    flow_id: Uuid,
-    f: &SegmentFilters,
-) -> Result<SegmentSummary, DbError> {
-    let mut q = QueryBuilder::<Engine>::new(
-        "SELECT COUNT(*) AS count,MIN(timerange_start) AS start_ns,MAX(timerange_end) AS end_ns,MIN(timerange) AS first_timerange FROM tamoss_segments WHERE flow_id=",
-    );
-    push_segment_filters(&mut q, flow_id, f);
-    let row = q.build().fetch_one(pool).await?;
-    Ok(SegmentSummary {
-        count: row.try_get(0)?,
-        start: row.try_get(1)?,
-        end: row.try_get(2)?,
-        timerange: row.try_get(3)?,
-    })
 }
 pub async fn append_segment<'e, E>(e: E, v: &SegmentRecord) -> Result<(), DbError>
 where

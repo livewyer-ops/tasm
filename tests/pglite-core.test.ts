@@ -111,13 +111,13 @@ test('flows, segments, filters and asynchronous deletion work against PGlite', a
   const registered = await request('POST', `/flows/${flowId}/segments`, ids.map((object_id, i) => ({ object_id, timerange: `[${i * 2}:0_${i * 2 + 2}:0)` })));
   assert.equal(registered.status, 201, registered.body);
 
-  // The populated summary is the query whose duplicate MIN() labels broke the browser build.
   const all = await request('GET', `/flows/${flowId}/segments`);
   assert.equal(all.status, 200, all.body);
   assert.equal(JSON.parse(all.body).length, 3);
   assert.equal(all.headers['x-paging-timerange'], '[0:0_6:0)');
   const first = await request('GET', `/flows/${flowId}/segments?limit=2`);
   assert.equal(JSON.parse(first.body).length, 2);
+  assert.equal(first.headers['x-paging-timerange'], '[0:0_4:0)');
   assert.match(first.headers.link ?? '', /rel="next"/);
   const filtered = await request('GET', `/flows/${flowId}/segments?timerange=[2:0_4:0)`);
   assert.deepEqual(JSON.parse(filtered.body).map((s: { object_id: string }) => s.object_id), [ids[1]]);
