@@ -373,6 +373,7 @@ where
         .bind(ids)
         .fetch_all(executor)
         .await?;
+    let mut members = BTreeMap::<Uuid, Vec<_>>::new();
     for row in rows {
         let target: Uuid = row.try_get(0)?;
         let kind: i32 = row.try_get(1)?;
@@ -380,17 +381,31 @@ where
         let role: Option<String> = row.try_get(3)?;
         let relationships = result.entry(target).or_default();
         if kind == 0 {
-            let mut item = json!({"id": related});
-            if let Some(role) = role {
-                item.as_object_mut()
-                    .unwrap()
-                    .insert("role".into(), json!(role));
-            }
-            if !relationships.source_collection.contains(&item) {
-                relationships.source_collection.push(item);
-            }
+            let parent: Uuid = row.try_get(4)?;
+            members
+                .entry(target)
+                .or_default()
+                .push((parent, related, role));
         } else if !relationships.collected_by.contains(&related) {
             relationships.collected_by.push(related);
+        }
+    }
+    for (source, members) in members {
+        let relationships = result.get_mut(&source).expect("queried Source");
+        if let Some(collection) = crate::domain::model::source_collection(&members) {
+            relationships.source_collection = collection;
+        } else {
+            // Keep previously stored contradictory representations readable until corrected.
+            relationships.conflicting_collection = true;
+            for (_, id, role) in members {
+                let mut item = json!({"id":id});
+                if let Some(role) = role {
+                    item["role"] = json!(role);
+                }
+                if !relationships.source_collection.contains(&item) {
+                    relationships.source_collection.push(item);
+                }
+            }
         }
     }
     Ok(result)

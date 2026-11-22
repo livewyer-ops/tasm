@@ -204,6 +204,12 @@ async fn mutate_scalar(
     clear: bool,
 ) -> Result<Response, ApiError> {
     query(&request, &[], &[])?;
+    let actor = request
+        .extensions()
+        .get::<crate::Actor>()
+        .expect("auth identity")
+        .subject
+        .clone();
     let value = if clear {
         None
     } else {
@@ -254,6 +260,7 @@ async fn mutate_scalar(
         "metadata_updated".into(),
         json!(model::timestamp(source.metadata_updated)),
     );
+    source.record["updated_by"] = json!(actor);
     db::flows::save_source(&mut *tx, &source)
         .await
         .map_err(internal)?;
@@ -342,6 +349,12 @@ async fn mutate_tag(
     clear: bool,
 ) -> Result<Response, ApiError> {
     query(&request, &[], &[])?;
+    let actor = request
+        .extensions()
+        .get::<crate::Actor>()
+        .expect("auth identity")
+        .subject
+        .clone();
     let value = if clear {
         None
     } else {
@@ -381,6 +394,7 @@ async fn mutate_tag(
         "metadata_updated".into(),
         json!(model::timestamp(source.metadata_updated)),
     );
+    source.record["updated_by"] = json!(actor);
     db::flows::save_source(&mut *tx, &source)
         .await
         .map_err(internal)?;

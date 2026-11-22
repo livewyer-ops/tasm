@@ -141,7 +141,53 @@ pub fn storage_backend(record: &StorageBackend) -> Value {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SourceRelationships {
     pub source_collection: Vec<Value>,
+    pub conflicting_collection: bool,
     pub collected_by: Vec<Uuid>,
+}
+
+/// Combine the ordering and optional roles supplied by each representation.
+pub fn source_collection(members: &[(Uuid, Uuid, Option<String>)]) -> Option<Vec<Value>> {
+    let mut indices = BTreeMap::new();
+    let mut items: Vec<(Uuid, Option<&str>)> = Vec::new();
+    let mut successors: Vec<BTreeSet<usize>> = Vec::new();
+    let mut incoming = Vec::new();
+    let mut previous: Option<(Uuid, usize)> = None;
+    for (flow, source, role) in members {
+        let index = *indices.entry(*source).or_insert_with(|| {
+            items.push((*source, None));
+            successors.push(BTreeSet::new());
+            incoming.push(0usize);
+            items.len() - 1
+        });
+        if let Some(role) = role.as_deref() {
+            if items[index].1.is_some_and(|known| known != role) {
+                return None;
+            }
+            items[index].1 = Some(role);
+        }
+        if let Some((parent, before)) = previous
+            && parent == *flow
+            && before != index
+            && successors[before].insert(index)
+        {
+            incoming[index] += 1;
+        }
+        previous = Some((*flow, index));
+    }
+    // Preserve first appearance when multiple members can occupy the next position.
+    let mut ready: BTreeSet<_> = (0..items.len()).filter(|&i| incoming[i] == 0).collect();
+    let mut result = Vec::with_capacity(items.len());
+    while let Some(index) = ready.pop_first() {
+        let (id, role) = items[index];
+        result.push(without_nulls(json!({"id":id,"role":role})));
+        for &next in &successors[index] {
+            incoming[next] -= 1;
+            if incoming[next] == 0 {
+                ready.insert(next);
+            }
+        }
+    }
+    (result.len() == items.len()).then_some(result)
 }
 
 pub fn source(record: &SourceRecord, relationships: Option<&SourceRelationships>) -> Value {
@@ -157,8 +203,6 @@ pub fn source(record: &SourceRecord, relationships: Option<&SourceRelationships>
     map.insert("created".into(), json!(timestamp(record.created)));
     map.insert("updated".into(), json!(timestamp(record.metadata_updated)));
     map.remove("metadata_updated");
-    map.remove("created_by");
-    map.remove("updated_by");
     if let Some(relationships) = relationships {
         map.insert(
             "source_collection".into(),
@@ -259,5 +303,31 @@ mod uuid_tests {
         ] {
             assert!(parse_uuid(&invalid).is_err(), "{invalid}");
         }
+    }
+}
+
+#[cfg(test)]
+mod collection_tests {
+    use super::*;
+
+    #[test]
+    fn combines_partial_order_and_roles_and_rejects_a_cycle() {
+        let [one, two, three, a, b, c] = [1, 2, 3, 4, 5, 6].map(Uuid::from_u128);
+        let mut members = vec![
+            (one, b, None),
+            (one, c, None),
+            (two, a, None),
+            (two, b, Some("main".into())),
+        ];
+        assert_eq!(
+            source_collection(&members),
+            Some(vec![
+                json!({"id":a}),
+                json!({"id":b,"role":"main"}),
+                json!({"id":c})
+            ])
+        );
+        members.extend([(three, c, None), (three, a, None)]);
+        assert_eq!(source_collection(&members), None);
     }
 }

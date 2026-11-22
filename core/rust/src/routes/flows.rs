@@ -508,7 +508,7 @@ async fn put_flow(
                 format: Some(format.clone()),
                 label: map.get("label").and_then(Value::as_str).map(str::to_owned),
                 tags: tags.clone(),
-                record: json!({"id":source_id,"format":format,"label":map.get("label"),"description":map.get("description"),"tags":tags,"created":model::timestamp(now)}),
+                record: json!({"id":source_id,"format":format,"label":map.get("label"),"description":map.get("description"),"tags":tags,"created_by":identity.subject,"created":model::timestamp(now)}),
                 metadata_updated: source_metadata_updated,
                 created: now,
             }
@@ -518,6 +518,7 @@ async fn put_flow(
     if !source.record.is_object() {
         source.record = json!({});
     }
+    source.record["updated_by"] = json!(identity.subject);
     source.record.as_object_mut().unwrap().insert(
         "metadata_updated".into(),
         json!(model::timestamp(source.metadata_updated)),
@@ -613,6 +614,9 @@ async fn put_flow(
         .await
         .map_err(internal)?;
     let relationship = relationships.get(&source_id);
+    if relationship.is_some_and(|r| r.conflicting_collection) {
+        return Err(collection_conflict());
+    }
     let source_collected_by = relationship
         .map(|value| value.collected_by.clone())
         .unwrap_or_default();
@@ -631,6 +635,17 @@ async fn put_flow(
     let parents = db::flows::list_flows_collecting(&mut *tx, &[flow_id])
         .await
         .map_err(internal)?;
+    if previous_source.is_some() && !parents.is_empty() {
+        let sources: Vec<_> = parents.iter().filter_map(|p| p.source_id).collect();
+        if db::flows::source_relationships(&mut *tx, &sources)
+            .await
+            .map_err(internal)?
+            .values()
+            .any(|r| r.conflicting_collection)
+        {
+            return Err(collection_conflict());
+        }
+    }
     let parent_ids: Vec<_> = parents.iter().map(|value| value.id).collect();
     enqueue_event(
         &mut tx,
@@ -841,6 +856,12 @@ async fn get_collection(
     )
     .into_response())
 }
+fn collection_conflict() -> ApiError {
+    ApiError::bad_request(
+        "The collection order or member roles conflict with another representation of the Source.",
+    )
+}
+
 async fn set_collection(
     state: MetadataState,
     raw: String,
@@ -898,6 +919,15 @@ async fn set_collection(
     db::flows::save_flow(&mut *tx, &flow)
         .await
         .map_err(internal)?;
+    if let Some(source) = flow.source_id
+        && db::flows::source_relationships(&mut *tx, &[source])
+            .await
+            .map_err(internal)?
+            .get(&source)
+            .is_some_and(|r| r.conflicting_collection)
+    {
+        return Err(collection_conflict());
+    }
     emit_flow_updated(&mut tx, &flow).await?;
     tx.commit().await.map_err(internal)?;
     Ok(StatusCode::NO_CONTENT.into_response())

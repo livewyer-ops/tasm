@@ -58,3 +58,19 @@ test("Every TAMS 8.2 operation matches the contract with an OAuth administrator 
   assert.ok(operations.length > 0);
   t.diagnostic(`${operations.length} operations covered (OAuth): ${operations.join(", ")}`);
 });
+
+test("Source attribution follows the principal that writes its metadata", async () => {
+  const creator = await token("tams-api/admin"), editor = await token("tams-api/admin");
+  const flow = crypto.randomUUID(), source = crypto.randomUUID();
+  const call = (bearer: string, method: string, path: string, value?: unknown) => api.fetch("https://wasm.example" + path, {
+    method, headers: { Authorization: "Bearer " + bearer, "Content-Type": "application/json" }, body: JSON.stringify(value),
+  });
+  const initial = await call(creator, "PUT", "/flows/" + flow, { id: flow, source_id: source, format: "urn:x-nmos:format:data",
+    codec: "application/json", container: "application/json", essence_parameters: {} });
+  assert.equal(initial.status, 201);
+  const owner = (await initial.json() as { created_by: string }).created_by;
+  assert.equal((await call(editor, "PUT", "/sources/" + source + "/tags/review", "done")).status, 204);
+  const updated = await (await call(creator, "GET", "/sources/" + source)).json() as { created_by: string; updated_by: string };
+  assert.equal(updated.created_by, owner);
+  assert.ok(updated.updated_by && updated.updated_by !== owner);
+});
