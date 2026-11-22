@@ -23,15 +23,6 @@ pub const EXPIRED_ALLOCATIONS: &str = "SELECT id,record FROM tamoss_media_object
 
 pub const GET_OBJECT: &str = "SELECT id,first_referenced_by_flow,referenced_by_flows,object_kind,content_type,record,created_at,updated_at FROM tamoss_media_objects WHERE id=$1";
 
-pub const CLAIM_CLEANUPS: &str = "UPDATE tamoss_object_cleanups
-                 SET status='started',claimed_at=NOW(),claimed_by=$2,
-                     claim_expires_at=NOW()+($3*INTERVAL '1 second'),
-                     record=jsonb_set(jsonb_set(record,'{status}','\"started\"',true),'{updated}',to_jsonb(NOW()),true),
-                     updated=NOW(),updated_at=NOW()
-                 WHERE delete_request_id=$1
-                   AND status=ANY(ARRAY['pending','started','error'])
-                   AND (claim_expires_at IS NULL OR claim_expires_at<=NOW() OR claimed_by=$2)";
-
 pub const UPDATE_REMAINING: &str = "UPDATE tamoss_delete_requests
                  SET record=jsonb_set(record,'{timerange_remaining}',to_jsonb($2::text),true),
                      updated=NOW(),updated_at=NOW()
@@ -69,13 +60,13 @@ pub const DELETE_SEGMENT: &str =
 
 pub const CLAIM_DELETE_REQUESTS: &str = "WITH candidates AS(SELECT id FROM tamoss_delete_requests WHERE status=ANY(ARRAY['created','started','error']) AND(claim_expires_at IS NULL OR claim_expires_at<=NOW())ORDER BY created_at,id LIMIT $1 FOR UPDATE SKIP LOCKED),claimed AS(UPDATE tamoss_delete_requests q SET status='started',claimed_at=NOW(),claimed_by=$2,claim_expires_at=NOW()+($3*INTERVAL '1 second'),updated=NOW(),updated_at=NOW() FROM candidates WHERE q.id=candidates.id RETURNING q.*)SELECT id,flow_id,status,record,updated,created_at,claimed_at,claimed_by,claim_expires_at FROM claimed ORDER BY created_at,id";
 
-pub const FAIL_DELETE_REQUEST: &str = "UPDATE tamoss_delete_requests SET status='error',claimed_at=NULL,claimed_by=NULL,claim_expires_at=NOW()+make_interval(secs=>LEAST(3600,60*power(2,LEAST(GREATEST(COALESCE((record->>'attempt_count')::int,0)+1,1)-1,6)))),record=jsonb_set(jsonb_set(jsonb_set(jsonb_set(record,'{status}','\"error\"',true),'{error}',$3,true),'{updated}',to_jsonb(NOW()),true),'{attempt_count}',to_jsonb(COALESCE((record->>'attempt_count')::int,0)+1),true),updated=NOW(),updated_at=NOW() WHERE id=$1 AND status='started' AND claimed_by=$2";
+pub const FAIL_DELETE_REQUEST: &str = "UPDATE tamoss_delete_requests SET status='error',claimed_at=NULL,claimed_by=NULL,claim_expires_at=COALESCE($4::timestamptz,NOW()+make_interval(secs=>LEAST(3600,60*power(2,LEAST(GREATEST(COALESCE((record->>'attempt_count')::int,0)+1,1)-1,6))))),record=jsonb_set(jsonb_set(jsonb_set(jsonb_set(record,'{status}','\"error\"',true),'{error}',$3,true),'{updated}',to_jsonb(NOW()),true),'{attempt_count}',to_jsonb(COALESCE((record->>'attempt_count')::int,0)+1),true),updated=NOW(),updated_at=NOW() WHERE id=$1 AND status='started' AND claimed_by=$2";
 
-pub const RELEASE_DELETE_REQUEST: &str = "UPDATE tamoss_delete_requests SET status='started',claimed_at=NULL,claimed_by=NULL,claim_expires_at=NULL,record=jsonb_set(jsonb_set(record,'{status}','\"started\"',true),'{updated}',to_jsonb(NOW()),true),updated=NOW(),updated_at=NOW() WHERE id=$1 AND status='started' AND claimed_by=$2";
+pub const RELEASE_DELETE_REQUEST: &str = "UPDATE tamoss_delete_requests SET status='started',claimed_at=NULL,claimed_by=NULL,claim_expires_at=$3::timestamptz,record=jsonb_set(jsonb_set(record,'{status}','\"started\"',true),'{updated}',to_jsonb(NOW()),true),updated=NOW(),updated_at=NOW() WHERE id=$1 AND status='started' AND claimed_by=$2";
 
 pub const COMPLETE_DELETE_REQUEST: &str = "UPDATE tamoss_delete_requests SET status='done',claimed_at=NULL,claimed_by=NULL,claim_expires_at=NULL,record=jsonb_set(jsonb_set(jsonb_set(record,'{status}','\"done\"',true),'{error}','null',true),'{updated}',to_jsonb(NOW()),true),updated=NOW(),updated_at=NOW() WHERE id=$1 AND status='started' AND claimed_by=$2";
 
-pub const CLAIM_UNPARENTED_CLEANUPS: &str = "WITH candidates AS(SELECT id FROM tamoss_object_cleanups WHERE delete_request_id IS NULL AND status=ANY(ARRAY['pending','started','error']) AND(claim_expires_at IS NULL OR claim_expires_at<=NOW())ORDER BY created_at,id LIMIT $1 FOR UPDATE SKIP LOCKED),claimed AS(UPDATE tamoss_object_cleanups q SET status='started',claimed_at=NOW(),claimed_by=$2,claim_expires_at=NOW()+($3*INTERVAL '1 second'),updated=NOW(),updated_at=NOW() FROM candidates WHERE q.id=candidates.id RETURNING q.*)SELECT id,delete_request_id,object_id,storage_backend_id,status,record,updated,created_at,claimed_at,claimed_by,claim_expires_at FROM claimed ORDER BY created_at,id";
+pub const CLAIM_CLEANUPS: &str = "WITH candidates AS(SELECT id FROM tamoss_object_cleanups WHERE delete_request_id IS NOT DISTINCT FROM $4 AND status=ANY(ARRAY['pending','started','error']) AND(claim_expires_at IS NULL OR claim_expires_at<=NOW())ORDER BY created_at,id LIMIT $1 FOR UPDATE SKIP LOCKED),claimed AS(UPDATE tamoss_object_cleanups q SET status='started',claimed_at=NOW(),claimed_by=$2,claim_expires_at=NOW()+($3*INTERVAL '1 second'),updated=NOW(),updated_at=NOW() FROM candidates WHERE q.id=candidates.id RETURNING q.*)SELECT id,delete_request_id,object_id,storage_backend_id,status,record,updated,created_at,claimed_at,claimed_by,claim_expires_at FROM claimed ORDER BY created_at,id";
 
 pub const CLAIM_COPIES: &str = "WITH candidates AS(SELECT id FROM tamoss_object_copies WHERE status=ANY(ARRAY['pending','started','error']) AND(claim_expires_at IS NULL OR claim_expires_at<=NOW())ORDER BY created_at,id LIMIT $1 FOR UPDATE SKIP LOCKED),claimed AS(UPDATE tamoss_object_copies q SET status='started',claimed_at=NOW(),claimed_by=$2,claim_expires_at=NOW()+($3*INTERVAL '1 second'),updated=NOW(),updated_at=NOW() FROM candidates WHERE q.id=candidates.id RETURNING q.*)SELECT id,object_id,source_storage_backend_id,destination_storage_backend_id,status,record,updated,created_at,claimed_at,claimed_by,claim_expires_at FROM claimed ORDER BY created_at,id";
 

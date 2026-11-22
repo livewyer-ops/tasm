@@ -59,7 +59,8 @@ async function store() {
       default: throw new Error(`Unknown host operation ${op}`);
     }
   };
-  const core = new Tasm(bridge, `${origin}/media/`);
+  const restart = () => new Tasm(bridge, `${origin}/media/`);
+  const core = restart();
   const request = async (method: string, path: string, body?: unknown): Promise<Response> => {
     const response = JSON.parse(await core.request(JSON.stringify({ method, url: origin + path,
       headers: body === undefined ? {} : { 'content-type': 'application/json' },
@@ -68,10 +69,56 @@ async function store() {
     return response;
   };
   const upload = (id: string) => files.set(key(backend, id), { size: 188, contentType: 'video/mp2t', checksum: 'a'.repeat(64) });
-  return { db, sql, core, request, upload, files, deliveries, returned };
+  return { db, sql, core, restart, request, upload, files, deliveries, returned };
 }
 
 await init({ module_or_path: readFileSync('pkg/browser/tasm_bg.wasm') });
+
+test('one poll shares its child cleanup budget across parents and resumes after restart', async () => {
+  const { db, core, restart, returned } = await store();
+  await core.poll();
+  assert.ok(returned.queries <= 9, `idle poll issued ${returned.queries} queries`);
+  const flow = crypto.randomUUID();
+  for (const size of [12, 33]) {
+    const parent = crypto.randomUUID();
+    await db.query("INSERT INTO tamoss_delete_requests(id,flow_id,status,record,updated) VALUES($1,$2,'created',$3,NOW())",
+      [parent, flow, JSON.stringify({ timerange_remaining: '()', delete_flow: false })]);
+    for (let i = 0; i < size; i++) {
+      const id = crypto.randomUUID();
+      await db.query("INSERT INTO tamoss_object_cleanups(id,delete_request_id,object_id,storage_backend_id,status,record,updated) VALUES($1,$2,$5,$3,'pending',$4,NOW())",
+        [id, parent, backend, JSON.stringify({ object_id: id, storage_backend_id: backend }), id]);
+    }
+  }
+  const resumed = restart();
+  for (const [poller, expected] of [[core, 20], [resumed, 40], [resumed, 45]] as const) {
+    await poller.poll();
+    const done = await db.query<{ n: number }>("SELECT count(*)::int AS n FROM tamoss_object_cleanups WHERE status='done'");
+    assert.equal(done.rows[0].n, expected);
+    const parents = await db.query<{ status: string }>('SELECT status FROM tamoss_delete_requests ORDER BY created_at,id');
+    assert.deepEqual(parents.rows.map(row => row.status), ['done', expected === 45 ? 'done' : 'started']);
+  }
+  await db.close();
+});
+
+test('a restarted delete request waits for its earliest unfinished child', async () => {
+  const { db, restart } = await store();
+  const parent = crypto.randomUUID(), failed = crypto.randomUUID(), leased = crypto.randomUUID();
+  await db.query("INSERT INTO tamoss_delete_requests(id,flow_id,status,record,updated) VALUES($1,$2,'started',$3,NOW())",
+    [parent, crypto.randomUUID(), JSON.stringify({ timerange_remaining: '()', attempt_count: 6 })]);
+  for (const [id, status, delay, owner] of [[failed, 'error', 120, null], [leased, 'started', 600, 'other-worker']] as const) {
+    await db.query(`INSERT INTO tamoss_object_cleanups(id,delete_request_id,object_id,storage_backend_id,status,record,updated,claim_expires_at,claimed_by)
+      VALUES($1,$2,$3,$4,$5,$6,NOW(),NOW()+$7*interval '1 second'+interval '123 microseconds',$8)`,
+      [id, parent, id, backend, status, JSON.stringify({ attempt_count: 1 }), delay, owner]);
+  }
+  await restart().poll();
+  const state = await db.query<{ aligned: boolean; owner: string; attempts: number }>(`
+    SELECT parent.claim_expires_at=failed.claim_expires_at AS aligned, leased.claimed_by AS owner,
+      (failed.record->>'attempt_count')::int AS attempts
+    FROM tamoss_delete_requests parent, tamoss_object_cleanups failed, tamoss_object_cleanups leased
+    WHERE parent.id=$1 AND failed.id=$2 AND leased.id=$3`, [parent, failed, leased]);
+  assert.deepEqual(state.rows[0], { aligned: true, owner: 'other-worker', attempts: 1 });
+  await db.close();
+});
 
 test('stored ranges and queued deletes retain their original endpoints', async () => {
   const { request, db, core } = await store();

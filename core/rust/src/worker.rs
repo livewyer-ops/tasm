@@ -101,9 +101,16 @@ impl Worker {
         let requests =
             db::queues::claim_delete_requests(&self.pool, &self.settings.worker_id, limit, lease)
                 .await?;
+        let mut cleanup_budget = limit;
         for request in &requests {
             if let Err(error) = self
-                .process_delete_request(request.id, request.flow_id, &request.record, lease)
+                .process_delete_request(
+                    request.id,
+                    request.flow_id,
+                    &request.record,
+                    lease,
+                    &mut cleanup_budget,
+                )
                 .await
             {
                 tracing::error!(request_id=%request.id, error=%redacted(&error.to_string()), "delete request processing failed");
@@ -115,6 +122,7 @@ impl Worker {
                         "delete_request_failed",
                         "Delete request processing failed; retry will continue.",
                     ),
+                    None,
                 )
                 .await?;
             }
@@ -128,6 +136,7 @@ impl Worker {
         flow_id: Uuid,
         record: &Value,
         lease: i64,
+        cleanup_budget: &mut i64,
     ) -> Result<(), WorkerError> {
         let delete_flow = record
             .get("delete_flow")
@@ -135,7 +144,7 @@ impl Worker {
             .unwrap_or(false);
         let Some((start, end)) = delete_range(record, delete_flow)? else {
             // The segment phase committed earlier; only object cleanup is left.
-            return self.finish_delete_request(id, lease).await;
+            return self.finish_delete_request(id, lease, cleanup_budget).await;
         };
         let mut transaction = self.pool.begin().await.map_err(db::DbError::from)?;
         db::flows::lock_flow_segments(&mut *transaction, flow_id).await?;
@@ -349,42 +358,46 @@ impl Worker {
         }
         transaction.commit().await.map_err(db::DbError::from)?;
         if remaining {
-            db::queues::release_delete_request(&self.pool, id, &self.settings.worker_id).await?;
+            db::queues::release_delete_request(&self.pool, id, &self.settings.worker_id, None)
+                .await?;
             Ok(())
         } else {
-            self.finish_delete_request(id, lease).await
+            self.finish_delete_request(id, lease, cleanup_budget).await
         }
     }
 
-    async fn finish_delete_request(&self, id: Uuid, lease: i64) -> Result<(), WorkerError> {
-        {
-            sqlx::query(crate::db::statements::CLAIM_CLEANUPS)
-                .bind(id)
-                .bind(&self.settings.worker_id)
-                .bind(lease)
-                .execute(&self.pool)
-                .await
-                .map_err(db::DbError::from)?;
-            let cleanups = db::queues::list_parent_cleanups(&self.pool, id).await?;
-            self.run_cleanup_batch(cleanups).await?;
-            if db::queues::list_parent_cleanups(&self.pool, id)
-                .await?
-                .iter()
-                .all(|item| item.status == "done")
-            {
-                db::queues::complete_delete_request(&self.pool, id, &self.settings.worker_id)
-                    .await?;
-            } else {
+    async fn finish_delete_request(
+        &self,
+        id: Uuid,
+        lease: i64,
+        budget: &mut i64,
+    ) -> Result<(), WorkerError> {
+        let worker = &self.settings.worker_id;
+        if *budget > 0 {
+            let jobs =
+                db::queues::claim_cleanups(&self.pool, Some(id), worker, *budget, lease).await?;
+            *budget -= jobs.len() as i64;
+            self.run_cleanup_batch(jobs).await?;
+        }
+        match db::queues::next_unfinished_cleanup(&self.pool, id).await? {
+            None => {
+                db::queues::complete_delete_request(&self.pool, id, worker).await?;
+            }
+            Some((status, ready_at)) if status == "error" => {
                 db::queues::fail_delete_request(
                     &self.pool,
                     id,
-                    &self.settings.worker_id,
+                    worker,
                     queue_error(
                         "object_cleanup_failed",
                         "Object storage cleanup failed; retry will continue.",
                     ),
+                    ready_at,
                 )
                 .await?;
+            }
+            Some((_, ready_at)) => {
+                db::queues::release_delete_request(&self.pool, id, worker, ready_at).await?;
             }
         }
         Ok(())
@@ -509,6 +522,10 @@ impl Worker {
             .fetch_all(&mut *transaction)
             .await
             .map_err(db::DbError::from)?;
+        if rows.is_empty() {
+            transaction.commit().await.map_err(db::DbError::from)?;
+            return Ok(0);
+        }
         let now: OffsetDateTime = sqlx::query_scalar(crate::db::statements::DATABASE_TIME)
             .fetch_one(&mut *transaction)
             .await
@@ -532,13 +549,17 @@ impl Worker {
 
     async fn process_cleanups(&self, limit: i64, lease: i64) -> Result<u64, WorkerError> {
         let cleanups =
-            db::queues::claim_cleanups(&self.pool, &self.settings.worker_id, limit, lease).await?;
+            db::queues::claim_cleanups(&self.pool, None, &self.settings.worker_id, limit, lease)
+                .await?;
         let count = cleanups.len() as u64;
         self.run_cleanup_batch(cleanups).await?;
         Ok(count)
     }
 
     async fn run_cleanup_batch(&self, cleanups: Vec<ObjectCleanup>) -> Result<(), WorkerError> {
+        if cleanups.is_empty() {
+            return Ok(());
+        }
         let backends = self.storage.backends().await?;
         let mut batches: BTreeMap<Uuid, (StorageBackend, Vec<ObjectCleanup>)> = BTreeMap::new();
         for cleanup in cleanups {

@@ -75,20 +75,28 @@ pub async fn fail_delete_request(
     id: Uuid,
     worker: &str,
     error: Value,
+    ready_at: Option<String>,
 ) -> Result<bool, DbError> {
     Ok(sqlx::query(statements::FAIL_DELETE_REQUEST)
         .bind(id)
         .bind(worker)
         .bind(sqlx::types::Json(error))
+        .bind(ready_at)
         .execute(pool)
         .await?
         .rows_affected()
         == 1)
 }
-pub async fn release_delete_request(pool: &Pool, id: Uuid, worker: &str) -> Result<bool, DbError> {
+pub async fn release_delete_request(
+    pool: &Pool,
+    id: Uuid,
+    worker: &str,
+    ready_at: Option<String>,
+) -> Result<bool, DbError> {
     Ok(sqlx::query(statements::RELEASE_DELETE_REQUEST)
         .bind(id)
         .bind(worker)
+        .bind(ready_at)
         .execute(pool)
         .await?
         .rows_affected()
@@ -113,15 +121,17 @@ where
 }
 pub async fn claim_cleanups(
     pool: &Pool,
+    parent: Option<Uuid>,
     worker: &str,
     limit: i64,
     lease: i64,
 ) -> Result<Vec<ObjectCleanup>, DbError> {
     let (limit, lease) = claim_bounds(limit, lease)?;
-    sqlx::query(statements::CLAIM_UNPARENTED_CLEANUPS)
+    sqlx::query(statements::CLAIM_CLEANUPS)
         .bind(limit)
         .bind(worker)
         .bind(lease)
+        .bind(parent)
         .fetch_all(pool)
         .await?
         .into_iter()
@@ -129,11 +139,15 @@ pub async fn claim_cleanups(
         .collect::<Result<Vec<_>, _>>()
         .map(claimed_in_order)
 }
-pub async fn list_parent_cleanups(
+/// Keep the database deadline at its stored precision across the JavaScript bridge.
+pub async fn next_unfinished_cleanup(
     pool: &Pool,
     parent: Uuid,
-) -> Result<Vec<ObjectCleanup>, DbError> {
-    dialect::query("SELECT id,delete_request_id,object_id,storage_backend_id,status,record,updated,created_at,claimed_at,claimed_by,claim_expires_at FROM tamoss_object_cleanups WHERE delete_request_id=$1 ORDER BY created_at,id").bind(parent).fetch_all(pool).await?.into_iter().map(map_cleanup).collect()
+) -> Result<Option<(String, Option<String>)>, DbError> {
+    let row = dialect::query("SELECT status,CAST(claim_expires_at AS TEXT) FROM tamoss_object_cleanups WHERE delete_request_id=$1 AND status<>'done' ORDER BY claim_expires_at NULLS FIRST LIMIT 1")
+        .bind(parent).fetch_optional(pool).await?;
+    row.map(|row| Ok((row.try_get(0)?, row.try_get(1)?)))
+        .transpose()
 }
 pub async fn begin_cleanup_attempt(pool: &Pool, id: Uuid, worker: &str) -> Result<bool, DbError> {
     begin_attempt(pool, "tamoss_object_cleanups", id, worker).await
