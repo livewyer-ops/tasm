@@ -170,6 +170,9 @@ export async function runContract(spec: Contract, host: ContractHost) {
   const objectId = `contract /${flow}/%2F/media.bin`;
   const objectPath = `/objects/${encodeURIComponent(objectId)}`;
   const allocated = await call(`/flows/${flow}/storage`, 'POST', { object_ids: [objectId] }, 201);
+  const retryId = randomUUID();
+  await call(`/flows/${flow}/storage`, 'POST', { object_ids: [retryId, objectId] }, 400);
+  await call(`/flows/${flow}/storage`, 'POST', { object_ids: [retryId] }, 201);
   const put = allocated.value.media_objects[0].put_url;
   const bytes = [0, 97, 128, 255, 13, 10];
   const headers = new Headers(put.headers);

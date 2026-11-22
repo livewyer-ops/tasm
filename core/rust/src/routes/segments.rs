@@ -163,10 +163,7 @@ async fn list(
     } else {
         let page = db::flows::list_segments_page(&pool, flow_id, &filters, reverse, &page_request)
             .await
-            .map_err(|error| match error {
-                db::DbError::Page => invalid_query(),
-                error => internal(error),
-            })?;
+            .map_err(internal)?;
         (page.items, page.next_page)
     };
     let mut responses = Vec::new();

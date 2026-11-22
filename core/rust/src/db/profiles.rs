@@ -88,30 +88,6 @@ where
     dialect::lock(executor, &format!("tamoss-profile:{id}")).await
 }
 
-pub async fn flow_count_with<'e, E>(executor: E, id: Uuid) -> Result<i64, DbError>
-where
-    E: sqlx::Executor<'e, Database = Engine>,
-{
-    Ok(
-        dialect::query_scalar("SELECT count(*) FROM tamoss_flows WHERE profile_id=$1")
-            .bind(id)
-            .fetch_one(executor)
-            .await?,
-    )
-}
-
-pub async fn delete<'e, E>(executor: E, id: Uuid) -> Result<bool, DbError>
-where
-    E: sqlx::Executor<'e, Database = Engine>,
-{
-    Ok(dialect::query("DELETE FROM tamoss_profiles WHERE id=$1")
-        .bind(id)
-        .execute(executor)
-        .await?
-        .rows_affected()
-        == 1)
-}
-
 fn map(row: RecordRow) -> Result<ProfileRecord, DbError> {
     Ok(ProfileRecord {
         id: row.try_get(0)?,

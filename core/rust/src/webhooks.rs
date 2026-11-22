@@ -19,18 +19,8 @@ impl WebhookPolicy {
 }
 #[derive(Debug, thiserror::Error)]
 pub enum WebhookError {
-    #[error("Webhook URL scheme is invalid")]
-    Scheme,
-    #[error("Webhook URL host is invalid")]
-    Host,
-    #[error("Webhook URL credentials are invalid")]
-    Credentials,
-    #[error("Webhook URL port is invalid")]
-    Port,
     #[error("Webhook target is restricted")]
     Restricted,
-    #[error("Webhook target resolution is restricted")]
-    RestrictedResolution,
     #[error("Webhook redirects are not allowed")]
     Redirect,
     #[error(transparent)]

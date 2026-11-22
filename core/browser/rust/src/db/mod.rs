@@ -17,8 +17,6 @@ pub enum DbError {
     Sqlx(#[from] crate::pglite::Error),
     #[error("invalid record: {0}")]
     Record(String),
-    #[error("invalid page token")]
-    Page,
 }
 
 pub(crate) mod statements;

@@ -1,5 +1,4 @@
-use tasm_cloudflare::{
-    canonical::CanonicalJson,
+use tasm_core::{
     domain::{segment, timerange},
     http::query::QueryParams,
 };
@@ -7,7 +6,7 @@ use tasm_cloudflare::{
 #[test]
 fn raw_media_metadata_enforces_bbc_requirements() {
     use serde_json::json;
-    use tasm_cloudflare::domain::flow::validate_direct;
+    use tasm_core::domain::flow::validate_direct;
     let mut audio = json!({"format":"urn:x-nmos:format:audio","codec":"audio/x-raw-float","essence_parameters":{"sample_rate":48000,"channels":2,"unc_parameters":{"unc_type":"interleaved"}}});
     assert!(validate_direct(audio.as_object().unwrap()).is_err());
     audio["essence_parameters"]["bit_depth"] = json!(24);
@@ -60,19 +59,8 @@ fn precise_timestamps_ranges_and_query_identity() {
     assert_eq!(query.last("tag.%2F"), Some("%20"));
     assert_eq!(query.last("tag.space"), Some(" "));
     assert_eq!(query.last("tag.plus"), Some("+"));
-    let path = "/objects/a%252F%20%26%2B/instances";
     assert_eq!(
-        tasm_cloudflare::http::routes::objects::classify(&axum::http::Method::POST, path)
-            .unwrap()
-            .object_id,
-        "a%2F &+"
-    );
-    assert_eq!(
-        tasm_cloudflare::http::lenient_decode_path("/objects/a&b+c"),
+        tasm_core::http::lenient_decode_path("/objects/a&b+c"),
         "/objects/a&b+c"
-    );
-    assert_eq!(
-        CanonicalJson::parse("{\"z\":1,\"a\":2}").unwrap().as_str(),
-        "{\"a\":2,\"z\":1}"
     );
 }

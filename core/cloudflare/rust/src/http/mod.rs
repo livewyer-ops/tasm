@@ -9,6 +9,7 @@ use std::sync::Arc;
 pub fn router(pool: Pool, settings: Arc<Settings>) -> Router {
     let storage = StorageFactory::new(pool.clone());
     routes::endpoints()
+        .merge(service_endpoints::router())
         .route_layer(from_fn(authorise))
         .with_state(routes::service::MetadataState::new(pool, settings))
         .layer(Extension(storage))

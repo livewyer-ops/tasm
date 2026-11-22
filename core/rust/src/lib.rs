@@ -1,5 +1,4 @@
 pub mod api;
-pub mod canonical;
 pub mod db;
 pub mod domain;
 pub mod host;

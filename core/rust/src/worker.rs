@@ -4,7 +4,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
-use web_time::Instant;
 
 use serde_json::{Value, json};
 use sqlx::{Pool, Row};
@@ -688,7 +687,6 @@ impl Worker {
             .cloned()
             .unwrap_or_else(|| json!({}));
         let policy = WebhookPolicy::from_settings(&self.settings);
-        let started = Instant::now();
         let result = webhooks::deliver(
             &self.pool.0,
             delivery.id,
@@ -698,17 +696,15 @@ impl Worker {
             &policy,
         )
         .await;
-        let elapsed = started.elapsed().as_secs_f64();
-        let (outcome, terminal, response, error) = match result {
+        let (terminal, response, error) = match result {
             Ok(value) if (200..300).contains(&value.status) => {
-                ("success", Some("done"), Some(value.status as i32), None)
+                (Some("done"), Some(value.status as i32), None)
             }
             Ok(value)
                 if webhooks::retriable_status(value.status)
                     && attempt < self.settings.webhook_max_attempts =>
             {
                 (
-                    "retry",
                     None,
                     Some(value.status as i32),
                     Some(queue_error(
@@ -718,7 +714,6 @@ impl Worker {
                 )
             }
             Ok(value) => (
-                "failure",
                 Some("dead"),
                 Some(value.status as i32),
                 Some(queue_error(
@@ -726,16 +721,7 @@ impl Worker {
                     &format!("HTTP {}: {}", value.status, value.reason),
                 )),
             ),
-            Err(
-                WebhookError::Restricted
-                | WebhookError::RestrictedResolution
-                | WebhookError::Redirect
-                | WebhookError::Scheme
-                | WebhookError::Host
-                | WebhookError::Credentials
-                | WebhookError::Port,
-            ) => (
-                "failure",
+            Err(WebhookError::Restricted | WebhookError::Redirect) => (
                 Some("dead"),
                 None,
                 Some(queue_error(
@@ -744,19 +730,16 @@ impl Worker {
                 )),
             ),
             Err(_) if attempt < self.settings.webhook_max_attempts => (
-                "failure",
                 None,
                 None,
                 Some(queue_error("RequestError", "Webhook request failed")),
             ),
             Err(_) => (
-                "failure",
                 Some("dead"),
                 None,
                 Some(queue_error("RequestError", "Webhook request failed")),
             ),
         };
-        let _ = (outcome, elapsed);
         if let Some(status) = terminal {
             if status == "dead" {
                 let failure = error

@@ -1,4 +1,4 @@
-pub use tasm_core::{canonical, domain, now};
+pub use tasm_core::{domain, now};
 pub mod config;
 pub mod db;
 use tasm_core::host;

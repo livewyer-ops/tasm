@@ -13,7 +13,8 @@ use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 use crate::{
-    db::{self, MediaObjectRecord},
+    db::{self, StorageBackend},
+    domain::object::{MediaObject, ObjectInstance},
     http::routes::service::{MetadataState, internal},
     http::{MAX_JSON_BODY_BYTES, error::ApiError},
     storage::StorageFactory,
@@ -35,6 +36,36 @@ fn valid_id(value: &str, max: u64) -> bool {
             .split('/')
             .all(|part| !matches!(part, "" | "." | ".."))
 }
+fn allocation(
+    id: String,
+    flow: Uuid,
+    backend: &StorageBackend,
+    content_type: &str,
+    now: time::OffsetDateTime,
+) -> MediaObject {
+    MediaObject {
+        id,
+        timerange: None,
+        init_object_id: None,
+        first_referenced_by_flow: None,
+        allocated_by_flow: Some(flow),
+        referenced_by_flows: BTreeSet::new(),
+        instances: vec![ObjectInstance {
+            storage_backend: None,
+            storage_backend_id: Some(backend.id),
+            url: None,
+            label: Some(backend.label.clone()),
+            controlled: true,
+            presigned: false,
+        }],
+        key_frame_count: None,
+        bytes_written: 0,
+        object_kind: "unassigned".into(),
+        content_type: Some(content_type.into()),
+        created: now,
+    }
+}
+
 async fn allocate(
     State(state): State<MetadataState>,
     Extension(factory): Extension<StorageFactory>,
@@ -150,8 +181,7 @@ async fn allocate(
             "Bad request. Storage allocation limit is too high.",
         ));
     }
-    let target = requested as usize;
-    let mut ids = supplied
+    let ids = supplied
         .map(|values| {
             values
                 .iter()
@@ -191,68 +221,36 @@ async fn allocate(
     .map_err(internal)?
     .ok_or_else(|| ApiError::bad_request("The requested Storage Backend does not exist."))?;
     let now = crate::now();
-    if supplied.is_none() {
-        while ids.len() < target {
-            let candidates = (ids.len()..target)
-                .map(|_| Uuid::new_v4().to_string())
-                .collect::<Vec<_>>();
-            db::objects::lock_sorted(&mut transaction, candidates.clone())
-                .await
-                .map_err(internal)?;
-            for id in candidates {
-                let referenced = Vec::<String>::new();
-                let record = json!({"id":id,"timerange":null,"init_object_id":null,"first_referenced_by_flow":null,"allocated_by_flow":flow_id,"referenced_by_flows":referenced,"instances":[{"storage_backend_id":backend.id,"url":null,"label":backend.label,"controlled":true,"presigned":false}],"key_frame_count":null,"bytes_written":0,"object_kind":"unassigned","content_type":content_type,"created":crate::domain::model::timestamp(now)});
-                if db::objects::create(
-                    &mut *transaction,
-                    &MediaObjectRecord {
-                        id: id.clone(),
-                        first_referenced_by_flow: None,
-                        referenced_by_flows: Vec::new(),
-                        object_kind: "unassigned".into(),
-                        content_type: Some(content_type.clone()),
-                        record,
-                        created_at: now,
-                        updated_at: now,
-                    },
-                )
+    let target = if supplied.is_some() {
+        ids.len()
+    } else {
+        requested as usize
+    };
+    let mut candidates = ids;
+    let mut allocated = Vec::with_capacity(target);
+    while allocated.len() < target {
+        if candidates.is_empty() {
+            candidates.extend((allocated.len()..target).map(|_| Uuid::new_v4().to_string()));
+        }
+        db::objects::lock_sorted(&mut transaction, candidates.iter().cloned())
+            .await
+            .map_err(internal)?;
+        for id in candidates.drain(..) {
+            let record = allocation(id, flow_id, &backend, &content_type, now).into_record(now);
+            if db::objects::create(&mut *transaction, &record)
                 .await
                 .map_err(internal)?
-                {
-                    ids.push(id);
-                }
-            }
-        }
-    } else {
-        db::objects::lock_sorted(&mut transaction, ids.clone())
-            .await
-            .map_err(internal)?;
-        for id in &ids {
-            let referenced = Vec::<String>::new();
-            let record = json!({"id":id,"timerange":null,"init_object_id":null,"first_referenced_by_flow":null,"allocated_by_flow":flow_id,"referenced_by_flows":referenced,"instances":[{"storage_backend_id":backend.id,"url":null,"label":backend.label,"controlled":true,"presigned":false}],"key_frame_count":null,"bytes_written":0,"object_kind":"unassigned","content_type":content_type,"created":crate::domain::model::timestamp(now)});
-            let created = db::objects::create(
-                &mut *transaction,
-                &MediaObjectRecord {
-                    id: id.clone(),
-                    first_referenced_by_flow: None,
-                    referenced_by_flows: Vec::new(),
-                    object_kind: "unassigned".into(),
-                    content_type: Some(content_type.clone()),
-                    record,
-                    created_at: now,
-                    updated_at: now,
-                },
-            )
-            .await
-            .map_err(internal)?;
-            if !created {
+            {
+                allocated.push(record.id);
+            } else if supplied.is_some() {
                 return Err(ApiError::bad_request(
                     "One or more supplied object_ids already exist.",
                 ));
             }
         }
     }
-    let mut allocations = Vec::with_capacity(ids.len());
-    for object_id in ids.drain(..) {
+    let mut allocations = Vec::with_capacity(allocated.len());
+    for object_id in allocated {
         let url = factory
             .object_url(&backend, &object_id, "PUT", presigned, Some(&content_type))
             .await

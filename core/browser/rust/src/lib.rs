@@ -1,4 +1,4 @@
-pub use tasm_core::{canonical, domain, now};
+pub use tasm_core::{domain, now};
 pub mod config;
 pub mod db;
 use tasm_core::host;
@@ -36,9 +36,9 @@ pub struct Tasm {
 #[wasm_bindgen]
 impl Tasm {
     #[wasm_bindgen(constructor)]
-    pub fn new(bridge: js_sys::Function, media_base: String) -> Self {
+    pub fn new(bridge: js_sys::Function, _media_base: String) -> Self {
         let pool = sql::Pool(host::Host::new(bridge));
-        let settings = Arc::new(config::Settings::browser(media_base));
+        let settings = Arc::new(config::Settings::browser());
         Self {
             router: http::router(pool.clone(), settings.clone()),
             worker: worker::Worker::new(pool, settings),

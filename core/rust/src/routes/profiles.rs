@@ -160,13 +160,9 @@ async fn create(
     let pool = state.pool;
     let mut tx = pool.begin().await.map_err(internal)?;
     db::profiles::lock(&mut *tx, path).await.map_err(internal)?;
-    if db::profiles::get_with(&mut *tx, path)
+    if !db::profiles::create(&mut *tx, &record)
         .await
         .map_err(internal)?
-        .is_some()
-        || !db::profiles::create(&mut *tx, &record)
-            .await
-            .map_err(internal)?
     {
         return Err(ApiError::bad_request(
             "Bad request. Profile already exists.",

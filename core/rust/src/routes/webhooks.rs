@@ -234,13 +234,9 @@ async fn remove(
     query(&request, &[], &[])?;
     let id = id(&raw)?;
     let mut tx = state.pool.begin().await.map_err(internal)?;
-    if db::service::get_webhook_with(&mut *tx, id)
+    if !db::service::delete_webhook(&mut *tx, id)
         .await
         .map_err(internal)?
-        .is_none()
-        || !db::service::delete_webhook(&mut *tx, id)
-            .await
-            .map_err(internal)?
     {
         return Err(not_found());
     }

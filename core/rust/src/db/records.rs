@@ -13,7 +13,6 @@ pub struct Page<T> {
     pub items: Vec<T>,
     pub limit: i64,
     pub next_page: Option<String>,
-    pub timerange: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +203,5 @@ pub fn finish_page<T>(mut items: Vec<T>, request: &PageRequest) -> Page<T> {
         items,
         limit: request.limit,
         next_page,
-        timerange: None,
     }
 }

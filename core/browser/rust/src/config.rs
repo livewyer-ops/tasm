@@ -17,10 +17,9 @@ pub struct Settings {
     pub webhook_require_https: bool,
     pub webhook_max_attempts: u64,
     pub webhook_timeout_seconds: f64,
-    pub media_base: String,
 }
 impl Settings {
-    pub fn browser(media_base: String) -> Self {
+    pub fn browser() -> Self {
         Self {
             api_version: "8.2".into(),
             service_version: env!("CARGO_PKG_VERSION").into(),
@@ -40,7 +39,6 @@ impl Settings {
             webhook_allowed_hosts: vec!["*".into()],
             webhook_max_attempts: 8,
             webhook_timeout_seconds: 10.0,
-            media_base,
         }
     }
     /// Advertised allocation lifetime before the transfer grace period.

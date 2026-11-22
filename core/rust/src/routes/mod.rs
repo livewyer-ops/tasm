@@ -8,12 +8,17 @@ pub mod sources;
 pub mod storage;
 pub mod webhooks;
 
-use super::service_endpoints;
-use axum::Router;
-use service::MetadataState;
+use axum::{Router, routing::get};
+use service::{MetadataState, root, service, storage_backends, update_service};
 
 pub(super) fn endpoints() -> Router<MetadataState> {
-    service_endpoints::router()
+    Router::new()
+        .route("/", get(root).head(root))
+        .route("/service", get(service).head(service).post(update_service))
+        .route(
+            "/service/storage-backends",
+            get(storage_backends).head(storage_backends),
+        )
         .merge(profiles::router())
         .merge(sources::router())
         .merge(flows::router())

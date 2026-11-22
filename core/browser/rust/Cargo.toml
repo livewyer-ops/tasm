@@ -24,4 +24,3 @@ url.workspace = true
 uuid.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
-web-time.workspace = true
