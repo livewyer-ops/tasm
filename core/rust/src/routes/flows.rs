@@ -430,20 +430,9 @@ async fn put_flow(
         ));
     }
     rules::validate_put(&map, flow_id).map_err(|_| invalid_flow())?;
-    if !map.contains_key("profile_id") {
-        rules::validate_direct(&map).map_err(|_| invalid_flow())?;
-    }
     let created = existing.is_none();
     let now = crate::now();
-    let mut payload = if let Some(existing) = &existing {
-        data(existing)
-    } else {
-        Map::new()
-    };
-    let supplied: std::collections::BTreeSet<_> = map.keys().cloned().collect();
-    for (key, value) in map.clone() {
-        payload.insert(key, value);
-    }
+    let mut payload = map.clone();
     rules::clean_client_fields(&mut payload);
     let mut profile_id = existing.as_ref().and_then(|value| value.profile_id);
     let requested_profile = map.get("profile_id");
@@ -453,20 +442,6 @@ async fn put_flow(
                 return Err(invalid_flow());
             }
             profile_id = None;
-            for name in [
-                "format",
-                "container",
-                "codec",
-                "essence_parameters",
-                "avg_bit_rate",
-                "segment_duration",
-                "container_mapping",
-            ] {
-                payload.remove(name);
-            }
-            for (key, value) in &map {
-                payload.insert(key.clone(), value.clone());
-            }
             rules::validate_direct(&payload).map_err(|_| invalid_flow())?;
         } else {
             let requested = model::parse_uuid(value).map_err(|_| invalid_flow())?;
@@ -483,9 +458,6 @@ async fn put_flow(
                 .await
                 .map_err(internal)?
                 .ok_or_else(invalid_flow)?;
-            if rules::profile_has_technical_fields(&map) {
-                return Err(invalid_flow());
-            }
             let metadata = profile
                 .record
                 .get("flow_metadata")
@@ -497,13 +469,18 @@ async fn put_flow(
             }
             profile_id = Some(requested);
         }
-    } else if created {
-        rules::validate_direct(&payload).map_err(|_| invalid_flow())?
     } else if profile_id.is_none() {
         rules::validate_direct(&payload).map_err(|_| invalid_flow())?;
     }
-    if profile_id.is_some() && rules::profile_has_technical_fields(&map) {
-        return Err(invalid_flow());
+    if profile_id.is_some() {
+        if rules::profile_has_technical_fields(&map) {
+            return Err(ApiError::bad_request(
+                "The Profile supplies the Flow's technical metadata. To change it, set profile_id to an empty string and supply the technical metadata.",
+            ));
+        }
+        if requested_profile.is_none() {
+            return Err(invalid_flow());
+        }
     }
     let source_id = model::uuid_field(&map, "source_id").map_err(|_| invalid_flow())?;
     let format = payload
@@ -548,9 +525,8 @@ async fn put_flow(
     db::flows::save_source(&mut *tx, &source)
         .await
         .map_err(internal)?;
-    let collection_ids = if supplied.contains("flow_collection") {
-        let ids = rules::validate_collection(payload.get("flow_collection").unwrap(), flow_id)
-            .map_err(|_| invalid_flow())?;
+    let collection_ids = if let Some(collection) = map.get("flow_collection") {
+        let ids = rules::validate_collection(collection, flow_id).map_err(|_| invalid_flow())?;
         for id in &ids {
             if db::flows::get_flow_with(&mut *tx, *id)
                 .await
@@ -562,10 +538,7 @@ async fn put_flow(
         }
         ids
     } else {
-        existing
-            .as_ref()
-            .map(|value| value.flow_collection_ids.clone())
-            .unwrap_or_default()
+        Vec::new()
     };
     let init = payload
         .get("essence_parameters")

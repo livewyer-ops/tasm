@@ -106,6 +106,26 @@ export async function runContract(spec: Contract, host: ContractHost) {
   await call(`/flows/${flow}`, 'PUT', { id: flow, source_id: source, ...audio }, 201);
   await call(`/flows/${other}`, 'PUT', { id: other, source_id: randomUUID(), ...audio }, 201);
   await get('/flows'); await get(`/flows/${flow}`); await get('/sources'); await get(`/sources/${source}`);
+  const replacement = { id: randomUUID(), source_id: randomUUID(), ...audio };
+  const replacementPath = `/flows/${replacement.id}`;
+  const created = (await call(replacementPath, 'PUT', { ...replacement, label: 'old', description: 'old', tags: { old: 'yes' },
+    generation: 2, max_bit_rate: 1500, flow_collection: [{ id: other }] }, 201)).value;
+  await call(replacementPath, 'PUT', replacement, 204);
+  const replaced = (await call(replacementPath)).value;
+  for (const key of ['label', 'description', 'generation', 'max_bit_rate']) assert.equal(replaced[key], undefined, key);
+  assert.deepEqual(replaced.tags, {});
+  assert.deepEqual((await call(replacementPath + '/flow_collection')).value, []);
+  assert.equal(replaced.created_by, created.created_by);
+  assert.equal(replaced.created, created.created);
+  const linked = { id: randomUUID(), source_id: randomUUID(), profile_id: profile };
+  const linkedPath = `/flows/${linked.id}`;
+  await call(linkedPath, 'PUT', { ...linked, label: 'before' }, 201);
+  assert.match((await call(linkedPath, 'PUT', { ...linked, avg_bit_rate: 100 }, 400)).value.summary, /profile/i);
+  await call(linkedPath, 'PUT', linked, 204);
+  assert.equal((await call(linkedPath)).value.label, undefined);
+  assert.equal((await call(linkedPath)).value.codec, audio.codec);
+  await call(linkedPath, 'PUT', { ...linked, profile_id: '', ...audio }, 204);
+  assert.equal((await call(linkedPath)).value.profile_id, undefined);
   // These source and flow mutations exercise transaction commit and reuse.
   for (const entity of [`/flows/${flow}`, `/sources/${source}`]) {
     for (const field of ['description', 'label']) {
