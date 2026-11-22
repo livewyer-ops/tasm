@@ -911,7 +911,7 @@ fn delete_range(record: &Value, delete_flow: bool) -> Result<Option<(i128, i128)
             .and_then(Value::as_str)
             .ok_or_else(invalid)?,
     };
-    let bounds = timerange::parse(value).map_err(|_| invalid())?;
+    let bounds = timerange::parse(&timerange::explicit(value, ')')).map_err(|_| invalid())?;
     if bounds.empty {
         return Ok(None);
     }

@@ -3,6 +3,7 @@
 // here in seconds rather than in the browser suite.
 import { test } from 'node:test';
 import { isDeepStrictEqual } from 'node:util';
+import { checkLegacyRanges } from './contract/legacy-ranges';
 import { checkUuidFilters } from './contract/uuid-filters';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -71,6 +72,11 @@ async function store() {
 }
 
 await init({ module_or_path: readFileSync('pkg/browser/tasm_bg.wasm') });
+
+test('stored ranges and queued deletes retain their original endpoints', async () => {
+  const { request, db, core } = await store();
+  await checkLegacyRanges(request, (sql, ...params) => db.query(sql, params), () => core.poll(), videoFlow);
+});
 
 test('UUID filters follow the TAMS wire format', async () => {
   const { request } = await store();

@@ -181,6 +181,13 @@ export async function runContract(spec: Contract, host: ContractHost) {
     ['limit=2', '[10:0_21:0)'], ['page=8', '()']]) {
     for (const method of ['GET', 'HEAD']) assert.equal((await call(dataSegments + '?' + query, method)).headers['x-paging-timerange'], expected);
   }
+  const clip = (timerange: string) => ({ object_id: randomUUID(), timerange, ts_offset: '100:0',
+    object_timerange: '[0:0_10:0)', get_urls });
+  await call(dataSegments, 'POST', clip('[112:0_114:0)'), 400);
+  const validClip = clip('102:0_104:0)'), endPoint = clip('[110:0]');
+  const mixed = await call(dataSegments, 'POST', [validClip, endPoint]);
+  assert.deepEqual(mixed.value.failed_segments.map((item: { object_id: string }) => item.object_id), [endPoint.object_id]);
+  assert.equal((await call(dataSegments + '?timerange=101:0_102:0')).value[0].object_id, validClip.object_id);
   const timerange = '[281474976710654:0_281474976710655:999999999)';
   await call(`/flows/${flow}/segments`, 'POST', { object_id: objectId, timerange }, 201);
   const segments = await get(`/flows/${flow}/segments`);

@@ -1,5 +1,6 @@
 import { apiConfig, apiConfigPath } from "./test-installation.ts";
 import assert from "node:assert/strict";
+import { checkLegacyRanges } from "../../tests/contract/legacy-ranges.ts";
 import { checkUuidFilters } from "../../tests/contract/uuid-filters.ts";
 import { readFileSync } from "node:fs";
 import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -66,6 +67,16 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     const unsupported = await request("/service", { method: "PUT", body: "{}" });
     assert.equal(unsupported.status, 405);
     assert.equal((await unsupported.json() as { type: string }).type, "method_not_allowed");
+  });
+
+  await t.test("stored ranges and queued deletes retain their original endpoints", async () => {
+    const env = await api.getEnv();
+    const sql = await api.getDurableObjectStorage("STORE", { name: env.STORE_ID });
+    await checkLegacyRanges(async (method, path, body) => {
+      const response = await request(path, { method, body: JSON.stringify(body) });
+      return { status: response.status, body: await response.text() };
+    }, (statement, ...params) => sql.exec(statement.replace(/\$(\d+)/g, "?$1"), ...params),
+    () => new Promise(resolve => setTimeout(resolve, 100)), JSON.parse(readFileSync(new URL("./video-flow.test.json", import.meta.url), "utf8")));
   });
 
   await t.test("UUID filters follow the TAMS wire format", async () => {

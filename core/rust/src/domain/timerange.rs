@@ -70,13 +70,13 @@ pub fn parse(value: &str) -> Result<Bounds, ValidationError> {
     let (left, start) = match left_value.as_bytes().first().copied() {
         Some(b'[') => ('[', &left_value[1..]),
         Some(b'(') => ('(', &left_value[1..]),
-        // Omitted markers default to an inclusive start and an exclusive end.
+        // A finite bound without a marker is inclusive.
         _ => ('[', left_value),
     };
     let (right, end) = match right_value.as_bytes().last().copied() {
         Some(b']') => (']', &right_value[..right_value.len() - 1]),
         Some(b')') => (')', &right_value[..right_value.len() - 1]),
-        _ => (')', right_value),
+        _ => (']', right_value),
     };
     let start = (!start.is_empty()).then(|| timestamp(start)).transpose()?;
     let end = (!end.is_empty()).then(|| timestamp(end)).transpose()?;
@@ -114,6 +114,28 @@ pub fn parse(value: &str) -> Result<Bounds, ValidationError> {
         empty,
         point,
     })
+}
+
+/// Make omitted finite bounds explicit before a range crosses the storage boundary.
+/// Older records used an exclusive omitted end. Points have no ambiguous bounds.
+pub fn explicit(value: &str, omitted_end: char) -> std::borrow::Cow<'_, str> {
+    let Some((left, right)) = value.split_once('_') else {
+        return value.into();
+    };
+    let add_start = !left.is_empty() && !left.starts_with(['[', '(']);
+    let add_end = !right.is_empty() && !right.ends_with([']', ')']);
+    if !add_start && !add_end {
+        return value.into();
+    }
+    let mut text = String::with_capacity(value.len() + 2);
+    if add_start {
+        text.push('[');
+    }
+    text.push_str(value);
+    if add_end {
+        text.push(omitted_end);
+    }
+    text.into()
 }
 
 pub fn format_timestamp(value: i128) -> String {
@@ -165,10 +187,10 @@ mod tests {
         let point = parse("10:0").unwrap();
         assert!(point.point);
         assert_eq!(point.start, Some(10 * S));
-        assert_eq!(parse("0:0_10:0").unwrap(), parse("[0:0_10:0)").unwrap());
+        assert_eq!(parse("0:0_10:0").unwrap(), parse("[0:0_10:0]").unwrap());
         assert_eq!(parse("0:0_").unwrap(), parse("[0:0_").unwrap());
-        assert_eq!(parse("_10:0").unwrap(), parse("_10:0)").unwrap());
-        assert_eq!(parse("[1:0_2:0").unwrap(), parse("[1:0_2:0)").unwrap());
+        assert_eq!(parse("_10:0").unwrap(), parse("_10:0]").unwrap());
+        assert_eq!(parse("[1:0_2:0").unwrap(), parse("[1:0_2:0]").unwrap());
     }
 
     #[test]

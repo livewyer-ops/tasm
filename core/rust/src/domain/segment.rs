@@ -40,7 +40,7 @@ pub fn overlaps(a: SegmentBounds, b: SegmentBounds) -> bool {
 pub fn coverage_gaps(segments: &[SegmentRecord]) -> Result<Vec<String>, ValidationError> {
     let mut ranges = segments
         .iter()
-        .map(|segment| bounds(&segment.timerange))
+        .map(|segment| bounds(&timerange::explicit(&segment.timerange, ')')))
         .collect::<Result<Vec<_>, _>>()?;
     ranges.sort_by_key(|range| (range.start, range.end));
     let Some(first) = ranges.first() else {
@@ -84,7 +84,7 @@ pub fn effective_object_timerange(
     if parsed.point {
         return Ok(format!("[{}]", format_timestamp(start)));
     }
-    let inclusive_end = timerange_value.ends_with(']');
+    let inclusive_end = !timerange_value.ends_with(')');
     let end = if inclusive_end {
         end.checked_sub(1).ok_or(ValidationError)?
     } else {
@@ -112,7 +112,7 @@ pub fn response(
     let data = segment.record.as_object();
     let mut value = json!({
         "object_id": segment.object_id,
-        "timerange": segment.timerange,
+        "timerange": timerange::explicit(&segment.timerange, ')'),
         "ts_offset": data.and_then(|value| value.get("ts_offset")),
         "last_duration": data.and_then(|value| value.get("last_duration")),
         "sample_offset": data.and_then(|value| value.get("sample_offset")),
@@ -123,11 +123,13 @@ pub fn response(
     });
     if include_object_timerange {
         let effective = effective_object_timerange(
-            &segment.timerange,
+            &timerange::explicit(&segment.timerange, ')'),
             data.and_then(|value| value.get("ts_offset"))
                 .and_then(Value::as_str),
             data.and_then(|value| value.get("object_timerange"))
-                .and_then(Value::as_str),
+                .and_then(Value::as_str)
+                .map(|s| timerange::explicit(s, ')'))
+                .as_deref(),
         )
         .unwrap_or_else(|_| segment.timerange.clone());
         value
@@ -154,7 +156,7 @@ pub fn validate_post(value: &Value) -> Result<(&str, &str, SegmentBounds), Valid
         .and_then(Value::as_str)
         .ok_or(ValidationError)?;
     let parsed = bounds(timerange_value)?;
-    if !parsed.point && !timerange_value.starts_with('[') {
+    if timerange_value.starts_with('(') {
         return Err(ValidationError);
     }
     for field in [
@@ -183,7 +185,7 @@ pub fn validate_post(value: &Value) -> Result<(&str, &str, SegmentBounds), Valid
     }
     if let Some(last_duration) = object.get("last_duration").and_then(Value::as_str) {
         let duration = timerange::timestamp(last_duration)?;
-        if duration < 0 || parsed.point || timerange_value.ends_with(']') {
+        if duration < 0 || parsed.point || !timerange_value.ends_with(')') {
             return Err(ValidationError);
         }
     }
@@ -304,6 +306,7 @@ mod tests {
         assert!(!post(json!({"last_duration":"-1:0"})));
         assert!(!post(json!({"sample_count":-1})));
         let missing_start = json!({"object_id":"a","timerange":"0:0_1:0"});
-        assert!(validate_post(&missing_start).is_err());
+        assert!(validate_post(&missing_start).is_ok());
+        assert!(!post(json!({"timerange":"(0:0_1:0)"})));
     }
 }

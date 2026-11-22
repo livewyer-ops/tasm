@@ -29,6 +29,11 @@ pub fn router() -> Router<MetadataState> {
 
 fn response(record: &DeleteRequest, retention: u64) -> Value {
     let get = |name: &str| record.record.get(name).cloned().unwrap_or(Value::Null);
+    let range = |name| {
+        get(name)
+            .as_str()
+            .map(|value| crate::domain::timerange::explicit(value, ')').into_owned())
+    };
     let expiry = (record.status == "done" && retention > 0)
         .then(|| {
             i64::try_from(retention)
@@ -40,8 +45,8 @@ fn response(record: &DeleteRequest, retention: u64) -> Value {
     let mut value = json!({
         "id":record.id,
         "flow_id":record.flow_id,
-        "timerange_to_delete":get("timerange_to_delete"),
-        "timerange_remaining":get("timerange_remaining"),
+        "timerange_to_delete":range("timerange_to_delete"),
+        "timerange_remaining":range("timerange_remaining"),
         "delete_flow":get("delete_flow"),
         "created":get("created"),
         "created_by":get("created_by"),

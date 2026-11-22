@@ -253,7 +253,7 @@ fn timerange_union(values: &[SegmentRecord]) -> String {
         return "()".into();
     }
     if values.len() == 1 {
-        return values[0].timerange.clone();
+        return crate::domain::timerange::explicit(&values[0].timerange, ')').into_owned();
     }
     crate::domain::timerange::from_bounds(
         values.iter().map(|row| row.timerange_start).min(),
@@ -534,24 +534,29 @@ async fn register_one(
     {
         return Err(bad().into());
     }
-    // A reused Object's samples are fixed: once offset by ts_offset, the
-    // Segment must lie within the Object's timerange.
-    if had_references && let Some(object_range) = media.timerange.as_deref() {
-        let in_object = segment::effective_object_timerange(
-            timerange,
-            data.get("ts_offset").and_then(Value::as_str),
-            None,
-        )
-        .and_then(|value| segment::bounds(&value))
-        .map_err(|_| bad())?;
+    let timerange = crate::domain::timerange::explicit(timerange, ']');
+    let timerange = timerange.as_ref();
+    let mapped = segment::effective_object_timerange(
+        timerange,
+        data.get("ts_offset").and_then(Value::as_str),
+        None,
+    )
+    .map_err(|_| bad())?;
+    let declared = if had_references {
+        media.timerange.as_deref()
+    } else {
+        data.get("object_timerange").and_then(Value::as_str)
+    };
+    let effective = if let Some(object_range) = declared {
         let object = segment::bounds(object_range).map_err(|_| bad())?;
-        if in_object.start < object.start || in_object.end > object.end {
-            return Err(
-                "Bad request. The Segment timerange, offset by ts_offset, must lie within the Media Object's timerange."
-                    .into(),
-            );
+        let clip = segment::bounds(&mapped).map_err(|_| bad())?;
+        if clip.start < object.start || clip.end > object.end {
+            return Err("Bad request. The Segment timerange, offset by ts_offset, must lie within the Media Object's timerange.".into());
         }
-    }
+        crate::domain::timerange::explicit(object_range, ']').into_owned()
+    } else {
+        mapped
+    };
     if !had_references {
         uploaded(storage, &mut media, flow.id, uploads).await?;
     }
@@ -631,16 +636,6 @@ async fn register_one(
             });
         }
     }
-    let effective = segment::effective_object_timerange(
-        timerange,
-        data.get("ts_offset").and_then(Value::as_str),
-        if had_references {
-            media.timerange.as_deref()
-        } else {
-            data.get("object_timerange").and_then(Value::as_str)
-        },
-    )
-    .map_err(|_| bad())?;
     media.first_referenced_by_flow.get_or_insert(flow.id);
     media.allocated_by_flow = None;
     media.referenced_by_flows.insert(flow.id);
@@ -827,7 +822,11 @@ async fn delete(
             return Ok(StatusCode::NO_CONTENT.into_response());
         }
         let matching: String = if count == 1 {
-            selection.try_get(3).map_err(internal)?
+            crate::domain::timerange::explicit(
+                &selection.try_get::<String, _>(3).map_err(internal)?,
+                ')',
+            )
+            .into_owned()
         } else {
             crate::domain::timerange::from_bounds(
                 selection.try_get(0).map_err(internal)?,
@@ -841,8 +840,8 @@ async fn delete(
         let id = Uuid::new_v4();
         let to_delete = timerange_text
             .filter(|value| !matches!(*value, "" | "_"))
-            .unwrap_or(&matching)
-            .to_owned();
+            .map(|value| crate::domain::timerange::explicit(value, ']').into_owned())
+            .unwrap_or(matching);
         let mut record = json!({"id":id,"flow_id":flow_id,"timerange_to_delete":to_delete,"timerange_remaining":to_delete,"delete_flow":false,"created":model::timestamp(now),"created_by":identity.subject,"updated":model::timestamp(now),"status":"created","error":null});
         record
             .as_object_mut()
@@ -1152,9 +1151,13 @@ async fn object_ranges(
                 .map_err(internal)?
                 .0;
             segment::effective_object_timerange(
-                &timerange,
+                &crate::domain::timerange::explicit(&timerange, ')'),
                 record.get("ts_offset").and_then(Value::as_str),
-                record.get("object_timerange").and_then(Value::as_str),
+                record
+                    .get("object_timerange")
+                    .and_then(Value::as_str)
+                    .map(|s| crate::domain::timerange::explicit(s, ')'))
+                    .as_deref(),
             )
             .map_err(|_| ApiError::bad_request("Bad request. Invalid stored Segment timerange."))
         })
