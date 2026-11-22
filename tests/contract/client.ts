@@ -121,6 +121,7 @@ export async function runContract(spec: Contract, host: ContractHost) {
   const linkedPath = `/flows/${linked.id}`;
   await call(linkedPath, 'PUT', { ...linked, label: 'before' }, 201);
   assert.match((await call(linkedPath, 'PUT', { ...linked, avg_bit_rate: 100 }, 400)).value.summary, /profile/i);
+  assert.match((await call(linkedPath, 'PUT', { ...linked, ...audio }, 400)).value.summary, /profile/i);
   await call(linkedPath, 'PUT', linked, 204);
   assert.equal((await call(linkedPath)).value.label, undefined);
   assert.equal((await call(linkedPath)).value.codec, audio.codec);

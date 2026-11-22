@@ -174,7 +174,13 @@ export class Runtime {
         let value;
         try { value = JSON.parse(body); } catch { throw new HttpError(400, 'Invalid JSON.'); }
         const validate = (validators as Record<string, (value: unknown) => boolean>)[operation.validator];
-        if (!validate(value)) throw new HttpError(400, 'Request does not match the TAMS schema.');
+        if (!validate(value)) {
+          // A complete direct Flow and a Profile ID match both oneOf alternatives.
+          if (operation.id === 'PUT_flows-flowId' && value?.profile_id && value.format !== undefined) {
+            throw new HttpError(400, 'The Profile supplies the Flow\'s technical metadata. To change it, set profile_id to an empty string and supply the technical metadata.');
+          }
+          throw new HttpError(400, 'Request does not match the TAMS schema.');
+        }
       } else if (!body && operation?.required) throw new HttpError(400, 'JSON body is required.');
       url.pathname = path;
       const result = JSON.parse(await this.core.request(JSON.stringify({ ...request, url: url.href, body: body || null }))) as BrowserResponse;
