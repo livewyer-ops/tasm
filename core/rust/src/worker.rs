@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::{
     config::Settings,
-    db::{self, MediaObjectRecord, ObjectCleanup, SegmentRecord, StorageBackend, WebhookDelivery},
+    db::{self, ObjectCleanup, StorageBackend, WebhookDelivery},
     domain::{
         model,
         object::{MediaObject, ObjectInstance},
@@ -172,7 +172,7 @@ impl Worker {
             .map_err(db::DbError::from)?;
         let deleted_segments = rows
             .into_iter()
-            .map(segment_record)
+            .map(db::flows::map_segment)
             .collect::<Result<Vec<_>, _>>()?;
         let object_ids = deleted_segments
             .iter()
@@ -192,15 +192,9 @@ impl Worker {
             .await
             .map_err(db::DbError::from)?;
         for object_id in object_ids {
-            let Some(row) = sqlx::query(crate::db::statements::GET_OBJECT)
-                .bind(&object_id)
-                .fetch_optional(&mut *transaction)
-                .await
-                .map_err(db::DbError::from)?
-            else {
+            let Some(media_record) = db::objects::get(&mut *transaction, &object_id).await? else {
                 continue;
             };
-            let media_record = media_record(row)?;
             let referenced_by =
                 sqlx::query_scalar::<Uuid>(crate::db::statements::REFERENCING_FLOWS)
                     .bind(&object_id)
@@ -480,14 +474,8 @@ impl Worker {
             .await?;
         let mut transaction = self.pool.begin().await.map_err(db::DbError::from)?;
         db::objects::lock_sorted(&mut transaction, [object_id.clone()]).await?;
-        let row = sqlx::query(crate::db::statements::GET_OBJECT)
-            .bind(&object_id)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(db::DbError::from)?;
         let mut delete_copy = true;
-        if let Some(row) = row {
-            let record = media_record(row)?;
+        if let Some(record) = db::objects::get(&mut *transaction, &object_id).await? {
             let mut current = MediaObject::from_record(&record, &backends);
             if !current.referenced_by_flows.is_empty() {
                 delete_copy = false;
@@ -846,22 +834,6 @@ async fn enqueue_event(
     .map_err(|_| db::DbError::Record("worker webhook event publication failed".into()).into())
 }
 
-fn segment_record(row: sqlx::RecordRow) -> Result<SegmentRecord, WorkerError> {
-    Ok(SegmentRecord {
-        flow_id: row.try_get(0).map_err(db::DbError::from)?,
-        object_id: row.try_get(1).map_err(db::DbError::from)?,
-        init_object_id: row.try_get(2).map_err(db::DbError::from)?,
-        timerange: row.try_get(3).map_err(db::DbError::from)?,
-        timerange_start: row.try_get(4).map_err(db::DbError::from)?,
-        timerange_end: row.try_get(5).map_err(db::DbError::from)?,
-        record: row
-            .try_get::<sqlx::types::Json<Value>, _>(6)
-            .map_err(db::DbError::from)?
-            .0,
-        created: row.try_get(7).map_err(db::DbError::from)?,
-    })
-}
-
 fn backend(backends: &[StorageBackend], id: Uuid) -> Result<&StorageBackend, WorkerError> {
     backends.iter().find(|value| value.id == id).ok_or_else(|| {
         db::DbError::Record("queue references an unknown storage backend".into()).into()
@@ -898,21 +870,6 @@ fn controlled_backend_ids(record: &Value) -> Vec<Uuid> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
-}
-fn media_record(row: sqlx::RecordRow) -> Result<MediaObjectRecord, WorkerError> {
-    Ok(MediaObjectRecord {
-        id: row.try_get(0).map_err(db::DbError::from)?,
-        first_referenced_by_flow: row.try_get(1).map_err(db::DbError::from)?,
-        referenced_by_flows: row.try_get(2).map_err(db::DbError::from)?,
-        object_kind: row.try_get(3).map_err(db::DbError::from)?,
-        content_type: row.try_get(4).map_err(db::DbError::from)?,
-        record: row
-            .try_get::<sqlx::types::Json<Value>, _>(5)
-            .map_err(db::DbError::from)?
-            .0,
-        created_at: row.try_get(6).map_err(db::DbError::from)?,
-        updated_at: row.try_get(7).map_err(db::DbError::from)?,
-    })
 }
 fn queue_error(kind: &str, summary: &str) -> Value {
     json!({"type":kind,"summary":summary,"time":crate::domain::model::timestamp(crate::now())})

@@ -227,8 +227,7 @@ impl Query {
         executor: E,
     ) -> Result<Vec<SqliteRow>, Error> {
         let result = self.run(executor.host()).await?;
-        let rows: Vec<Vec<Value>> =
-            serde_json::from_value(result["rows"].clone()).map_err(|e| Error(e.to_string()))?;
+        let rows = crate::host::rows(result)?;
         Ok(rows.into_iter().map(SqliteRow).collect())
     }
     pub async fn fetch_optional<'a, E: Executor<'a>>(

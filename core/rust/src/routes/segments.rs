@@ -424,11 +424,13 @@ async fn post(
     db::objects::lock_sorted(&mut transaction, ids.clone())
         .await
         .map_err(internal)?;
-    let mut objects = media_records_in(&mut transaction, &ids)
-        .await?
-        .into_iter()
-        .map(|record| (record.id.clone(), record))
-        .collect::<BTreeMap<_, _>>();
+    let mut objects =
+        db::objects::get_many(&mut *transaction, &ids.into_iter().collect::<Vec<_>>())
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .map(|record| (record.id.clone(), record))
+            .collect::<BTreeMap<_, _>>();
     let mut failed = Vec::new();
     let mut accepted = Vec::new();
     for value in values {
@@ -900,7 +902,10 @@ async fn delete(
             .map_err(internal)?;
     }
     let now = crate::now();
-    for record in media_records_in(&mut transaction, &ids).await? {
+    for record in db::objects::get_many(&mut *transaction, &ids.into_iter().collect::<Vec<_>>())
+        .await
+        .map_err(internal)?
+    {
         let mut media = MediaObject::from_record(&record, &backends);
         let remains: bool = sqlx::query_scalar(crate::db::statements::HAS_REFERENCES)
             .bind(flow_id)
@@ -1093,49 +1098,9 @@ async fn segments_in(
         .await
         .map_err(internal)?
         .into_iter()
-        .map(|row| {
-            Ok(SegmentRecord {
-                flow_id: row.try_get(0).map_err(internal)?,
-                object_id: row.try_get(1).map_err(internal)?,
-                init_object_id: row.try_get(2).map_err(internal)?,
-                timerange: row.try_get(3).map_err(internal)?,
-                timerange_start: row.try_get(4).map_err(internal)?,
-                timerange_end: row.try_get(5).map_err(internal)?,
-                record: row
-                    .try_get::<sqlx::types::Json<Value>, _>(6)
-                    .map_err(internal)?
-                    .0,
-                created: row.try_get(7).map_err(internal)?,
-            })
-        })
-        .collect()
-}
-async fn media_records_in(
-    transaction: &mut Transaction,
-    ids: &BTreeSet<String>,
-) -> Result<Vec<MediaObjectRecord>, ApiError> {
-    sqlx::query(crate::db::statements::GET_OBJECTS)
-        .bind(ids.iter().cloned().collect::<Vec<_>>())
-        .fetch_all(&mut **transaction)
-        .await
-        .map_err(internal)?
-        .into_iter()
-        .map(|row| {
-            Ok(MediaObjectRecord {
-                id: row.try_get(0).map_err(internal)?,
-                first_referenced_by_flow: row.try_get(1).map_err(internal)?,
-                referenced_by_flows: row.try_get(2).map_err(internal)?,
-                object_kind: row.try_get(3).map_err(internal)?,
-                content_type: row.try_get(4).map_err(internal)?,
-                record: row
-                    .try_get::<sqlx::types::Json<Value>, _>(5)
-                    .map_err(internal)?
-                    .0,
-                created_at: row.try_get(6).map_err(internal)?,
-                updated_at: row.try_get(7).map_err(internal)?,
-            })
-        })
-        .collect()
+        .map(db::flows::map_segment)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(internal)
 }
 async fn object_ranges(
     transaction: &mut Transaction,

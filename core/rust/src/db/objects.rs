@@ -1,6 +1,6 @@
 // TASM adaptation of rust-tams-api (Apache-2.0), shared by the browser and
 // Cloudflare adapters through their db::dialect modules; see NOTICE.
-use super::dialect::{self, Connection, Engine, NOW, Pool, RecordRow, sqlx};
+use super::dialect::{self, Connection, Engine, NOW, RecordRow, sqlx};
 use super::{DbError, records::MediaObjectRecord};
 use serde_json::Value;
 use sqlx::Row;
@@ -8,21 +8,27 @@ use std::collections::BTreeSet;
 
 const COLUMNS: &str = "SELECT id,first_referenced_by_flow,referenced_by_flows,object_kind,content_type,record,created_at,updated_at FROM tamoss_media_objects";
 
-pub async fn get(pool: &Pool, id: &str) -> Result<Option<MediaObjectRecord>, DbError> {
+pub async fn get<'e, E>(executor: E, id: &str) -> Result<Option<MediaObjectRecord>, DbError>
+where
+    E: sqlx::Executor<'e, Database = Engine>,
+{
     dialect::query(&format!("{COLUMNS} WHERE id=$1"))
         .bind(id)
-        .fetch_optional(pool)
+        .fetch_optional(executor)
         .await?
         .map(map)
         .transpose()
 }
-pub async fn get_many(pool: &Pool, ids: &[String]) -> Result<Vec<MediaObjectRecord>, DbError> {
+pub async fn get_many<'e, E>(executor: E, ids: &[String]) -> Result<Vec<MediaObjectRecord>, DbError>
+where
+    E: sqlx::Executor<'e, Database = Engine>,
+{
     dialect::query(&format!(
         "{COLUMNS} WHERE {} ORDER BY id",
         dialect::in_array("id", "$1")
     ))
     .bind(ids)
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await?
     .into_iter()
     .map(map)

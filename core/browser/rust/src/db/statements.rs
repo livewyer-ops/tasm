@@ -21,8 +21,6 @@ pub const DATABASE_TIME: &str = "SELECT NOW()";
 
 pub const EXPIRED_ALLOCATIONS: &str = "SELECT id,record FROM tamoss_media_objects WHERE cardinality(referenced_by_flows)=0 AND created_at<NOW()-($1*INTERVAL '1 second') ORDER BY created_at,id LIMIT $2 FOR UPDATE SKIP LOCKED";
 
-pub const GET_OBJECT: &str = "SELECT id,first_referenced_by_flow,referenced_by_flows,object_kind,content_type,record,created_at,updated_at FROM tamoss_media_objects WHERE id=$1";
-
 pub const UPDATE_REMAINING: &str = "UPDATE tamoss_delete_requests
                  SET record=jsonb_set(record,'{timerange_remaining}',to_jsonb($2::text),true),
                      updated=NOW(),updated_at=NOW()
@@ -44,8 +42,6 @@ pub const DELETE_SEGMENTS: &str = "DELETE FROM tamoss_segments WHERE ctid IN (
              RETURNING flow_id,object_id,init_object_id,timerange,timerange_start,timerange_end,record,created";
 
 pub const OBJECT_RANGES: &str = "SELECT timerange,record FROM tamoss_segments WHERE object_id=$1";
-
-pub const GET_OBJECTS: &str = "SELECT id,first_referenced_by_flow,referenced_by_flows,object_kind,content_type,record,created_at,updated_at FROM tamoss_media_objects WHERE id=ANY($1) ORDER BY id";
 
 pub const OBJECT_SEGMENTS: &str = "SELECT flow_id,object_id,init_object_id,timerange,timerange_start,timerange_end,record,created FROM tamoss_segments WHERE flow_id=$1 AND object_id=$2 AND timerange_start>=$3 AND timerange_end<=$4 ORDER BY timerange_start,object_id,timerange";
 

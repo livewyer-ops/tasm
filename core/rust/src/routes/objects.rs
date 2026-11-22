@@ -1,5 +1,4 @@
 // Cloudflare adaptation of TASM and rust-tams-api (Apache-2.0); see NOTICE.
-use crate::sql as sqlx;
 use std::collections::{BTreeMap, BTreeSet};
 
 use axum::{
@@ -11,11 +10,10 @@ use axum::{
     routing::any,
 };
 use serde_json::{Value, json};
-use sqlx::{Row, Transaction};
 use uuid::Uuid;
 
 use crate::{
-    db::{self, MediaObjectRecord, ObjectCleanup, ObjectCopy, StorageBackend, TagFilters, Tags},
+    db::{self, ObjectCleanup, ObjectCopy, StorageBackend, TagFilters, Tags},
     domain::{
         model,
         object::{MediaObject, ObjectInstance},
@@ -457,8 +455,9 @@ async fn post_instance(
     db::objects::lock_sorted(&mut transaction, [object_id.clone()])
         .await
         .map_err(internal)?;
-    let record = media_record_in(&mut transaction, &object_id)
-        .await?
+    let record = db::objects::get(&mut *transaction, &object_id)
+        .await
+        .map_err(internal)?
         .filter(|record| !record.referenced_by_flows.is_empty())
         .ok_or_else(|| ApiError::not_found("The requested Media Object does not exist."))?;
     let mut media = MediaObject::from_record(&record, &backends);
@@ -569,8 +568,9 @@ async fn delete_instance(
     db::objects::lock_sorted(&mut transaction, [object_id.clone()])
         .await
         .map_err(internal)?;
-    let record = media_record_in(&mut transaction, &object_id)
-        .await?
+    let record = db::objects::get(&mut *transaction, &object_id)
+        .await
+        .map_err(internal)?
         .filter(|record| !record.referenced_by_flows.is_empty())
         .ok_or_else(|| ApiError::not_found("The requested Media Object does not exist."))?;
     let media = MediaObject::from_record(&record, &backends);
@@ -652,31 +652,4 @@ async fn delete_instance(
 
 fn invalid_instance_json() -> ApiError {
     ApiError::bad_request("Bad request. Invalid request JSON.")
-}
-
-async fn media_record_in(
-    transaction: &mut Transaction,
-    object_id: &str,
-) -> Result<Option<MediaObjectRecord>, ApiError> {
-    let row = sqlx::query(crate::db::statements::GET_OBJECT)
-        .bind(object_id)
-        .fetch_optional(&mut **transaction)
-        .await
-        .map_err(internal)?;
-    row.map(|row| {
-        Ok(MediaObjectRecord {
-            id: row.try_get(0).map_err(internal)?,
-            first_referenced_by_flow: row.try_get(1).map_err(internal)?,
-            referenced_by_flows: row.try_get(2).map_err(internal)?,
-            object_kind: row.try_get(3).map_err(internal)?,
-            content_type: row.try_get(4).map_err(internal)?,
-            record: row
-                .try_get::<sqlx::types::Json<Value>, _>(5)
-                .map_err(internal)?
-                .0,
-            created_at: row.try_get(6).map_err(internal)?,
-            updated_at: row.try_get(7).map_err(internal)?,
-        })
-    })
-    .transpose()
 }

@@ -9,8 +9,6 @@ pub const DATABASE_TIME: &str = "SELECT (strftime('%Y-%m-%dT%H:%M:%f','now') || 
 
 pub const EXPIRED_ALLOCATIONS: &str = "SELECT id,record FROM tamoss_media_objects WHERE json_array_length(referenced_by_flows)=0 AND created_at<(strftime('%Y-%m-%dT%H:%M:%f','now',printf('%+d seconds',-?1)) || '000000Z') ORDER BY created_at,id LIMIT ?2";
 
-pub const GET_OBJECT: &str = "SELECT id,first_referenced_by_flow,referenced_by_flows,object_kind,content_type,record,created_at,updated_at FROM tamoss_media_objects WHERE id=?1";
-
 pub const UPDATE_REMAINING: &str = "UPDATE tamoss_delete_requests
                  SET record=json_set(record,'$.timerange_remaining',?2),
                      updated=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z'),updated_at=(strftime('%Y-%m-%dT%H:%M:%f','now') || '000000Z')
@@ -32,8 +30,6 @@ pub const DELETE_SEGMENTS: &str = "DELETE FROM tamoss_segments WHERE rowid IN (
              RETURNING flow_id,object_id,init_object_id,timerange,timerange_start,timerange_end,record,created";
 
 pub const OBJECT_RANGES: &str = "SELECT timerange,record FROM tamoss_segments WHERE object_id=?1";
-
-pub const GET_OBJECTS: &str = "SELECT id,first_referenced_by_flow,referenced_by_flows,object_kind,content_type,record,created_at,updated_at FROM tamoss_media_objects WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY id";
 
 pub const OBJECT_SEGMENTS: &str = "SELECT flow_id,object_id,init_object_id,timerange,timerange_start,timerange_end,record,created FROM tamoss_segments WHERE flow_id=?1 AND object_id=?2 AND timerange_start>=?3 AND timerange_end<=?4 ORDER BY timerange_start,object_id,timerange";
 

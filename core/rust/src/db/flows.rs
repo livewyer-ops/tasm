@@ -605,7 +605,7 @@ fn map_source(r: RecordRow) -> Result<SourceRecord, DbError> {
         created: r.try_get(6)?,
     })
 }
-fn map_segment(r: RecordRow) -> Result<SegmentRecord, DbError> {
+pub(crate) fn map_segment(r: RecordRow) -> Result<SegmentRecord, DbError> {
     Ok(SegmentRecord {
         flow_id: r.try_get(0)?,
         object_id: r.try_get(1)?,

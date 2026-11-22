@@ -130,6 +130,14 @@ test('UUID filters follow the TAMS wire format', async () => {
   await checkUuidFilters(request, videoFlow);
 });
 
+test('the Wasm bridge distinguishes JSON null from a missing JavaScript response', async () => {
+  for (const response of ['null', null, undefined]) {
+    const core = new Tasm((op: string) => op === 'sql' ? '{"rows":[],"affectedRows":0}' : response, origin);
+    if (response === 'null') assert.equal(await core.poll(), 0n);
+    else await assert.rejects(core.poll(), /Host response must be a JSON string/);
+  }
+});
+
 test('the SQL bridge returns columns by position, keeps exact integers and rolls back', async () => {
   const { db, sql } = await store();
   const duplicate = await sql.call('sql', { sql: 'SELECT MIN(x::numeric), MIN(y) FROM (VALUES (100, $1), (200, $2)) t(x, y)',

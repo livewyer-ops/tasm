@@ -34,10 +34,10 @@ struct WireRequest<Identity> {
     identity: Identity,
 }
 #[derive(Serialize)]
-struct WireResponse {
+struct WireResponse<'a> {
     status: u16,
     headers: BTreeMap<String, String>,
-    body: String,
+    body: &'a str,
 }
 
 pub async fn request<Identity: RequestIdentity>(
@@ -67,7 +67,7 @@ pub async fn request<Identity: RequestIdentity>(
             .iter()
             .map(|(name, value)| (name.to_string(), value.to_str().unwrap_or("").into()))
             .collect(),
-        body: String::from_utf8(bytes.to_vec()).map_err(js_error)?,
+        body: std::str::from_utf8(&bytes).map_err(js_error)?,
     };
     serde_json::to_string(&response).map_err(js_error)
 }

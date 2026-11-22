@@ -250,8 +250,7 @@ impl Query {
     }
     pub async fn fetch_all<'a, E: Executor<'a>>(self, e: E) -> Result<Vec<postgres::PgRow>, Error> {
         let result = self.run(e).await?;
-        let rows: Vec<Vec<Value>> =
-            serde_json::from_value(result["rows"].clone()).map_err(|e| Error(e.to_string()))?;
+        let rows = crate::host::rows(result)?;
         Ok(rows.into_iter().map(postgres::PgRow).collect())
     }
     pub async fn fetch_optional<'a, E: Executor<'a>>(
