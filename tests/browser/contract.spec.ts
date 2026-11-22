@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { runContract } from '../contract/client';
 import { test, expect, ready, listen, closeServer } from './fixtures';
 
-const backends = [{ id: '81d13d58-5041-4580-91f9-38ce03daef19', label: 'Browser storage' },
+const backends = [{ id: '81d13d58-5041-4580-91f9-38ce03daef19', label: 'Browser storage', tags: { tier: ['hot'], site: 'local' } },
   { id: 'ddc7c7c6-d1bb-4c3e-856a-03a5cd5dfae1', label: 'Local copy' }];
 
 test('all TAMS 8.2 operations, response schemas and durable workers', { tag: '@pr' }, async ({ page, context, browserName }, info) => {
@@ -28,6 +28,8 @@ test('all TAMS 8.2 operations, response schemas and durable workers', { tag: '@p
       `<script type="module">import {startTasm} from './index.js'; window.tasmReady=startTasm(${JSON.stringify({ basePath: '/', backends })});</script>` }));
     await page.goto('/');
     await page.evaluate(() => (window as any).tasmReady);
+    const tagged = await page.evaluate(async () => (await fetch('/api/service/storage-backends?tag.tier=hot')).json());
+    expect(tagged.map((entry: { id: string; tags: unknown }) => [entry.id, entry.tags])).toEqual([[backends[0].id, backends[0].tags]]);
     const { operations, remainingFlow } = await runContract(spec, {
       apiRoot: new URL('/api/', page.url()).href,
       webhookURL: new URL('/events', receiverURL).href,

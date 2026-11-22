@@ -1,9 +1,14 @@
+export interface StorageBackend {
+  id: string;
+  label: string;
+  tags?: Record<string, string | string[]>;
+}
 export interface TasmOptions {
   basePath?: string;
   /** Cancel startup, including pending store locks. */
   signal?: AbortSignal;
   /** Backend definitions are persisted on first initialisation. The first is the default. */
-  backends?: Array<{ id: string; label: string }>;
+  backends?: StorageBackend[];
 }
 export interface TasmClient {
   apiUrl: string;

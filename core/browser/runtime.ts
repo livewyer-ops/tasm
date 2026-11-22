@@ -50,6 +50,12 @@ export class Runtime {
       backends.some(b => !uuid.test(b.id) || !b.label.trim())) {
       throw new Error('Storage backends require unique UUIDs and non-empty labels.');
     }
+    for (const { tags } of backends) {
+      if (tags !== undefined && (!tags || Object.getPrototypeOf(tags) !== Object.prototype ||
+          Object.values(tags).some(v => typeof v !== 'string' && !(Array.isArray(v) && v.every(item => typeof item === 'string'))))) {
+        throw new Error('Storage backend tags must be an object with string or string-array values.');
+      }
+    }
     // One runtime per store: a SharedWorker that is still shutting down must
     // finish before a new one opens the same database and files.
     await new Promise<void>((granted, failed) => {

@@ -16,9 +16,11 @@ To configure storage backends, pass them on first use. The first is the default.
 
 ```js
 const client = await startTasm({ backends: [
-  { id: '81d13d58-5041-4580-91f9-38ce03daef19', label: 'Primary' },
+  { id: '81d13d58-5041-4580-91f9-38ce03daef19', label: 'Primary', tags: { tier: 'hot' } },
   { id: 'ddc7c7c6-d1bb-4c3e-856a-03a5cd5dfae1', label: 'Copy' },
 ] });
 ```
+
+Backend tags accept strings or arrays of strings. Query `/service/storage-backends?tag.tier=hot` to list matching backends.
 
 Use `client.close()` to disconnect the page. To stop the runtime before clearing its storage, use `await client.shutdown()`. It holds exclusive access until the client closes or the page unloads.

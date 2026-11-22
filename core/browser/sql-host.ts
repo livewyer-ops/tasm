@@ -1,9 +1,8 @@
+import type { StorageBackend } from './public.d.ts';
 import type { PGlite, Transaction } from '@electric-sql/pglite';
 
 /** Keep NUMERIC timestamps and BIGINT counts as text so Rust decodes them exactly. */
 export const pgliteParsers = { 1700: (value: string) => value, 20: (value: string) => value };
-
-export interface StorageBackend { id: string; label: string }
 
 /** Creates the TAMS schema, the browser file table and the storage backends in a new database. */
 export async function createSchema(db: PGlite, schema: string, backends: StorageBackend[]): Promise<void> {
@@ -16,8 +15,8 @@ export async function createSchema(db: PGlite, schema: string, backends: Storage
         md5 text NOT NULL, PRIMARY KEY(backend, object_id));`);
     for (const [i, b] of backends.entries()) {
       await tx.query(`INSERT INTO tamoss_storage_backends
-        (id,label,provider,region,store_product,store_type,default_storage,record)
-        VALUES ($1,$2,'browser','local','tasm-opfs','http_object_store',$3,'{}')`, [b.id, b.label, i === 0]);
+        (id,label,provider,region,store_product,store_type,default_storage,tags,record)
+        VALUES ($1,$2,'browser','local','tasm-opfs','http_object_store',$3,$4,'{}')`, [b.id, b.label, i === 0, JSON.stringify(b.tags ?? {})]);
     }
   });
 }
