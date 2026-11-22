@@ -77,14 +77,6 @@ where
         .map(map_flow)
         .transpose()
 }
-pub async fn list_flows(pool: &Pool) -> Result<Vec<FlowRecord>, DbError> {
-    dialect::query(&format!("{FLOW_COLUMNS} ORDER BY id"))
-        .fetch_all(pool)
-        .await?
-        .into_iter()
-        .map(map_flow)
-        .collect()
-}
 pub async fn list_flows_page(
     pool: &Pool,
     f: &FlowFilters,

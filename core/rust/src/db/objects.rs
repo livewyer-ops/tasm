@@ -5,7 +5,6 @@ use super::{DbError, records::MediaObjectRecord};
 use serde_json::Value;
 use sqlx::Row;
 use std::collections::BTreeSet;
-use time::OffsetDateTime;
 
 const COLUMNS: &str = "SELECT id,first_referenced_by_flow,referenced_by_flows,object_kind,content_type,record,created_at,updated_at FROM tamoss_media_objects";
 
@@ -61,26 +60,6 @@ where
     E: sqlx::Executor<'e, Database = Engine>,
 {
     Ok(dialect::query(&format!("INSERT INTO tamoss_media_objects(id,first_referenced_by_flow,referenced_by_flows,object_kind,content_type,record,created_at,updated_at)VALUES($1,$2,$3,$4,$5,$6,$7,{NOW})ON CONFLICT(id)DO NOTHING")).bind(&v.id).bind(v.first_referenced_by_flow).bind(&v.referenced_by_flows).bind(&v.object_kind).bind(&v.content_type).bind(sqlx::types::Json(&v.record)).bind(v.created_at).execute(e).await?.rows_affected()==1)
-}
-pub async fn unreferenced_before(
-    pool: &Pool,
-    before: OffsetDateTime,
-    limit: i64,
-) -> Result<Vec<MediaObjectRecord>, DbError> {
-    if limit < 1 {
-        return Ok(vec![]);
-    }
-    dialect::query(&format!(
-        "{COLUMNS} WHERE {}=0 AND created_at<$1 ORDER BY created_at,id LIMIT $2",
-        dialect::array_length("referenced_by_flows")
-    ))
-    .bind(before)
-    .bind(limit.min(1000))
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    .map(map)
-    .collect()
 }
 pub async fn delete<'e, E>(e: E, id: &str) -> Result<bool, DbError>
 where

@@ -267,17 +267,6 @@ pub fn webhook(record: &WebhookRecord) -> Value {
     data.insert("tags".into(), json!(record.tags));
     without_nulls(Value::Object(data))
 }
-pub fn flow_data(record: &mut Value) -> &mut Map<String, Value> {
-    if !record.is_object() {
-        *record = json!({});
-    }
-    let outer = record.as_object_mut().unwrap();
-    if !outer.get("data").is_some_and(Value::is_object) {
-        outer.insert("data".into(), json!({}));
-    }
-    outer.get_mut("data").unwrap().as_object_mut().unwrap()
-}
-
 #[cfg(test)]
 mod uuid_tests {
     use super::parse_uuid;

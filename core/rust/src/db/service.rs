@@ -2,7 +2,7 @@
 // Cloudflare adapters through their db::dialect modules; see NOTICE.
 pub(crate) use super::dialect::append_tags;
 use super::dialect::{self, Engine, NOW, RecordRow, WEBHOOK_HAS_EVENT, sqlx};
-use serde_json::{Value, json};
+use serde_json::Value;
 use sqlx::{QueryBuilder, Row};
 use uuid::Uuid;
 
@@ -70,19 +70,6 @@ pub async fn list_storage_backends(
             .collect::<Result<_, _>>()?,
         page,
     ))
-}
-pub async fn save_storage_backend<'e, E>(executor: E, b: &StorageBackend) -> Result<(), DbError>
-where
-    E: sqlx::Executor<'e, Database = Engine>,
-{
-    let record = if b.record.is_null() {
-        json!({"id":b.id,"label":b.label,"provider":b.provider,"region":b.region,"store_product":b.store_product,"store_type":b.store_type,"default_storage":b.default_storage,"bucket_name":b.bucket_name,"endpoint_url":b.endpoint_url,"public_endpoint_url":b.public_endpoint_url,"tags":b.tags})
-    } else {
-        b.record.clone()
-    };
-    dialect::query(&format!("INSERT INTO tamoss_storage_backends(id,label,provider,region,store_product,store_type,default_storage,bucket_name,endpoint_url,public_endpoint_url,tags,record,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,{NOW}) ON CONFLICT(id) DO UPDATE SET label=EXCLUDED.label,provider=EXCLUDED.provider,region=EXCLUDED.region,store_product=EXCLUDED.store_product,store_type=EXCLUDED.store_type,default_storage=EXCLUDED.default_storage,bucket_name=EXCLUDED.bucket_name,endpoint_url=EXCLUDED.endpoint_url,public_endpoint_url=EXCLUDED.public_endpoint_url,tags=EXCLUDED.tags,record=EXCLUDED.record,updated_at={NOW}"))
-    .bind(b.id).bind(&b.label).bind(&b.provider).bind(&b.region).bind(&b.store_product).bind(&b.store_type).bind(b.default_storage).bind(&b.bucket_name).bind(&b.endpoint_url).bind(&b.public_endpoint_url).bind(sqlx::types::Json(&b.tags)).bind(sqlx::types::Json(record)).execute(executor).await?;
-    Ok(())
 }
 fn map_backend(r: RecordRow) -> Result<StorageBackend, DbError> {
     Ok(StorageBackend {

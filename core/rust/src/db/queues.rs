@@ -401,23 +401,6 @@ pub async fn list_delete_requests(
     ))
 }
 
-pub async fn get_webhook_delivery(
-    pool: &Pool,
-    id: Uuid,
-) -> Result<Option<WebhookDelivery>, DbError> {
-    dialect::query("SELECT id,webhook_id,status,next_attempt_at,record,created_at,updated_at,claimed_at,claimed_by,claim_expires_at FROM tamoss_webhook_deliveries WHERE id=$1").bind(id).fetch_optional(pool).await?.map(map_webhook).transpose()
-}
-
-pub async fn list_object_copies(
-    pool: &Pool,
-    statuses: Option<&[String]>,
-) -> Result<Vec<ObjectCopy>, DbError> {
-    match statuses{
-        Some(statuses)=>dialect::query(&format!("SELECT id,object_id,source_storage_backend_id,destination_storage_backend_id,status,record,updated,created_at,claimed_at,claimed_by,claim_expires_at FROM tamoss_object_copies WHERE {} ORDER BY created_at,id", dialect::in_array("status", "$1"))).bind(statuses).fetch_all(pool).await?.into_iter().map(map_copy).collect(),
-        None=>dialect::query("SELECT id,object_id,source_storage_backend_id,destination_storage_backend_id,status,record,updated,created_at,claimed_at,claimed_by,claim_expires_at FROM tamoss_object_copies ORDER BY created_at,id").fetch_all(pool).await?.into_iter().map(map_copy).collect(),
-    }
-}
-
 fn map_delete(r: RecordRow) -> Result<DeleteRequest, DbError> {
     Ok(DeleteRequest {
         id: r.try_get(0)?,

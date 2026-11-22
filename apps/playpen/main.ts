@@ -31,7 +31,7 @@ const storageChecks = new Map<string, { state: string; bytes?: number }>();
 let checkingStorage = false;
 let library: Sample[] = [...samples], libraryReady = false, libraryBusy = false;
 let importing: AbortController | undefined;
-let libraryWork: Promise<unknown> = Promise.resolve(), resetting = false;
+let resetting = false;
 let pendingPlacement: { laneId: string; start: bigint; sample: Sample; duration?: bigint; importing?: boolean } | undefined;
 const pixels = () => 26 * zoom;
 const dataKey = `tasm-playpen:selected:${location.pathname}`;
@@ -498,7 +498,7 @@ function wire() {
   $('import-media').onclick = () => $<HTMLInputElement>('media-file').click();
   $('media-file').onchange = () => {
     const input = $<HTMLInputElement>('media-file'), file = input.files?.[0]; input.value = '';
-    if (file && !libraryBusy && !resetting) libraryWork = importFile(file);
+    if (file && !libraryBusy && !resetting) void importFile(file);
   };
   $('import-cancel').onclick = () => importing?.abort();
   for (const mode of ['flows', 'segments'] as const) {
@@ -522,7 +522,7 @@ function wire() {
     const target = (event.target as HTMLElement).closest<HTMLElement>('[data-track]');
     if (!target && !(event.target as HTMLElement).closest('#library-section')) { libraryNotice('Drop files into the Sample library or onto a matching channel.'); return; }
     if (event.dataTransfer.files.length !== 1) { libraryNotice('Import one file at a time.', true); return; }
-    if (!resetting && !libraryBusy && !busy && libraryReady) libraryWork = importFile(event.dataTransfer.files[0], target && workspace ? { rootId: workspace.root.id, laneId: target.dataset.track!, raw: BigInt(Math.round(Math.max(0, (event.clientX - target.getBoundingClientRect().left) / pixels()) * 1e9)) } : undefined);
+    if (!resetting && !libraryBusy && !busy && libraryReady) void importFile(event.dataTransfer.files[0], target && workspace ? { rootId: workspace.root.id, laneId: target.dataset.track!, raw: BigInt(Math.round(Math.max(0, (event.clientX - target.getBoundingClientRect().left) / pixels()) * 1e9)) } : undefined);
   });
   window.addEventListener('pagehide', () => importing?.abort());
   $('add-video').onclick = () => void addLane('video'); $('add-audio').onclick = () => void addLane('audio');
@@ -561,7 +561,7 @@ function wire() {
   });
   $('samples').onclick = event => {
     const remove = (event.target as HTMLElement).closest<HTMLElement>('[data-remove-sample]')?.dataset.removeSample;
-    if (remove) { if (!libraryBusy && !resetting) libraryWork = removeSample(remove); return; }
+    if (remove) { if (!libraryBusy && !resetting) void removeSample(remove); return; }
     const id = (event.target as HTMLElement).closest<HTMLElement>('[data-sample]')?.dataset.sample;
     if (!id) return; selectedSample = id;
     const sample = library.find(s => s.id === id)!;
@@ -1092,7 +1092,7 @@ try {
   });
   window.addEventListener('pagehide', event => { if (!event.persisted) { void store.stop(); preview.destroy(); client.close(); } });
   // Library access also waits for the runtime lease, so a new tab cannot import during reset.
-  await window.tasmStartup.wait(libraryWork = openLibrary(), 'Loading sample library');
+  await window.tasmStartup.wait(openLibrary(), 'Loading sample library');
   sources = await window.tasmStartup.wait(store.sources(), 'Loading saved workspace');
   const selected = sources.find(s => s.id === localStorage.getItem(dataKey)) ?? sources[0];
   if (selected) await window.tasmStartup.wait(store.recover(selected.id));

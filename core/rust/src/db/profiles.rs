@@ -88,24 +88,6 @@ where
     dialect::lock(executor, &format!("tamoss-profile:{id}")).await
 }
 
-pub async fn lock_row<'e, E>(executor: E, id: Uuid) -> Result<bool, DbError>
-where
-    E: sqlx::Executor<'e, Database = Engine>,
-{
-    Ok(dialect::query(&format!(
-        "SELECT id FROM tamoss_profiles WHERE id=$1{}",
-        dialect::FOR_UPDATE
-    ))
-    .bind(id)
-    .fetch_optional(executor)
-    .await?
-    .is_some())
-}
-
-pub async fn flow_count(pool: &Pool, id: Uuid) -> Result<i64, DbError> {
-    flow_count_with(pool, id).await
-}
-
 pub async fn flow_count_with<'e, E>(executor: E, id: Uuid) -> Result<i64, DbError>
 where
     E: sqlx::Executor<'e, Database = Engine>,
