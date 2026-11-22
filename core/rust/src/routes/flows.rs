@@ -115,6 +115,14 @@ fn collected_by(records: &[FlowRecord], parents: &[FlowRecord]) -> BTreeMap<Uuid
     result
 }
 
+fn frame_dimension(value: &str) -> Result<i32, ApiError> {
+    value
+        .parse::<i32>()
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or_else(invalid_query)
+}
+
 async fn list(
     State(state): State<MetadataState>,
     request: Request<Body>,
@@ -141,52 +149,6 @@ async fn list(
         ],
         &["tag.", "tag_exists."],
     )?;
-    for (key, value) in q.last_values() {
-        match key {
-            "include_timerange" | "reverse_order" | "init_segments" => {
-                crate::http::query::parse_bool(value)?;
-            }
-            "frame_width" | "frame_height" => {
-                if value.parse::<i32>().map_err(|_| invalid_query())? <= 0 {
-                    return Err(invalid_query());
-                }
-            }
-            "limit" => {
-                if value.parse::<i64>().map_err(|_| invalid_query())? <= 0 {
-                    return Err(invalid_query());
-                }
-            }
-            "page" => {
-                if !value.is_empty() && value.parse::<i64>().map_err(|_| invalid_query())? < 0 {
-                    return Err(invalid_query());
-                }
-            }
-            "format" if !model::FORMATS.contains(&value) => return Err(invalid_query()),
-            "status" if !model::FLOW_STATUSES.contains(&value) => {
-                return Err(invalid_query());
-            }
-            "sort_by" if !matches!(value, "created" | "metadata_updated" | "label") => {
-                return Err(invalid_query());
-            }
-            "codec"
-                if {
-                    let Some((kind, subtype)) = value.split_once('/') else {
-                        return Err(invalid_query());
-                    };
-                    kind.is_empty()
-                        || subtype.is_empty()
-                        || subtype.contains('/')
-                        || value.chars().any(char::is_whitespace)
-                } =>
-            {
-                return Err(invalid_query());
-            }
-            "timerange" => {
-                timerange::parse(value).map_err(|_| invalid_query())?;
-            }
-            _ => {}
-        }
-    }
     let format = q.last("format").map(str::to_owned);
     if format
         .as_deref()
@@ -207,6 +169,17 @@ async fn list(
         .transpose()
         .map_err(|_| invalid_query())?
         .unwrap_or_default();
+    let codec = q.last("codec");
+    if let Some(value) = codec {
+        let (kind, subtype) = value.split_once('/').ok_or_else(invalid_query)?;
+        if kind.is_empty()
+            || subtype.is_empty()
+            || subtype.contains('/')
+            || value.chars().any(char::is_whitespace)
+        {
+            return Err(invalid_query());
+        }
+    }
     let collected = q.last("collected_by_ids");
     let filters = FlowFilters {
         source_id: q.uuid("source_id")?,
@@ -214,17 +187,9 @@ async fn list(
         profile_id: q.uuid("profile_id")?,
         status,
         init_segments: q.bool("init_segments")?,
-        codec: q.last("codec").map(str::to_owned),
-        frame_width: q
-            .last("frame_width")
-            .map(str::parse)
-            .transpose()
-            .map_err(|_| invalid_query())?,
-        frame_height: q
-            .last("frame_height")
-            .map(str::parse)
-            .transpose()
-            .map_err(|_| invalid_query())?,
+        codec: codec.map(str::to_owned),
+        frame_width: q.last("frame_width").map(frame_dimension).transpose()?,
+        frame_height: q.last("frame_height").map(frame_dimension).transpose()?,
         label: q.last("label").map(str::to_owned),
         collected_by_ids: q.uuid_list("collected_by_ids")?,
         top_level_only: collected == Some(""),
@@ -241,6 +206,7 @@ async fn list(
         "label" => FlowSort::Label,
         _ => return Err(invalid_query()),
     };
+    let include = q.bool("include_timerange")?.unwrap_or(false);
     let page_request = page(&q)?;
     let pool = state.pool().await?;
     let result = db::flows::list_flows_page(&pool, &filters, sort, reverse, &page_request)
@@ -251,7 +217,6 @@ async fn list(
         .await
         .map_err(internal)?;
     let collected = collected_by(&result.items, &parents);
-    let include = q.bool("include_timerange")?.unwrap_or(false);
     let ranges = if include {
         db::flows::flow_timeranges(&pool, &ids, range)
             .await
@@ -295,14 +260,13 @@ async fn get_flow(
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
     let q = query(&request, &["include_timerange", "timerange"], &[])?;
-    for (key, value) in q.last_values() {
-        if key == "include_timerange" {
-            crate::http::query::parse_bool(value)?;
-        }
-        if key == "timerange" {
-            timerange::parse(value).map_err(|_| invalid_query())?;
-        }
-    }
+    let include = q.bool("include_timerange")?.unwrap_or(false);
+    let range_filter = q
+        .last("timerange")
+        .map(timerange::parse)
+        .transpose()
+        .map_err(|_| invalid_query())?
+        .unwrap_or_default();
     let id = id(&raw)?;
     let pool = state.pool().await?;
     let flow = db::flows::get_flow(&pool, id)
@@ -313,27 +277,18 @@ async fn get_flow(
         .await
         .map_err(internal)?;
     let collected = collected_by(std::slice::from_ref(&flow), &parents);
-    let include = q.bool("include_timerange")?.unwrap_or(false);
     let range = if include {
         Some(
-            db::flows::flow_timeranges(
-                &pool,
-                &[id],
-                q.last("timerange")
-                    .map(timerange::parse)
-                    .transpose()
-                    .map_err(|_| invalid_query())?
-                    .unwrap_or_default(),
-            )
-            .await
-            .map_err(internal)?
-            .get(&id)
-            .copied()
-            .flatten()
-            .map_or_else(
-                || "()".into(),
-                |(start, end)| timerange::from_bounds(Some(start), Some(end)),
-            ),
+            db::flows::flow_timeranges(&pool, &[id], range_filter)
+                .await
+                .map_err(internal)?
+                .get(&id)
+                .copied()
+                .flatten()
+                .map_or_else(
+                    || "()".into(),
+                    |(start, end)| timerange::from_bounds(Some(start), Some(end)),
+                ),
         )
     } else {
         None

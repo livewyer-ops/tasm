@@ -104,6 +104,14 @@ test('flows, segments, filters and asynchronous deletion work against PGlite', a
   assert.equal(created.status, 201, created.body);
   assert.match((await request('GET', `/flows/${flowId}`)).body, /"avg_bit_rate":9007199254740993\b/);
 
+  for (const path of ['/flows', '/sources', '/service/storage-backends', '/service/webhooks']) {
+    assert.equal((await request('GET', path + '?page=&limit=0&limit=1')).status, 200);
+    assert.equal((await request('GET', path + '?limit=1&limit=0')).status, 400);
+    assert.equal((await request('GET', path + '?tag_exists.test=invalid')).status, 400);
+  }
+  assert.equal((await request('GET', '/flows?frame_width=0')).status, 400);
+  assert.equal((await request('GET', '/flows/' + flowId + '?timerange=invalid')).status, 400);
+
   const allocation = await request('POST', `/flows/${flowId}/storage`, { limit: 3 });
   assert.equal(allocation.status, 201, allocation.body);
   const ids = (JSON.parse(allocation.body).media_objects as { object_id: string }[]).map(o => o.object_id);

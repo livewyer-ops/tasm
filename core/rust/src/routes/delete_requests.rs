@@ -12,7 +12,7 @@ use time::Duration;
 use uuid::Uuid;
 
 use crate::{
-    db::{self, DeleteRequest, PageRequest, queues::DeleteRequestSort},
+    db::{self, DeleteRequest, queues::DeleteRequestSort},
     domain::model,
     http::routes::service::{MetadataState, internal, paged_response, query},
     http::{error::ApiError, query::invalid_query},
@@ -72,11 +72,7 @@ async fn list(
         "expiry" => DeleteRequestSort::Expiry,
         _ => return Err(invalid_query()),
     };
-    let limit = params.integer("limit")?;
-    if limit.is_some_and(|value| value <= 0) {
-        return Err(invalid_query());
-    }
-    let page = PageRequest::parse(params.last("page"), limit).map_err(|_| invalid_query())?;
+    let page = super::service::page(&params)?;
     let result = db::queues::list_delete_requests(
         &state.pool().await?,
         sort,

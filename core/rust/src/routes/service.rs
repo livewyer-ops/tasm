@@ -61,14 +61,6 @@ pub(crate) fn page(query: &QueryParams) -> Result<PageRequest, ApiError> {
     PageRequest::parse(query.last("page"), limit).map_err(|_| invalid_query())
 }
 pub(crate) fn tag_filters(query: &QueryParams) -> Result<TagFilters, ApiError> {
-    for (key, value) in query.last_values() {
-        if key.starts_with("tag_exists.") {
-            crate::http::query::parse_bool(value)?;
-        }
-        if key.starts_with("tag.") {
-            crate::http::query::parse_csv_set(value)?;
-        }
-    }
     model::tag_filters(
         query.dynamic_csv("tag.")?,
         query.dynamic_bool("tag_exists.")?,
@@ -177,20 +169,6 @@ pub(crate) async fn storage_backends(
         &["reverse_order", "page", "limit"],
         &["tag.", "tag_exists."],
     )?;
-    for (key, value) in query.last_values() {
-        if key == "reverse_order" {
-            crate::http::query::parse_bool(value)?;
-        }
-        if key == "limit" && value.parse::<i64>().map_err(|_| invalid_query())? <= 0 {
-            return Err(invalid_query());
-        }
-        if key == "page"
-            && !value.is_empty()
-            && value.parse::<i64>().map_err(|_| invalid_query())? < 0
-        {
-            return Err(invalid_query());
-        }
-    }
     let reverse = query.bool("reverse_order")?.unwrap_or(false);
     let page_request = page(&query)?;
     let result = db::service::list_storage_backends(

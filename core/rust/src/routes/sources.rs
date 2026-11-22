@@ -72,28 +72,6 @@ async fn list(
         ],
         &["tag.", "tag_exists."],
     )?;
-    for (key, value) in query.last_values() {
-        match key {
-            "reverse_order" => {
-                crate::http::query::parse_bool(value)?;
-            }
-            "limit" => {
-                if value.parse::<i64>().map_err(|_| invalid_query())? <= 0 {
-                    return Err(invalid_query());
-                }
-            }
-            "page" => {
-                if !value.is_empty() && value.parse::<i64>().map_err(|_| invalid_query())? < 0 {
-                    return Err(invalid_query());
-                }
-            }
-            "format" if !model::FORMATS.contains(&value) => return Err(invalid_query()),
-            "sort_by" if !matches!(value, "created" | "updated" | "label") => {
-                return Err(invalid_query());
-            }
-            _ => {}
-        }
-    }
     let format = query.last("format").map(str::to_owned);
     if format
         .as_deref()

@@ -70,25 +70,13 @@ async fn list(
         &["format", "codec", "label", "page", "limit"],
         &[],
     )?;
-    for (key, value) in query.last_values() {
-        match key {
-            "format" if !model::FORMATS[..4].contains(&value) => {
-                return Err(invalid_query());
-            }
-            "codec" if !mime_type(value) => return Err(invalid_query()),
-            "limit" if value.parse::<i64>().map_err(|_| invalid_query())? <= 0 => {
-                return Err(invalid_query());
-            }
-            "page"
-                if !value.is_empty() && value.parse::<i64>().map_err(|_| invalid_query())? < 0 =>
-            {
-                return Err(invalid_query());
-            }
-            _ => {}
-        }
-    }
     let format = query.last("format");
     let codec = query.last("codec");
+    if format.is_some_and(|value| !model::FORMATS[..4].contains(&value))
+        || codec.is_some_and(|value| !mime_type(value))
+    {
+        return Err(invalid_query());
+    }
     let page_request = page(&query)?;
     let result = db::profiles::list(
         &state.pool().await?,

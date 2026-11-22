@@ -15,10 +15,7 @@ use sqlx::{Engine, Row, Transaction};
 use uuid::Uuid;
 
 use crate::{
-    db::{
-        self, MediaObjectRecord, ObjectCleanup, ObjectCopy, PageRequest, StorageBackend,
-        TagFilters, Tags,
-    },
+    db::{self, MediaObjectRecord, ObjectCleanup, ObjectCopy, StorageBackend, TagFilters, Tags},
     domain::{
         model,
         object::{MediaObject, ObjectInstance},
@@ -167,11 +164,7 @@ async fn get_object(
     let accepted_storage = params.uuid_list("accept_storage_ids")?;
     let storage_tag_values = params.dynamic_csv("storage_backend_tag.")?;
     let storage_tag_exists = params.dynamic_bool("storage_backend_tag_exists.")?;
-    let limit = params.integer("limit")?;
-    if limit.is_some_and(|value| value <= 0) {
-        return Err(invalid_query());
-    }
-    let page = PageRequest::parse(params.last("page"), limit).map_err(|_| invalid_query())?;
+    let page = super::service::page(&params)?;
 
     let pool = state.pool().await?;
     let record = db::objects::get(&pool, &object_id)

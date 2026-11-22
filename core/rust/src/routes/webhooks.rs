@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::{
     db::{self, WebhookRecord},
     domain::model,
-    http::{MAX_JSON_BODY_BYTES, error::ApiError, query::invalid_query, strict_json},
+    http::{MAX_JSON_BODY_BYTES, error::ApiError, strict_json},
 };
 
 use super::service::{MetadataState, internal, page, paged_response, query, tag_filters};
@@ -51,20 +51,6 @@ async fn list(
         &["reverse_order", "page", "limit"],
         &["tag.", "tag_exists."],
     )?;
-    for (key, value) in query.last_values() {
-        if key == "reverse_order" {
-            crate::http::query::parse_bool(value)?;
-        }
-        if key == "limit" && value.parse::<i64>().map_err(|_| invalid_query())? <= 0 {
-            return Err(invalid_query());
-        }
-        if key == "page"
-            && !value.is_empty()
-            && value.parse::<i64>().map_err(|_| invalid_query())? < 0
-        {
-            return Err(invalid_query());
-        }
-    }
     let reverse = query.bool("reverse_order")?.unwrap_or(false);
     let page_request = page(&query)?;
     let result = db::service::list_webhooks(
