@@ -98,29 +98,6 @@ export async function runContract(spec: Contract, host: ContractHost) {
   await call(`/flows/${mappingId}`, 'PUT', { ...audio, id: mappingId, source_id: randomUUID(),
     container_mapping: { mxf_container: { package_uid: 'not a UMID' } } }, 400);
   await call(`/flows/${mappingId}`, 'GET', undefined, 404);
-  const children = [randomUUID(), randomUUID()], parentSource = randomUUID();
-  const members = [];
-  for (const [i, id] of children.entries()) {
-    const childSource = randomUUID();
-    await call(`/flows/${id}`, 'PUT', { ...audio, id, source_id: childSource }, 201);
-    members.push({ id, role: String(i), source: childSource });
-  }
-  const collection = members.map(({ id, role }) => ({ id, role }));
-  const multi = { format: 'urn:x-nmos:format:multi', source_id: parentSource };
-  const firstParent = randomUUID(), otherParent = randomUUID();
-  await call(`/flows/${firstParent}`, 'PUT', { ...multi, id: firstParent, flow_collection: collection }, 201);
-  const creatingActor = (await call(`/flows/${firstParent}`)).value.created_by;
-  const sourcePath = `/sources/${parentSource}`;
-  assert.equal((await call(sourcePath)).value.created_by, creatingActor);
-  await call(sourcePath + '/label', 'PUT', 'A collection', 204);
-  assert.equal((await call(sourcePath)).value.updated_by, creatingActor);
-  const parentPath = `/flows/${otherParent}`;
-  await call(parentPath, 'PUT', { ...multi, id: otherParent, flow_collection: [...collection].reverse() }, 400);
-  await call(parentPath, 'GET', undefined, 404);
-  await call(parentPath, 'PUT', { ...multi, id: otherParent, flow_collection: collection }, 201);
-  await call(parentPath + '/flow_collection', 'PUT', [collection[0], { ...collection[1], role: 'changed' }], 400);
-  assert.deepEqual((await call(parentPath + '/flow_collection')).value, collection);
-  assert.deepEqual((await call(sourcePath)).value.source_collection, members.map(({ source: id, role }) => ({ id, role })));
   const hook = await call('/service/webhooks', 'POST', {
     url: host.webhookURL, events: ['flows/created'] }, 201);
   const webhookId = hook.value.id;
@@ -248,6 +225,29 @@ export async function runContract(spec: Contract, host: ContractHost) {
   await call(`/flows/${flow}`, 'DELETE', undefined, 204);
   await call(`/flows/${other}/segments?object_id=${encodeURIComponent(objectId)}`, 'DELETE', undefined, 204);
   await until('primary media deletion', async () => (await host.media({ url: primaryURL, method: 'GET' })).status === 404);
+  const children = [randomUUID(), randomUUID()], parentSource = randomUUID();
+  const members = [];
+  for (const [i, id] of children.entries()) {
+    const childSource = randomUUID();
+    await call(`/flows/${id}`, 'PUT', { ...audio, id, source_id: childSource }, 201);
+    members.push({ id, role: String(i), source: childSource });
+  }
+  const collection = members.map(({ id, role }) => ({ id, role }));
+  const multi = { format: 'urn:x-nmos:format:multi', source_id: parentSource };
+  const firstParent = randomUUID(), otherParent = randomUUID();
+  await call(`/flows/${firstParent}`, 'PUT', { ...multi, id: firstParent, flow_collection: collection }, 201);
+  const creatingActor = (await call(`/flows/${firstParent}`)).value.created_by;
+  const sourcePath = `/sources/${parentSource}`;
+  assert.equal((await call(sourcePath)).value.created_by, creatingActor);
+  await call(sourcePath + '/label', 'PUT', 'A collection', 204);
+  assert.equal((await call(sourcePath)).value.updated_by, creatingActor);
+  const parentPath = `/flows/${otherParent}`;
+  await call(parentPath, 'PUT', { ...multi, id: otherParent, flow_collection: [...collection].reverse() }, 400);
+  await call(parentPath, 'GET', undefined, 404);
+  await call(parentPath, 'PUT', { ...multi, id: otherParent, flow_collection: collection }, 201);
+  await call(parentPath + '/flow_collection', 'PUT', [collection[0], { ...collection[1], role: 'changed' }], 400);
+  assert.deepEqual((await call(parentPath + '/flow_collection')).value, collection);
+  assert.deepEqual((await call(sourcePath)).value.source_collection, members.map(({ source: id, role }) => ({ id, role })));
   const methods = ['get', 'head', 'put', 'post', 'delete', 'patch', 'options', 'trace'];
   const expected = Object.entries(spec.paths).flatMap(([path, item]) =>
     Object.keys(item).filter(method => methods.includes(method)).map(method => `${method.toUpperCase()} ${path}`));
