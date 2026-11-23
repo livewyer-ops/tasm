@@ -27,7 +27,8 @@ FROM build AS checks
 COPY tests/segmentation.mjs tests/artifacts.mjs tests/ui-preview.mjs tests/cloudflare.mjs tests/
 COPY scripts/serve.mjs scripts/check-cloudflare-package.sh scripts/
 COPY tests/media/ tests/media/
-RUN cargo test --locked \
+RUN cargo fmt --all -- --check \
+    && cargo test --locked \
     && cargo clippy --locked --all-targets -- -D warnings \
     && npm run test:segments \
     && npm run test:logic \

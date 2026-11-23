@@ -14,6 +14,7 @@ Set `TASM_DIST` to build or serve from a different output directory. Use a new d
 ## Checks
 
 ```sh
+cargo fmt --all -- --check
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 npm run build
