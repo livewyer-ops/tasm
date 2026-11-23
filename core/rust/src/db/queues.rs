@@ -156,7 +156,7 @@ pub async fn next_unfinished_cleanup(
         .transpose()
 }
 pub async fn begin_cleanup_attempt(pool: &Pool, id: Uuid, worker: &str) -> Result<bool, DbError> {
-    begin_attempt(pool, "tamoss_object_cleanups", id, worker).await
+    begin_attempt(pool, statements::BEGIN_CLEANUP_ATTEMPT, id, worker).await
 }
 pub async fn fail_cleanup(
     pool: &Pool,
@@ -164,28 +164,18 @@ pub async fn fail_cleanup(
     worker: &str,
     error: Value,
 ) -> Result<bool, DbError> {
-    finish_simple(
+    finish_attempt(
         pool,
-        "tamoss_object_cleanups",
+        statements::FINISH_CLEANUP_WITH_BACKOFF,
         id,
         worker,
         "error",
         Some(error),
-        false,
     )
     .await
 }
 pub async fn complete_cleanup(pool: &Pool, id: Uuid, worker: &str) -> Result<bool, DbError> {
-    finish_simple(
-        pool,
-        "tamoss_object_cleanups",
-        id,
-        worker,
-        "done",
-        None,
-        true,
-    )
-    .await
+    finish_attempt(pool, statements::FINISH_CLEANUP, id, worker, "done", None).await
 }
 
 pub async fn enqueue_copy<'e, E>(
@@ -247,22 +237,21 @@ pub async fn claim_copies(
         .map(claimed_in_order)
 }
 pub async fn begin_copy_attempt(pool: &Pool, id: Uuid, worker: &str) -> Result<bool, DbError> {
-    begin_attempt(pool, "tamoss_object_copies", id, worker).await
+    begin_attempt(pool, statements::BEGIN_COPY_ATTEMPT, id, worker).await
 }
 pub async fn fail_copy(pool: &Pool, id: Uuid, worker: &str, error: Value) -> Result<bool, DbError> {
-    finish_simple(
+    finish_attempt(
         pool,
-        "tamoss_object_copies",
+        statements::FINISH_COPY_WITH_BACKOFF,
         id,
         worker,
         "error",
         Some(error),
-        false,
     )
     .await
 }
 pub async fn complete_copy(pool: &Pool, id: Uuid, worker: &str) -> Result<bool, DbError> {
-    finish_simple(pool, "tamoss_object_copies", id, worker, "done", None, true).await
+    finish_attempt(pool, statements::FINISH_COPY, id, worker, "done", None).await
 }
 
 pub async fn save_webhook_delivery<'e, E>(e: E, v: &WebhookDelivery) -> Result<(), DbError>
@@ -360,12 +349,12 @@ pub async fn terminal_webhook(
         == 1)
 }
 
-async fn begin_attempt(pool: &Pool, table: &str, id: Uuid, worker: &str) -> Result<bool, DbError> {
-    let sql = match table {
-        "tamoss_object_cleanups" => statements::BEGIN_CLEANUP_ATTEMPT,
-        "tamoss_object_copies" => statements::BEGIN_COPY_ATTEMPT,
-        _ => return Err(DbError::Record("unknown queue".into())),
-    };
+async fn begin_attempt(
+    pool: &Pool,
+    sql: &'static str,
+    id: Uuid,
+    worker: &str,
+) -> Result<bool, DbError> {
     Ok(sqlx::query(sql)
         .bind(id)
         .bind(worker)
@@ -374,22 +363,14 @@ async fn begin_attempt(pool: &Pool, table: &str, id: Uuid, worker: &str) -> Resu
         .rows_affected()
         == 1)
 }
-async fn finish_simple(
+async fn finish_attempt(
     pool: &Pool,
-    table: &str,
+    sql: &'static str,
     id: Uuid,
     worker: &str,
     status: &str,
     error: Option<Value>,
-    clear: bool,
 ) -> Result<bool, DbError> {
-    let sql = match (table, clear) {
-        ("tamoss_object_cleanups", true) => statements::FINISH_CLEANUP,
-        ("tamoss_object_cleanups", false) => statements::FINISH_CLEANUP_WITH_BACKOFF,
-        ("tamoss_object_copies", true) => statements::FINISH_COPY,
-        ("tamoss_object_copies", false) => statements::FINISH_COPY_WITH_BACKOFF,
-        _ => return Err(DbError::Record("unknown queue".into())),
-    };
     Ok(sqlx::query(sql)
         .bind(id)
         .bind(worker)
