@@ -22,9 +22,12 @@ pub enum WebhookError {
     #[error(transparent)]
     Request(#[from] crate::sql::Error),
 }
+#[derive(serde::Deserialize)]
 pub struct DeliveryResponse {
     pub status: u16,
     pub reason: String,
+    #[serde(default)]
+    redirected: bool,
 }
 pub fn destination_changed() -> Value {
     json!({"type":"WebhookReplaced","summary":"Webhook destination changed","time":crate::domain::model::timestamp(crate::now())})
@@ -55,12 +58,73 @@ pub async fn deliver(
             json!({"id":id,"webhook":webhook,"payload_json":payload.to_string(),"timeout":timeout}),
         )
         .await?;
-    let status = result["status"].as_u64().unwrap_or(0) as u16;
-    if (300..400).contains(&status) || result["redirected"].as_bool() == Some(true) {
-        return Err(WebhookError::Redirect);
+    DeliveryResponse::from_host(result)
+}
+
+impl DeliveryResponse {
+    fn from_host(result: Value) -> Result<Self, WebhookError> {
+        let invalid =
+            || WebhookError::Request(crate::host::Error("Invalid webhook host reply".into()));
+        let reply: Self = serde_json::from_value(result).map_err(|_| invalid())?;
+        // Fetch reports an opaque manual redirect with status zero.
+        if !(matches!(reply.status, 100..=599) || (reply.status == 0 && reply.redirected)) {
+            return Err(invalid());
+        }
+        if reply.redirected || (300..400).contains(&reply.status) {
+            return Err(WebhookError::Redirect);
+        }
+        Ok(reply)
     }
-    Ok(DeliveryResponse {
-        status,
-        reason: result["reason"].as_str().unwrap_or("").into(),
-    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_browser_and_cloudflare_replies() {
+        for reply in [
+            json!({"status": 204, "reason": "", "redirected": false}),
+            json!({"status": 204, "reason": ""}),
+        ] {
+            let response = DeliveryResponse::from_host(reply).unwrap();
+            assert_eq!(response.status, 204);
+            assert_eq!(response.reason, "");
+        }
+        let response =
+            DeliveryResponse::from_host(json!({"status": 503, "reason": "Busy"})).unwrap();
+        assert_eq!(response.status, 503);
+        assert_eq!(response.reason, "Busy");
+    }
+
+    #[test]
+    fn recognises_http_and_opaque_redirects() {
+        for reply in [
+            json!({"status": 302, "reason": "Found"}),
+            json!({"status": 0, "reason": "", "redirected": true}),
+        ] {
+            assert!(matches!(
+                DeliveryResponse::from_host(reply),
+                Err(WebhookError::Redirect)
+            ));
+        }
+    }
+
+    #[test]
+    fn malformed_replies_follow_the_host_error_path() {
+        for reply in [
+            json!({"reason": "OK"}),
+            json!({"status": 200}),
+            json!({"status": "200", "reason": "OK"}),
+            json!({"status": 65736, "reason": "OK"}),
+            json!({"status": 0, "reason": ""}),
+            json!({"status": 600, "reason": ""}),
+            json!({"status": 204, "reason": "", "redirected": "false"}),
+        ] {
+            assert!(matches!(
+                DeliveryResponse::from_host(reply),
+                Err(WebhookError::Request(_))
+            ));
+        }
+    }
 }
