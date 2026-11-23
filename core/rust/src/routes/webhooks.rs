@@ -1,5 +1,5 @@
 // Cloudflare adaptation of TASM and rust-tams-api (Apache-2.0); see NOTICE.
-use crate::webhook_target::{same_destination, validate_configuration};
+use tasm_core::webhook_target::{same_destination, validate_target};
 
 use axum::{
     Json, Router,
@@ -145,8 +145,9 @@ fn validate_shape(
     Ok((status, tags, data))
 }
 
-pub(crate) fn invalid_payload() -> ApiError {
-    ApiError::bad_request("Bad request. Invalid webhook payload.")
+fn check_target(state: &MetadataState, map: &Map<String, Value>) -> Result<(), ApiError> {
+    validate_target(map, &state.settings.webhook_policy())
+        .map_err(|_| ApiError::bad_request("Bad request. Invalid webhook payload."))
 }
 
 async fn create(
@@ -159,7 +160,7 @@ async fn create(
         .map_err(|_| invalid())?;
     let map = value.as_object().ok_or_else(invalid)?;
     let (status, tags, data) = validate_shape(map, false)?;
-    validate_configuration(&state, map).await?;
+    check_target(&state, map)?;
     let id = Uuid::new_v4();
     let envelope = json!({"id":id,"data":data,"status":status,"tags":tags});
     let record = WebhookRecord {
@@ -199,7 +200,7 @@ async fn update(
             "Bad request. The Webhook is currently in an error status and therefore cannot be updated to disabled.",
         ));
     }
-    validate_configuration(&state, map).await?;
+    check_target(&state, map)?;
     let (status, tags, mut data) = validated;
     // GET never returns api_key_value, so a read-modify-write PUT omits it.
     // Keep the stored secret only for the same destination and header.

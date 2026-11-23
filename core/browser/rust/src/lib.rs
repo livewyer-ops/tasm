@@ -60,6 +60,3 @@ impl Tasm {
 }
 
 pub use pglite as sql;
-
-#[path = "../../../rust/src/webhook_target.rs"]
-mod webhook_target;

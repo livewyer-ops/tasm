@@ -1,13 +1,16 @@
-// Shared webhook target validation for both hosts. Compiled into each adapter
-// crate with #[path], like worker.rs, because it uses the adapter's routes.
-use crate::http::{
-    error::ApiError,
-    routes::{service::MetadataState, webhooks::invalid_payload},
-};
-use crate::webhooks::WebhookPolicy;
 use ipnet::IpNet;
 use serde_json::{Map, Value};
 use std::net::{IpAddr, Ipv4Addr};
+
+pub struct WebhookPolicy<'a> {
+    pub allow_private_targets: bool,
+    pub allowed_hosts: &'a [String],
+    pub require_https: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid webhook target")]
+pub struct InvalidTarget;
 
 fn blocked(address: IpAddr) -> bool {
     match address {
@@ -100,41 +103,34 @@ fn valid_header(value: &str) -> bool {
         && !RESERVED.contains(&value.to_ascii_lowercase().as_str())
 }
 
-pub(crate) fn same_destination(previous: &Value, current: &Value) -> bool {
+pub fn same_destination(previous: &Value, current: &Value) -> bool {
     let url = |value: &Value| url::Url::parse(value.get("url")?.as_str()?).ok();
     url(previous).is_some_and(|previous| Some(previous) == url(current))
 }
 
-pub(crate) async fn validate_configuration(
-    state: &MetadataState,
-    map: &Map<String, Value>,
-) -> Result<(), ApiError> {
-    validate_target(map, &WebhookPolicy::from_settings(&state.settings))
-}
-
-pub(crate) fn validate_target(
+pub fn validate_target(
     map: &Map<String, Value>,
     policy: &WebhookPolicy,
-) -> Result<(), ApiError> {
+) -> Result<(), InvalidTarget> {
     let url = map
         .get("url")
         .and_then(Value::as_str)
-        .ok_or_else(invalid_payload)?;
-    let parsed = url::Url::parse(url).map_err(|_| invalid_payload())?;
+        .ok_or(InvalidTarget)?;
+    let parsed = url::Url::parse(url).map_err(|_| InvalidTarget)?;
     let scheme_ok = if policy.require_https {
         parsed.scheme() == "https" && parsed.port_or_known_default() == Some(443)
     } else {
         matches!(parsed.scheme(), "http" | "https") && parsed.port_or_known_default().is_some()
     };
     let Some(host) = parsed.host_str() else {
-        return Err(invalid_payload());
+        return Err(InvalidTarget);
     };
     if !scheme_ok
         || !parsed.username().is_empty()
         || parsed.password().is_some()
         || parsed.fragment().is_some()
     {
-        return Err(invalid_payload());
+        return Err(InvalidTarget);
     }
     // host_str() keeps the brackets around IPv6 literals.
     let host = host
@@ -152,21 +148,21 @@ pub(crate) fn validate_target(
                 || host.ends_with(".cluster.local")
                 || literal.is_some_and(blocked)))
     {
-        return Err(invalid_payload());
+        return Err(InvalidTarget);
     }
     if map
         .get("api_key_name")
         .and_then(Value::as_str)
         .is_some_and(|value| !valid_header(value))
     {
-        return Err(invalid_payload());
+        return Err(InvalidTarget);
     }
     if map
         .get("api_key_value")
         .and_then(Value::as_str)
         .is_some_and(|value| value.contains(['\r', '\n']))
     {
-        return Err(invalid_payload());
+        return Err(InvalidTarget);
     }
     Ok(())
 }
@@ -180,17 +176,18 @@ mod tests {
         let value = json!({ "url": url });
         validate_target(value.as_object().unwrap(), policy).is_ok()
     }
-    fn strict(hosts: &[&str]) -> WebhookPolicy {
+    fn strict(hosts: &[String]) -> WebhookPolicy<'_> {
         WebhookPolicy {
             allow_private_targets: false,
-            allowed_hosts: hosts.iter().map(|host| host.to_string()).collect(),
+            allowed_hosts: hosts,
             require_https: true,
         }
     }
 
     #[test]
     fn requires_an_allowlisted_https_host() {
-        let policy = strict(&["hooks.example.com", "*.example.org"]);
+        let hosts = ["hooks.example.com", "*.example.org"].map(String::from);
+        let policy = strict(&hosts);
         assert!(check("https://hooks.example.com/a", &policy));
         assert!(check("https://a.example.org/a", &policy));
         assert!(!check("https://example.org/a", &policy));
@@ -203,7 +200,7 @@ mod tests {
 
     #[test]
     fn blocks_private_targets_even_when_listed() {
-        let policy = strict(&[
+        let hosts = [
             "127.0.0.1",
             "::1",
             "::ffff:127.0.0.1",
@@ -213,7 +210,9 @@ mod tests {
             "fec0::1",
             "localhost",
             "10.0.0.0/8",
-        ]);
+        ]
+        .map(String::from);
+        let policy = strict(&hosts);
         for url in [
             "https://127.0.0.1/",
             "https://[::1]/",
@@ -229,7 +228,7 @@ mod tests {
         }
         assert!(check(
             "https://93.184.216.34/",
-            &strict(&["93.184.216.0/24"])
+            &strict(&["93.184.216.0/24".into()])
         ));
     }
 
@@ -237,7 +236,7 @@ mod tests {
     fn browser_policy_allows_local_receivers() {
         let policy = WebhookPolicy {
             allow_private_targets: true,
-            allowed_hosts: vec!["*".into()],
+            allowed_hosts: &["*".into()],
             require_https: false,
         };
         assert!(check("http://localhost:8080/hook", &policy));
@@ -247,7 +246,8 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_api_key_headers() {
-        let policy = strict(&["hooks.example.com"]);
+        let hosts = ["hooks.example.com".into()];
+        let policy = strict(&hosts);
         let with = |extra: Value| {
             let mut value = json!({ "url": "https://hooks.example.com/" });
             value

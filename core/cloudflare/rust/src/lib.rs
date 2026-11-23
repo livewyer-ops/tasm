@@ -75,6 +75,3 @@ impl Tasm {
 }
 
 pub use sqlite as sql;
-
-#[path = "../../../rust/src/webhook_target.rs"]
-mod webhook_target;

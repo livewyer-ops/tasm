@@ -7,6 +7,7 @@ use std::{
 
 use serde_json::{Value, json};
 use sqlx::{Pool, Row};
+use tasm_core::webhook_target::same_destination;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -19,7 +20,7 @@ use crate::{
         timerange,
     },
     storage::{StorageError, StorageFactory},
-    webhooks::{self, WebhookError, WebhookPolicy},
+    webhooks::{self, WebhookError},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -657,7 +658,7 @@ impl Worker {
             return Ok(());
         }
         let webhook = &live.record["data"];
-        if !crate::webhook_target::same_destination(&delivery.record["webhook_snapshot"], webhook) {
+        if !same_destination(&delivery.record["webhook_snapshot"], webhook) {
             db::queues::terminal_webhook(
                 &self.pool,
                 delivery.id,
@@ -677,14 +678,13 @@ impl Worker {
             .get("payload")
             .cloned()
             .unwrap_or_else(|| json!({}));
-        let policy = WebhookPolicy::from_settings(&self.settings);
         let result = webhooks::deliver(
             &self.pool.0,
             delivery.id,
             webhook,
             &payload,
             self.settings.webhook_timeout_seconds,
-            &policy,
+            &self.settings.webhook_policy(),
         )
         .await;
         let (terminal, response, error) = match result {

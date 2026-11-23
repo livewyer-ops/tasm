@@ -3,6 +3,7 @@ pub mod db;
 pub mod domain;
 pub mod host;
 pub mod http;
+pub mod webhook_target;
 
 pub fn now() -> time::OffsetDateTime {
     #[cfg(target_arch = "wasm32")]

@@ -8,6 +8,7 @@ description = "Shared TAMS domain and HTTP rules"
 
 [dependencies]
 axum.workspace = true
+ipnet.workspace = true
 js-sys.workspace = true
 percent-encoding.workspace = true
 serde.workspace = true

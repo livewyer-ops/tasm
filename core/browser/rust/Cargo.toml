@@ -13,7 +13,6 @@ crate-type = ["cdylib", "rlib"]
 tasm-core = { path = "../../rust" }
 axum.workspace = true
 futures-util.workspace = true
-ipnet.workspace = true
 js-sys.workspace = true
 serde.workspace = true
 serde_json.workspace = true

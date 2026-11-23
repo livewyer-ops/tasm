@@ -2,18 +2,14 @@
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Default)]
-pub struct WebhookPolicy {
-    pub allow_private_targets: bool,
-    pub allowed_hosts: Vec<String>,
-    pub require_https: bool,
-}
-impl WebhookPolicy {
-    pub fn from_settings(settings: &crate::config::Settings) -> Self {
-        Self {
-            allow_private_targets: settings.webhook_allow_private_targets,
-            allowed_hosts: settings.webhook_allowed_hosts.clone(),
-            require_https: settings.webhook_require_https,
+use tasm_core::webhook_target::{WebhookPolicy, validate_target};
+
+impl crate::config::Settings {
+    pub(crate) fn webhook_policy(&self) -> WebhookPolicy<'_> {
+        WebhookPolicy {
+            allow_private_targets: self.webhook_allow_private_targets,
+            allowed_hosts: &self.webhook_allowed_hosts,
+            require_https: self.webhook_require_https,
         }
     }
 }
@@ -47,12 +43,12 @@ pub async fn deliver(
     webhook: &Value,
     payload: &Value,
     timeout: f64,
-    policy: &WebhookPolicy,
+    policy: &WebhookPolicy<'_>,
 ) -> Result<DeliveryResponse, WebhookError> {
     // Check the target again at delivery: the policy may have changed since
     // the webhook was registered.
     let map = webhook.as_object().ok_or(WebhookError::Restricted)?;
-    crate::webhook_target::validate_target(map, policy).map_err(|_| WebhookError::Restricted)?;
+    validate_target(map, policy).map_err(|_| WebhookError::Restricted)?;
     let result = host
         .call(
             "webhook",

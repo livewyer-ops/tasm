@@ -530,7 +530,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "futures-util",
- "ipnet",
  "js-sys",
  "serde",
  "serde_json",
@@ -549,7 +548,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "futures-util",
- "ipnet",
  "js-sys",
  "serde",
  "serde_json",
@@ -567,6 +565,7 @@ name = "tasm-core"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "ipnet",
  "js-sys",
  "percent-encoding",
  "send_wrapper",
