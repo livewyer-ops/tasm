@@ -117,8 +117,7 @@ pub fn parse(value: &str) -> Result<Bounds, ValidationError> {
 }
 
 /// Make omitted finite bounds explicit before a range crosses the storage boundary.
-/// Older records used an exclusive omitted end. Points have no ambiguous bounds.
-pub fn explicit(value: &str, omitted_end: char) -> std::borrow::Cow<'_, str> {
+pub fn explicit(value: &str) -> std::borrow::Cow<'_, str> {
     let Some((left, right)) = value.split_once('_') else {
         return value.into();
     };
@@ -133,7 +132,7 @@ pub fn explicit(value: &str, omitted_end: char) -> std::borrow::Cow<'_, str> {
     }
     text.push_str(value);
     if add_end {
-        text.push(omitted_end);
+        text.push(']');
     }
     text.into()
 }

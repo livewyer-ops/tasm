@@ -3,7 +3,6 @@
 // here in seconds rather than in the browser suite.
 import { test } from 'node:test';
 import { isDeepStrictEqual } from 'node:util';
-import { checkLegacyRanges } from './contract/legacy-ranges';
 import { checkUuidFilters } from './contract/uuid-filters';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -221,11 +220,6 @@ test('a restarted delete request waits for its earliest unfinished child', async
     WHERE parent.id=$1 AND failed.id=$2 AND leased.id=$3`, [parent, failed, leased]);
   assert.deepEqual(state.rows[0], { aligned: true, owner: 'other-worker', attempts: 1 });
   await db.close();
-});
-
-test('stored ranges and queued deletes retain their original endpoints', async () => {
-  const { request, db, core } = await store();
-  await checkLegacyRanges(request, (sql, ...params) => db.query(sql, params), () => core.poll(), videoFlow);
 });
 
 test('UUID filters follow the TAMS wire format', async () => {
@@ -663,8 +657,7 @@ test('Segment links continue past their last start when preceding Segments disap
     const query = `?limit=1&reverse_order=${reverse}`;
     const first = await request('GET', path + '/segments' + query);
     const next = first.headers['x-paging-nextkey'];
-    const legacy = await request('GET', path + '/segments' + query + '&page=1');
-    assert.equal(JSON.parse(legacy.body)[0].object_id, ids[1]);
+    assert.equal((await request('GET', path + '/segments' + query + '&page=1')).status, 400);
     assert.equal((await request('DELETE', path + '/segments?object_id=' + ids[reverse ? 2 : 0])).status, 204);
     const second = await request('GET', path + '/segments' + query + '&page=' + encodeURIComponent(next));
     assert.equal(JSON.parse(second.body)[0].object_id, ids[1]);

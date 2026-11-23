@@ -191,10 +191,16 @@ export async function runContract(spec: Contract, host: ContractHost) {
   await call(dataSegments, 'POST', { object_id: reused, timerange: '[30:0_31:0)', ts_offset: '10:0',
     object_timerange: '[20:0_21:0)', get_urls: [] }, 201);
   await call(dataSegments, 'POST', { object_id: randomUUID(), timerange: '[40:0_41:0)', get_urls: [] }, 400);
+  const nextKey = (await call(dataSegments + '?limit=2')).headers['x-paging-nextkey'];
+  assert.ok(nextKey);
   for (const [query, expected] of [['limit=1', '10:0'], ['limit=1&reverse_order=true', '[30:0_31:0)'],
-    ['limit=2', '[10:0_21:0)'], ['page=8', '()']]) {
+    ['limit=2', '[10:0_21:0)'], [`page=${encodeURIComponent(nextKey)}&timerange=10:0`, '()']]) {
     for (const method of ['GET', 'HEAD']) assert.equal((await call(dataSegments + '?' + query, method)).headers['x-paging-timerange'], expected);
   }
+  await call(dataSegments, 'POST', { object_id: randomUUID(), timerange: '50:0_51:0', get_urls }, 201);
+  const [inclusive] = (await get(dataSegments + '?timerange=51:0&include_object_timerange=true')).value;
+  assert.equal(inclusive.timerange, '[50:0_51:0]');
+  assert.equal(inclusive.object_timerange, inclusive.timerange);
   const clip = (timerange: string) => ({ object_id: randomUUID(), timerange, ts_offset: '100:0',
     object_timerange: '[0:0_10:0)', get_urls });
   await call(dataSegments, 'POST', clip('[112:0_114:0)'), 400);

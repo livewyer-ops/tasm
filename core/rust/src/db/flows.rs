@@ -3,7 +3,7 @@
 use super::dialect::{self, Engine, FLOW_SEGMENTS, NOW, Pool, RecordRow, sqlx};
 use std::collections::BTreeMap;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 use sqlx::{QueryBuilder, Row};
 use uuid::Uuid;
 
@@ -401,21 +401,8 @@ where
     }
     for (source, members) in members {
         let relationships = result.get_mut(&source).expect("queried Source");
-        if let Some(collection) = crate::domain::model::source_collection(&members) {
-            relationships.source_collection = collection;
-        } else {
-            // Keep previously stored contradictory representations readable until corrected.
-            relationships.conflicting_collection = true;
-            for (_, id, role) in members {
-                let mut item = json!({"id":id});
-                if let Some(role) = role {
-                    item["role"] = json!(role);
-                }
-                if !relationships.source_collection.contains(&item) {
-                    relationships.source_collection.push(item);
-                }
-            }
-        }
+        relationships.source_collection = crate::domain::model::source_collection(&members)
+            .ok_or(DbError::ConflictingSourceCollection)?;
     }
     Ok(result)
 }
@@ -548,7 +535,7 @@ pub async fn list_segments_page(
     flow_id: Uuid,
     f: &SegmentFilters,
     reverse: bool,
-    page: &PageRequest,
+    limit: i64,
 ) -> Result<Page<SegmentRecord>, DbError> {
     let mut q = QueryBuilder::<Engine>::new(
         "SELECT flow_id,object_id,init_object_id,timerange,timerange_start,timerange_end,record,created FROM tamoss_segments WHERE flow_id=",
@@ -568,10 +555,7 @@ pub async fn list_segments_page(
         " ORDER BY timerange_start"
     })
     .push(" LIMIT ")
-    .push_bind(page.limit + 1);
-    if page.offset != 0 {
-        q.push(" OFFSET ").push_bind(page.offset);
-    }
+    .push_bind(limit + 1);
     let mut items = q
         .build()
         .fetch_all(pool)
@@ -579,7 +563,7 @@ pub async fn list_segments_page(
         .into_iter()
         .map(map_segment)
         .collect::<Result<Vec<_>, _>>()?;
-    let next_page = if items.len() > page.limit as usize {
+    let next_page = if items.len() > limit as usize {
         items.pop();
         items
             .last()
@@ -589,7 +573,7 @@ pub async fn list_segments_page(
     };
     Ok(Page {
         items,
-        limit: page.limit,
+        limit,
         next_page,
     })
 }

@@ -550,11 +550,8 @@ async fn put_flow(
         .map_err(internal)?;
     let relationships = db::flows::source_relationships(&mut *tx, &[source_id])
         .await
-        .map_err(internal)?;
+        .map_err(collection_error)?;
     let relationship = relationships.get(&source_id);
-    if relationship.is_some_and(|r| r.conflicting_collection) {
-        return Err(collection_conflict());
-    }
     let source_collected_by = relationship
         .map(|value| value.collected_by.clone())
         .unwrap_or_default();
@@ -575,14 +572,9 @@ async fn put_flow(
         .map_err(internal)?;
     if previous_source.is_some() && !parents.is_empty() {
         let sources: Vec<_> = parents.iter().filter_map(|p| p.source_id).collect();
-        if db::flows::source_relationships(&mut *tx, &sources)
+        db::flows::source_relationships(&mut *tx, &sources)
             .await
-            .map_err(internal)?
-            .values()
-            .any(|r| r.conflicting_collection)
-        {
-            return Err(collection_conflict());
-        }
+            .map_err(collection_error)?;
     }
     let parent_ids: Vec<_> = parents.iter().map(|value| value.id).collect();
     enqueue_event(
@@ -770,10 +762,13 @@ async fn get_collection(
     )
     .into_response())
 }
-fn collection_conflict() -> ApiError {
-    ApiError::bad_request(
-        "The collection order or member roles conflict with another representation of the Source.",
-    )
+fn collection_error(error: db::DbError) -> ApiError {
+    match error {
+        db::DbError::ConflictingSourceCollection => ApiError::bad_request(
+            "The collection order or member roles conflict with another representation of the Source.",
+        ),
+        other => internal(other),
+    }
 }
 
 async fn set_collection(
@@ -830,14 +825,10 @@ async fn set_collection(
     db::flows::save_flow(&mut *tx, &flow)
         .await
         .map_err(internal)?;
-    if let Some(source) = flow.source_id
-        && db::flows::source_relationships(&mut *tx, &[source])
+    if let Some(source) = flow.source_id {
+        db::flows::source_relationships(&mut *tx, &[source])
             .await
-            .map_err(internal)?
-            .get(&source)
-            .is_some_and(|r| r.conflicting_collection)
-    {
-        return Err(collection_conflict());
+            .map_err(collection_error)?;
     }
     emit_flow_updated(&mut tx, &flow).await?;
     tx.commit().await.map_err(internal)?;

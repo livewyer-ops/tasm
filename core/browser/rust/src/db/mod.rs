@@ -15,6 +15,8 @@ pub mod service;
 pub enum DbError {
     #[error(transparent)]
     Sqlx(#[from] crate::pglite::Error),
+    #[error("conflicting Source collection")]
+    ConflictingSourceCollection,
     #[error("invalid record: {0}")]
     Record(String),
 }

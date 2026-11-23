@@ -86,7 +86,7 @@ impl MediaObject {
             timerange: data
                 .and_then(|v| v.get("timerange"))
                 .and_then(Value::as_str)
-                .map(|value| super::timerange::explicit(value, ')').into_owned()),
+                .map(str::to_owned),
             init_object_id: data
                 .and_then(|v| v.get("init_object_id"))
                 .and_then(Value::as_str)

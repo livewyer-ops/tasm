@@ -40,7 +40,7 @@ pub fn overlaps(a: SegmentBounds, b: SegmentBounds) -> bool {
 pub fn coverage_gaps(segments: &[SegmentRecord]) -> Result<Vec<String>, ValidationError> {
     let mut ranges = segments
         .iter()
-        .map(|segment| bounds(&timerange::explicit(&segment.timerange, ')')))
+        .map(|segment| bounds(&segment.timerange))
         .collect::<Result<Vec<_>, _>>()?;
     ranges.sort_by_key(|range| (range.start, range.end));
     let Some(first) = ranges.first() else {
@@ -112,7 +112,7 @@ pub fn response(
     let data = segment.record.as_object();
     let mut value = json!({
         "object_id": segment.object_id,
-        "timerange": timerange::explicit(&segment.timerange, ')'),
+        "timerange": segment.timerange,
         "ts_offset": data.and_then(|value| value.get("ts_offset")),
         "last_duration": data.and_then(|value| value.get("last_duration")),
         "sample_offset": data.and_then(|value| value.get("sample_offset")),
@@ -123,13 +123,11 @@ pub fn response(
     });
     if include_object_timerange {
         let effective = effective_object_timerange(
-            &timerange::explicit(&segment.timerange, ')'),
+            &segment.timerange,
             data.and_then(|value| value.get("ts_offset"))
                 .and_then(Value::as_str),
             data.and_then(|value| value.get("object_timerange"))
-                .and_then(Value::as_str)
-                .map(|s| timerange::explicit(s, ')'))
-                .as_deref(),
+                .and_then(Value::as_str),
         )
         .unwrap_or_else(|_| segment.timerange.clone());
         value

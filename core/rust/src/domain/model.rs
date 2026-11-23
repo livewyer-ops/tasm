@@ -153,7 +153,6 @@ pub fn storage_backend(record: &StorageBackend) -> Value {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SourceRelationships {
     pub source_collection: Vec<Value>,
-    pub conflicting_collection: bool,
     pub collected_by: Vec<Uuid>,
 }
 

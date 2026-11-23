@@ -853,17 +853,11 @@ fn queue_error(kind: &str, summary: &str) -> Value {
 /// flow, so segments written after the request was made are removed too.
 fn delete_range(record: &Value, delete_flow: bool) -> Result<Option<(i128, i128)>, WorkerError> {
     let invalid = || WorkerError::Db(db::DbError::Record("invalid delete request range".into()));
-    let value = match record.get("timerange_remaining") {
-        // Older releases cleared the field once the segment phase committed.
-        Some(Value::Null) => return Ok(None),
-        Some(Value::String(value)) => value.as_str(),
-        Some(_) => return Err(invalid()),
-        None => record
-            .get("timerange_to_delete")
-            .and_then(Value::as_str)
-            .ok_or_else(invalid)?,
-    };
-    let bounds = timerange::parse(&timerange::explicit(value, ')')).map_err(|_| invalid())?;
+    let value = record
+        .get("timerange_remaining")
+        .and_then(Value::as_str)
+        .ok_or_else(invalid)?;
+    let bounds = timerange::parse(value).map_err(|_| invalid())?;
     if bounds.empty {
         return Ok(None);
     }
@@ -904,21 +898,19 @@ mod tests {
         let request = |remaining: serde_json::Value, delete_flow: bool| json!({"timerange_to_delete":"[0:0_10:0)","timerange_remaining":remaining,"delete_flow":delete_flow});
         let segment = delete_range(&request(json!("[2:0_10:0)"), false), false).unwrap();
         assert_eq!(segment, Some((2_000_000_000, 10_000_000_000)));
-        // A committed segment phase is never repeated, in either record format.
+        // A committed segment phase is never repeated.
         assert_eq!(
             delete_range(&request(json!("()"), false), false).unwrap(),
             None
         );
-        assert_eq!(
-            delete_range(&request(json!(null), true), true).unwrap(),
-            None
-        );
+        assert!(delete_range(&request(json!(null), true), true).is_err());
+        assert!(delete_range(&json!({"timerange_to_delete":"[5:0]"}), false).is_err());
         // Flow deletion covers segments written after the request was made.
         assert_eq!(
             delete_range(&request(json!("[0:0_10:0)"), true), true).unwrap(),
             Some((i128::MIN, i128::MAX))
         );
-        let point = json!({"timerange_to_delete":"[5:0]"});
+        let point = request(json!("[5:0]"), false);
         assert_eq!(
             delete_range(&point, false).unwrap(),
             Some((5_000_000_000, 5_000_000_001))

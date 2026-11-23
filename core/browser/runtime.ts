@@ -286,10 +286,10 @@ export class Runtime {
       let writer: FileSystemWritableFileStream | undefined, published = false;
       try {
         writer = await (await this.files.getFileHandle(name, { create: true })).createWritable();
-        const hash = sha256.create(), legacy = md5.create(); let size = 0;
-        for await (const chunk of chunks) { await writer.write(chunk as Uint8Array<ArrayBuffer>); hash.update(chunk); legacy.update(chunk); size += chunk.byteLength; }
+        const hash = sha256.create(), md5Hash = md5.create(); let size = 0;
+        for await (const chunk of chunks) { await writer.write(chunk as Uint8Array<ArrayBuffer>); hash.update(chunk); md5Hash.update(chunk); size += chunk.byteLength; }
         await writer.close(); writer = undefined;
-        const digest = hash.digest(), checksum = bytesToHex(digest), md5sum = base64(legacy.digest());
+        const digest = hash.digest(), checksum = bytesToHex(digest), md5sum = base64(md5Hash.digest());
         if (request.headers['content-md5'] && request.headers['content-md5'] !== md5sum) throw new HttpError(400, 'Content-MD5 mismatch.');
         if (request.headers['x-amz-checksum-sha256'] && request.headers['x-amz-checksum-sha256'] !== base64(digest)) throw new HttpError(400, 'SHA-256 mismatch.');
         if (request.headers['content-length'] && Number(request.headers['content-length']) !== size) throw new HttpError(400, 'Content-Length mismatch.');

@@ -147,13 +147,16 @@ async fn list(
         .transpose()
         .map_err(|_| invalid_query())?
         .unwrap_or_default();
-    let key = params.last("page");
-    let cursor = key
-        .and_then(|key| key.strip_prefix("t."))
-        .map(str::parse::<i128>)
-        .transpose()
-        .map_err(|_| invalid_query())?;
-    let page_request = page_from(&params, key.filter(|_| cursor.is_none()))?;
+    let cursor = params
+        .last("page")
+        .filter(|key| !key.is_empty())
+        .map(|key| {
+            key.strip_prefix("t.")
+                .and_then(|value| value.parse::<i128>().ok())
+                .ok_or_else(invalid_query)
+        })
+        .transpose()?;
+    let limit = page_from(&params, None)?.limit;
     let pool = state.pool;
     // Filter, order and page in SQL so a request costs one page, not the
     // whole flow. Segments in a flow never overlap, so ordering by start is
@@ -168,7 +171,7 @@ async fn list(
     let (items, next_page) = if requested.empty {
         (Vec::new(), None)
     } else {
-        let page = db::flows::list_segments_page(&pool, flow_id, &filters, reverse, &page_request)
+        let page = db::flows::list_segments_page(&pool, flow_id, &filters, reverse, limit)
             .await
             .map_err(internal)?;
         (page.items, page.next_page)
@@ -229,7 +232,7 @@ async fn list(
     let mut response = paged_response(
         &request,
         Value::Array(responses),
-        page_request.limit,
+        limit,
         items.len(),
         next_page.as_deref(),
         None,
@@ -258,7 +261,7 @@ fn timerange_union(values: &[SegmentRecord]) -> String {
         return "()".into();
     }
     if values.len() == 1 {
-        return crate::domain::timerange::explicit(&values[0].timerange, ')').into_owned();
+        return values[0].timerange.clone();
     }
     crate::domain::timerange::from_bounds(
         values.iter().map(|row| row.timerange_start).min(),
@@ -530,7 +533,7 @@ async fn register_one(
     {
         return Err(bad().into());
     }
-    let timerange = crate::domain::timerange::explicit(timerange, ']');
+    let timerange = crate::domain::timerange::explicit(timerange);
     let timerange = timerange.as_ref();
     let mapped = segment::effective_object_timerange(
         timerange,
@@ -549,7 +552,7 @@ async fn register_one(
         if clip.start < object.start || clip.end > object.end {
             return Err("Bad request. The Segment timerange, offset by ts_offset, must lie within the Media Object's timerange.".into());
         }
-        crate::domain::timerange::explicit(object_range, ']').into_owned()
+        crate::domain::timerange::explicit(object_range).into_owned()
     } else {
         mapped
     };
@@ -818,11 +821,7 @@ async fn delete(
             return Ok(StatusCode::NO_CONTENT.into_response());
         }
         let matching: String = if count == 1 {
-            crate::domain::timerange::explicit(
-                &selection.try_get::<String, _>(3).map_err(internal)?,
-                ')',
-            )
-            .into_owned()
+            selection.try_get(3).map_err(internal)?
         } else {
             crate::domain::timerange::from_bounds(
                 selection.try_get(0).map_err(internal)?,
@@ -836,7 +835,7 @@ async fn delete(
         let id = Uuid::new_v4();
         let to_delete = timerange_text
             .filter(|value| !matches!(*value, "" | "_"))
-            .map(|value| crate::domain::timerange::explicit(value, ']').into_owned())
+            .map(|value| crate::domain::timerange::explicit(value).into_owned())
             .unwrap_or(matching);
         let mut record = json!({"id":id,"flow_id":flow_id,"timerange_to_delete":to_delete,"timerange_remaining":to_delete,"delete_flow":false,"created":model::timestamp(now),"created_by":identity.subject,"updated":model::timestamp(now),"status":"created","error":null});
         record
@@ -959,9 +958,6 @@ pub(crate) async fn webhook_event(
     let pool = sqlx::Pool(connection.0.clone());
     let storage = StorageFactory::new(pool.clone());
     let mut event = event.clone();
-    if crate::storage::SIGNED_URLS {
-        event["_tasm_deferred_urls"] = Value::Bool(true);
-    }
     let segments = event["segments"]
         .as_array_mut()
         .ok_or_else(|| internal("Missing event Segments"))?;
@@ -1114,13 +1110,9 @@ async fn object_ranges(
                 .map_err(internal)?
                 .0;
             segment::effective_object_timerange(
-                &crate::domain::timerange::explicit(&timerange, ')'),
+                &timerange,
                 record.get("ts_offset").and_then(Value::as_str),
-                record
-                    .get("object_timerange")
-                    .and_then(Value::as_str)
-                    .map(|s| crate::domain::timerange::explicit(s, ')'))
-                    .as_deref(),
+                record.get("object_timerange").and_then(Value::as_str),
             )
             .map_err(|_| ApiError::bad_request("Bad request. Invalid stored Segment timerange."))
         })

@@ -14,7 +14,7 @@ const storageUuid = new RegExp(uuidSchema.pattern);
 type Backend = { storage_id: string; bucket_name: string; label: string; default_storage: boolean; tags?: Record<string, string[]> };
 type Transaction = { finish(): void; rollback(): void; promise: Promise<void> };
 type Allocation = { allocation_id: string; access_expires_at: number };
-type MediaLink = { url: string; label?: string; presigned?: boolean; _tasm_backend?: string };
+type MediaLink = { url: string; _tasm_backend?: string };
 type EventObject = { object_id: string; get_urls?: MediaLink[]; init_object?: EventObject };
 type HostPayload = { sql: string; params: SqlStorageValue[]; backend: string; id: string; source: string; destination: string; allocationId: string; method: string; presigned: boolean; contentType: string; allocations: { allocation_id: string; not_before: number }[]; webhook: { url: string; api_key_name?: string; api_key_value?: string }; payload_json: string; timeout: number };
 
@@ -118,22 +118,18 @@ export class WasmStore extends DurableObject<Bindings> {
     const payload = JSON.parse(body);
     const event = payload.event;
     if (!Array.isArray(event?.segments)) return body;
-    const legacy = !event._tasm_deferred_urls;
-    delete event._tasm_deferred_urls;
     for (const segment of event.segments as EventObject[]) {
       for (const object of [segment, segment.init_object]) {
         if (!object?.get_urls) continue;
         const links: MediaLink[] = [];
         for (const link of object.get_urls) {
-          const backend = link._tasm_backend ? this.#backends.get(link._tasm_backend)
-            : legacy && link.presigned ? Array.from(this.#backends.values()).find(b => b.label === link.label) : undefined;
-          if (!backend) {
-            if (!link._tasm_backend) links.push(link);
+          if (!link._tasm_backend) {
+            links.push(link);
             continue;
           }
+          const backend = this.#backends.get(link._tasm_backend);
+          if (!backend) continue;
           const url = new URL(link.url);
-          if (legacy && (url.origin !== new URL(this.env.R2_ENDPOINT).origin || !url.searchParams.has("X-Amz-Signature") ||
-              !url.pathname.startsWith(`/${backend.bucket_name}/wasm/${this.ctx.id}/`))) { links.push(link); continue; }
           const [allocation] = this.ctx.storage.sql.exec<Allocation>(`SELECT allocation_id,access_expires_at FROM tamoss_media_objects m
             WHERE id=? AND json_array_length(referenced_by_flows)>0 AND EXISTS (
               SELECT 1 FROM json_each(m.record,'$.instances') i WHERE i.value->>'controlled'=1 AND i.value->>'storage_backend_id'=?)`,

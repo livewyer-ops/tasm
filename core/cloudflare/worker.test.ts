@@ -1,8 +1,6 @@
 import { build } from "esbuild";
-import { presign } from "./signing.ts";
 import { apiConfig, apiConfigPath } from "./test-installation.ts";
 import assert from "node:assert/strict";
-import { checkLegacyRanges } from "../../tests/contract/legacy-ranges.ts";
 import { checkUuidFilters } from "../../tests/contract/uuid-filters.ts";
 import { readFileSync } from "node:fs";
 import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -72,16 +70,6 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     const unsupported = await request("/service", { method: "PUT", body: "{}" });
     assert.equal(unsupported.status, 405);
     assert.equal((await unsupported.json() as { type: string }).type, "method_not_allowed");
-  });
-
-  await t.test("stored ranges and queued deletes retain their original endpoints", async () => {
-    const env = await api.getEnv();
-    const sql = await api.getDurableObjectStorage("STORE", { name: env.STORE_ID });
-    await checkLegacyRanges(async (method, path, body) => {
-      const response = await request(path, { method, body: JSON.stringify(body) });
-      return { status: response.status, body: await response.text() };
-    }, (statement, ...params) => sql.exec(statement.replace(/\$(\d+)/g, "?$1"), ...params),
-    () => new Promise(resolve => setTimeout(resolve, 100)), JSON.parse(readFileSync(new URL("./video-flow.test.json", import.meta.url), "utf8")));
   });
 
   await t.test("UUID filters follow the TAMS wire format", async () => {
@@ -612,7 +600,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     const flow = await request(`/flows/${flowId}`, { method: "PUT", body: JSON.stringify({ id: flowId, source_id: crypto.randomUUID(), profile_id: ids[0] }) });
     assert.equal(flow.status, 201, await flow.text());
     assert.equal((await (await request(`/flows/${flowId}`)).json() as { codec: string }).codec, codec);
-    // Older stores could persist a string PID in an immutable Profile.
+    // Flow creation also validates metadata inherited from a Profile.
     const env = await api.getEnv();
     const sql = await api.getDurableObjectStorage("STORE", { name: env.STORE_ID });
     await sql.exec("UPDATE tamoss_profiles SET record=json_set(record,'$.flow_metadata.container_mapping',json(?)) WHERE id=?",
@@ -703,13 +691,13 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
         assert.equal(added.status, 201, await added.text());
         const [queued] = await sql.exec<{ id: string; record: string }>("SELECT id,record FROM tamoss_webhook_deliveries WHERE webhook_id=?", webhookId);
         const snapshot = JSON.parse(queued.record).payload.event;
-        assert.equal(snapshot._tasm_deferred_urls, true);
+        if (index === 1) assert.equal(snapshot.segments[0].get_urls[0]._tasm_backend, backend.id);
         assert.doesNotMatch(queued.record, /X-Amz-Signature/);
         await sql.exec("UPDATE tamoss_webhook_deliveries SET next_attempt_at=NULL WHERE id=?", queued.id);
         const store = env.STORE.getByName(env.STORE_ID) as unknown as { pollNow(): Promise<void>; received(id: string): Promise<any> };
         await store.pollNow();
         const event = (await store.received(queued.id)).event;
-        assert.equal(event._tasm_deferred_urls, undefined);
+        assert.doesNotMatch(JSON.stringify(event), /"_tasm_/);
         const delivered = event.segments[0];
         const query = new URLSearchParams({ object_id: objectId });
         for (const [key, value] of Object.entries(transform)) if (key !== "accept_storage_ids" || !Array.isArray(value) || value.length) query.set(key, Array.isArray(value) ? value.join(",") : String(value));
@@ -724,28 +712,15 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
         }
         for (const url of [...delivered.get_urls, ...delivered.init_object.get_urls]) if (url.presigned) assert.equal(new URL(url.url).searchParams.get("X-Amz-Expires"), "3630");
         if (index === 1) {
-          const legacy = JSON.parse(queued.record);
-          legacy.payload.event = event;
-          for (const item of [delivered, delivered.init_object]) {
-            for (const link of item.get_urls) {
-              const physical = new URL(link.url);
-              physical.search = "";
-              link.url = await presign("GET", physical, env.R2_ACCESS_KEY_ID, env.R2_SECRET_ACCESS_KEY, 3630, {}, new Date("2020-01-01T00:00:00Z"));
-            }
-          }
-          await sql.exec("UPDATE tamoss_webhook_deliveries SET record=?,status='pending',next_attempt_at=NULL WHERE id=?", JSON.stringify(legacy), queued.id);
-          await store.pollNow();
-          const renewed = (await store.received(queued.id)).event.segments[0];
-          const signature = new URL(renewed.get_urls[0].url).searchParams;
-          assert.match(signature.get("X-Amz-Signature") ?? "", /^[0-9a-f]{64}$/);
-          assert.match(signature.get("X-Amz-Date") ?? "", /^\d{8}T\d{6}Z$/);
-          assert.notEqual(signature.get("X-Amz-Date"), "20200101T000000Z");
-          // Replaying an old delivery cannot grant access to replacement bytes under the same object ID.
+          // An external link with the same label stays external when the allocation changes.
+          const retry = JSON.parse(queued.record);
+          const external = { url: "https://media.example/clip?X-Amz-Signature=external", label: backend.label, presigned: true };
+          retry.payload.event.segments[0].get_urls.push(external);
           await sql.exec("UPDATE tamoss_media_objects SET allocation_id=lower(hex(randomblob(16))) WHERE id=?", objectId);
-          await sql.exec("UPDATE tamoss_webhook_deliveries SET status='pending',next_attempt_at=NULL,claimed_by=NULL,claim_expires_at=NULL WHERE id=?", queued.id);
+          await sql.exec("UPDATE tamoss_webhook_deliveries SET record=?,status='pending',next_attempt_at=NULL,claimed_by=NULL,claim_expires_at=NULL WHERE id=?", JSON.stringify(retry), queued.id);
           await store.pollNow();
           const retried = (await store.received(queued.id)).event.segments[0];
-          assert.deepEqual(retried.get_urls, []);
+          assert.deepEqual(retried.get_urls, [external]);
           assert.ok(retried.init_object.get_urls[0].url.includes("X-Amz-Signature"));
         }
         assert.equal((await request(`/service/webhooks/${webhookId}`, { method: "DELETE" })).status, 204);
@@ -911,7 +886,6 @@ test("a populated SQLite store rolls back an interrupted upgrade and refuses uns
   assert.deepEqual(await snapshot(), before);
   await sql.exec("UPDATE tamoss_storage_backends SET label='Future label' WHERE id=?", backend);
   await harness.update(() => ({ workers: [current] }));
-  sql = await storage();
   await assert.rejects((await storage()).exec("SELECT 1"), /Unsupported TASM database version/);
   await harness.update(() => ({ workers: [inspect] }));
   sql = await storage();
