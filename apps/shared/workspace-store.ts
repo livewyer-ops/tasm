@@ -377,12 +377,7 @@ export class WorkspaceStore extends EventTarget {
         if (group.partial !== undefined && typeof group.partial !== 'boolean') throw new Error('Invalid partial block metadata');
         blocks.push({ key: group.id, sample, profile: group.profile, checksum: group.checksum, start: bounds(refs[0].timerange)[0], segments: refs, partial: group.partial });
       }
-      // Older workspaces contain one complete sample per segment and need no migration.
-      for (const segment of remaining.values()) {
-        const sample = samples.find(s => segment.object_id.includes(`:${s.id}:`));
-        if (!sample) throw new Error('This flow contains media outside the built-in sample library.');
-        blocks.push({ sample, start: bounds(segment.timerange)[0], key: `${segment.object_id}:${segment.timerange}`, profile: 'legacy', checksum: sample.sha256, segments: [segment] });
-      }
+      if (remaining.size) throw new Error('Block metadata does not match its TAMS segments');
       blocks.sort((a, b) => a.start < b.start ? -1 : 1);
       lanes.push({ id, flow, kind: flow.format.endsWith(':audio') ? 'audio' : 'video', blocks, segments });
     }

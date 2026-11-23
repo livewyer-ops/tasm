@@ -225,19 +225,23 @@ test('demo walks through real media, survives reload and preserves Playpen stora
   if (browserName === 'chromium') {
     // Model two references to one stored object without changing saved media.
     await page.addInitScript(() => {
+      const split = <T extends { timerange: string }>(segments: T[]) => [
+        { ...segments[0], timerange: '[0:0_1:0)' }, { ...segments[0], timerange: '[1:0_2:0)' }, ...segments.slice(1),
+      ];
       const real = window.fetch;
       window.fetch = async (input, init) => {
         const response = await real(input, init);
         const path = new URL(String(input), location.href).pathname;
         if (path.includes('/api/flows/') && response.ok) {
           const data = await response.clone().json();
-          if (path.endsWith('/segments') && data.length === 4) return Response.json([
-            { ...data[0], timerange: '[0:0_1:0)' },
-            { ...data[0], timerange: '[1:0_2:0)' }, ...data.slice(1),
-          ]);
-          // Use supported legacy references, not the original four-piece grouping.
-          if (data.tags?.['tasm.playpen.blocks.v1']) {
-            delete data.tags['tasm.playpen.blocks.v1']; return Response.json(data);
+          if (path.endsWith('/segments') && data.length === 4) return Response.json(split(data));
+          const groups = data.tags?.['tasm.playpen.blocks.v1'];
+          if (groups?.length === 1) {
+            const group = JSON.parse(groups[0]);
+            if (group.segments.length === 4) {
+              groups[0] = JSON.stringify({ ...group, segments: split(group.segments) });
+              return Response.json(data);
+            }
           }
         }
         return response;

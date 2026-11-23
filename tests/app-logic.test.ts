@@ -155,6 +155,23 @@ test('loading rejects a missing, malformed, or repeated lane identity', async t 
   }
 });
 
+test('loading a published lane requires a block reference for every segment', async t => {
+  const laneId = crypto.randomUUID(), store = new WorkspaceStore('https://example.test/api/');
+  const sample = samples[0], recorded = { object_id: 'first', timerange: '[0:0_1:0)' };
+  const block = { id: 'block', sample: sample.id, checksum: sample.sha256, profile: PROFILE, segments: [recorded] };
+  const segments = [recorded];
+  t.mock.method(globalThis, 'fetch', async (url: string) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith('/root')) return Response.json({ flow_collection: [{ id: laneId }] });
+    if (path.endsWith('/segments')) return Response.json(segments);
+    return Response.json({ id: laneId, format: sample.technical.format,
+      tags: { 'tasm.playpen.lane': [laneId], 'tasm.playpen.blocks.v1': [JSON.stringify(block)] } });
+  });
+  expect((await store.load('root')).lanes[0].blocks).toHaveLength(1);
+  segments.push({ object_id: `playpen:root:${sample.id}:extra`, timerange: '[1:0_2:0)' });
+  await expect(store.load('root')).rejects.toThrow('Block metadata does not match its TAMS segments');
+});
+
 test('placing an imported track preserves its file offset between grid ticks', () => {
   const sample = { ...samples[0], imported: true, trackOffsetNs: '500000000' };
   const flow = { id: 'flow', source_id: 'source', format: sample.technical.format };

@@ -60,7 +60,7 @@ test('source clock preserves offsets, empty intervals, tails and independent pre
       const sample = manifest.find((s: any) => s.id === sampleId), id = crypto.randomUUID(), laneId = crypto.randomUUID();
       ids[label] = laneId;
       await request(`flows/${id}`, 'PUT', { ...sample.technical, id, source_id: crypto.randomUUID(), label, tags: { 'tasm.playpen.root': [root.id], 'tasm.playpen.lane': [laneId] } });
-      // Exercise new packet-segmented video/audio alongside unmodified legacy blocks.
+      // Exercise both single-object and packet-segmented clips.
       const segmented = sampleId === 'orbit' || sampleId === 'chord';
       const bytes = await (await fetch(`/samples/${sample.file}`)).arrayBuffer();
       const objects: { bytes: ArrayBuffer; start: string; end: string; id?: string }[] = segmented ? await new Promise((resolve, reject) => {
@@ -83,9 +83,9 @@ test('source clock preserves offsets, empty intervals, tails and independent pre
           await request(`flows/${id}/segments`, 'POST', { ...segment, ...(start === starts[0] ? { object_timerange: `[${timestamp(BigInt(object.start))}_${timestamp(BigInt(object.end))})` } : {}) });
           refs.push({ object_id: segment.object_id, timerange: segment.timerange });
         }
-        groups.push(JSON.stringify({ id: crypto.randomUUID(), sample: sample.id, checksum: sample.sha256, profile: 'mediabunny-1.58.0/mpegts/hls-2s/v1', segments: refs }));
+        groups.push(JSON.stringify({ id: crypto.randomUUID(), sample: sample.id, checksum: sample.sha256, profile: segmented ? 'mediabunny-1.58.0/mpegts/hls-2s/v1' : 'whole-object', segments: refs }));
       }
-      if (segmented) await request(`flows/${id}/tags/tasm.playpen.blocks.v1`, 'PUT', groups);
+      await request(`flows/${id}/tags/tasm.playpen.blocks.v1`, 'PUT', groups);
       root.flow_collection.push({ id, role: sample.kind });
     }
     await request(`flows/${root.id}/flow_collection`, 'PUT', root.flow_collection);

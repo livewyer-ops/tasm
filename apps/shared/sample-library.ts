@@ -7,9 +7,14 @@ async function transaction<T>(mode: IDBTransactionMode, work: (tx: IDBTransactio
   signal?.throwIfAborted();
   const opened = new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(`tasm-${document.body.dataset.app}-library`, 2);
-    request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains('samples')) request.result.createObjectStore('samples', { keyPath: 'id' });
-      if (!request.result.objectStoreNames.contains('media')) request.result.createObjectStore('media');
+    request.onupgradeneeded = ({ oldVersion }) => {
+      if (oldVersion !== 0) {
+        request.transaction!.abort();
+        reject(new Error(`Unsupported sample library version ${oldVersion}. Use Reset to clear the store.`));
+        return;
+      }
+      request.result.createObjectStore('samples', { keyPath: 'id' });
+      request.result.createObjectStore('media');
       request.result.createObjectStore('drafts');
     };
     request.onsuccess = () => { if (signal?.aborted) { request.result.close(); reject(signal.reason); } else resolve(request.result); };

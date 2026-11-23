@@ -30,6 +30,34 @@ async function empty(page: Page) {
   })).toEqual([]);
 }
 
+test('an unsupported sample library stays intact until Reset', async ({ page }) => {
+  await page.route('**/blank', route => route.fulfill({ contentType: 'text/html', body: '' }));
+  await page.goto('/blank');
+  await page.evaluate(() => new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open('tasm-playpen-library', 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore('samples', { keyPath: 'id' });
+      request.result.createObjectStore('media').put('saved bytes', 'sample');
+    };
+    request.onsuccess = () => { request.result.close(); resolve(); };
+    request.onerror = () => reject(request.error);
+  }));
+  await page.goto('/'); await ready(page);
+  await expect(page.locator('#library-status')).toContainText('Unsupported sample library version');
+  const saved = await page.evaluate(() => new Promise((resolve, reject) => {
+    const open = indexedDB.open('tasm-playpen-library');
+    open.onsuccess = () => {
+      const db = open.result, read = db.transaction('media').objectStore('media').get('sample');
+      read.onsuccess = () => { db.close(); resolve([db.version, read.result]); };
+      read.onerror = () => reject(read.error);
+    };
+    open.onerror = () => reject(open.error);
+  }));
+  expect(saved).toEqual([1, 'saved bytes']);
+  await resetAndReload(page); await empty(page);
+  await expect(page.locator('#import-media')).toBeEnabled();
+});
+
 test('playback reads are grouped, reviewed and cached without stealing manual selection', async ({ page, browserName }) => {
   test.setTimeout(browserName === 'webkit' ? 360000 : 180000);
   await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto('/'); await ready(page);
