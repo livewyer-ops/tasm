@@ -4,15 +4,6 @@ use uuid::Uuid;
 
 use tasm_core::webhook_target::{WebhookPolicy, validate_target};
 
-impl crate::config::Settings {
-    pub(crate) fn webhook_policy(&self) -> WebhookPolicy<'_> {
-        WebhookPolicy {
-            allow_private_targets: self.webhook_allow_private_targets,
-            allowed_hosts: &self.webhook_allowed_hosts,
-            require_https: self.webhook_require_https,
-        }
-    }
-}
 #[derive(Debug, thiserror::Error)]
 pub enum WebhookError {
     #[error("Webhook target is restricted")]

@@ -1,5 +1,9 @@
 pub use tasm_core::{domain, now};
-pub mod config;
+pub mod config {
+    pub use tasm_core::config::Settings;
+    pub const SERVICE_TYPE: &str = "urn:x-tams:service.cf-tams-wasm";
+    pub const SIGNED_URLS: bool = true;
+}
 pub mod db;
 use tasm_core::host;
 pub mod http;
