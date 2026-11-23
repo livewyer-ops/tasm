@@ -37,7 +37,7 @@
     "@electric-sql/pglite": "0.5.8",
     "@noble/hashes": "2.4.0"
   },
-  "source_tree_note": "Rust sources were read from the existing workspace. Commit IDs identify each repository base; source hashes identify the actual files, including uncommitted demo code.",
+  "source_tree_note": "Commit IDs identify the upstream revisions. SHA-256 hashes identify the exact source files used.",
   "source_sha256": {
     "rust-tams-api/src/domain/flow.rs": "3e71741752ba43e3b84cdc6f3d649c2d5de5b1bb844ea084162d7aeedd16cb35",
     "rust-tams-api/src/domain/model.rs": "ad4773d48941ba014b3d5ddb485a4018127060be76f8b7da1cf6deaf652833ab",

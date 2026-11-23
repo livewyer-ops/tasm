@@ -1,3 +1,4 @@
+import { build } from "esbuild";
 import { presign } from "./signing.ts";
 import { apiConfig, apiConfigPath } from "./test-installation.ts";
 import assert from "node:assert/strict";
@@ -106,8 +107,8 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     assert.equal((await request("/readyz")).status, 200);
   });
 
-  await t.test("Collection membership is backfilled on upgrade and follows flow writes", async () => {
-    const name = "membership-upgrade";
+  await t.test("Collection membership follows flow writes", async () => {
+    const name = "membership";
     const call = async (method: string, path: string, body?: unknown) => {
       const env = await api.getEnv();
       const result = JSON.parse(await env.STORE.getByName(name).request(JSON.stringify({ method, url: origin + path, headers: { "content-type": "application/json" }, body: body === undefined ? null : JSON.stringify(body), actor: { subject: username, scopes: ["tams-api/admin"] } })));
@@ -118,28 +119,13 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     const [a, b, c, parent] = [0, 1, 2, 3].map(() => ({ id: crypto.randomUUID(), source: crypto.randomUUID() }));
     for (const flow of [a, b, c]) assert.equal((await call("PUT", `/flows/${flow.id}`, { ...video, id: flow.id, source_id: flow.source })).status, 201);
     assert.equal((await call("PUT", `/flows/${parent.id}`, { ...video, id: parent.id, source_id: parent.source, flow_collection: [{ id: a.id, role: "a" }, { id: b.id, role: "b" }] })).status, 201);
-    // Responses before the downgrade, compared in order after the upgrade.
     const listings = ["/flows?collected_by_ids=" + parent.id, "/flows?collected_by_ids=", "/sources?collected_by_ids=" + parent.source, "/sources?collected_by_ids="];
     const list = () => Promise.all(listings.map(async path => ids((await call("GET", path)).value)));
     const listed = await list();
     assert.deepEqual([...listed[0]].sort(), [a.id, b.id].sort());
-    let sql = await api.getDurableObjectStorage("STORE", { name });
-    // Recreate a version 2 store: no membership table, plus a duplicate and a dangling member.
-    await sql.exec("DROP TRIGGER tamoss_flow_members_insert");
-    await sql.exec("DROP TRIGGER tamoss_flow_members_update");
-    await sql.exec("DROP TRIGGER tamoss_flow_members_delete");
-    await sql.exec("DROP TABLE tamoss_flow_collection_members");
-    await sql.exec("DROP INDEX idx_tamoss_unfinished_cleanup");
-    await sql.exec("DROP INDEX wasm_media_allocation");
-    await sql.exec("DELETE FROM wasm_schema_versions WHERE version>=3");
-    const dangling = crypto.randomUUID();
-    await sql.exec("UPDATE tamoss_flows SET flow_collection_ids=? WHERE id=?", JSON.stringify([a.id, b.id, a.id, dangling]), parent.id);
-    await server.update(options => options);
-    assert.equal((await call("GET", "/service")).status, 200);
-    sql = await api.getDurableObjectStorage("STORE", { name });
+    const sql = await api.getDurableObjectStorage("STORE", { name });
     const members = async () => (await sql.exec<{ child_id: string }>("SELECT child_id FROM tamoss_flow_collection_members WHERE parent_id=? ORDER BY position", parent.id)).map(row => row.child_id);
-    assert.deepEqual(await members(), [a.id, b.id, a.id, dangling]);
-    assert.deepEqual(await list(), listed);
+    assert.deepEqual(await members(), [a.id, b.id]);
     const matching = async (query: string) => ids((await call("GET", `/flows?${query}`)).value).includes(c.id);
     assert.equal(await matching(`codec=${video.codec}&frame_width=${video.essence_parameters.frame_width}&frame_height=${video.essence_parameters.frame_height}`), true);
     assert.equal(await matching("frame_width=1"), false);
@@ -853,7 +839,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
   });
 });
 
-test("a populated SQLite v4 store rolls back an interrupted upgrade and refuses newer revisions", async t => {
+test("a populated SQLite store rolls back an interrupted upgrade and refuses unsupported revisions", async t => {
   // This entry point gives the test access to the old database even if the new constructor fails.
   const directory = await mkdtemp(join(tmpdir(), "tasm-upgrade-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -867,19 +853,16 @@ test("a populated SQLite v4 store rolls back an interrupted upgrade and refuses 
   t.after(() => harness.close());
   await harness.listen();
   const worker = harness.getWorker<Bindings>(apiConfig.name);
-  const prototype = { name: "prototype-upgrade" };
-  const legacy = await worker.getDurableObjectStorage("STORE", prototype);
-  await legacy.exec("CREATE TABLE service_metadata (id TEXT PRIMARY KEY,name TEXT,description TEXT)");
-  await legacy.exec("INSERT INTO service_metadata VALUES ('default','Preserved prototype','Existing metadata')");
+  const unversioned = { name: "unversioned" };
+  const unversionedSql = () => worker.getDurableObjectStorage("STORE", unversioned);
+  await (await unversionedSql()).exec("CREATE TABLE service_metadata(id TEXT PRIMARY KEY,name TEXT,description TEXT)");
+  await (await unversionedSql()).exec("INSERT INTO service_metadata(id) VALUES ('preserved')");
+  await harness.update(() => ({ workers: [current] }));
+  await assert.rejects((await unversionedSql()).exec("SELECT 1"), /existing tables have no revision/);
   const storage = () => worker.getDurableObjectStorage("STORE", { name: "upgrade" });
   let sql = await storage();
-  for (const file of ["002", "003", "004"]) {
-    await sql.exec(readFileSync(new URL(`./migrations/${file}.sql`, import.meta.url), "utf8"));
-  }
-  await sql.exec("CREATE TABLE wasm_schema_versions(version INTEGER PRIMARY KEY)");
-  await sql.exec("INSERT INTO wasm_schema_versions VALUES (2),(3),(4)");
   const versions = () => sql.exec("SELECT version FROM wasm_schema_versions ORDER BY version").then(rows => rows.map(r => r.version));
-  assert.deepEqual(await versions(), [2, 3, 4]);
+  assert.deepEqual(await versions(), [7]);
   const flow = crypto.randomUUID(), job = crypto.randomUUID();
   const backend = JSON.parse(apiConfig.vars.STORAGE_BACKENDS).MEDIA.storage_id as string;
   const timestamp = "2026-01-01T00:00:00.000000000Z";
@@ -895,32 +878,51 @@ test("a populated SQLite v4 store rolls back an interrupted upgrade and refuses 
   const before = await snapshot();
   assert.match(String(before[0].allocation_id), /^[0-9a-f]{32}$/);
   assert.equal(before[0].queued_allocation, before[0].allocation_id);
-  await sql.exec("CREATE TRIGGER interrupt BEFORE INSERT ON wasm_schema_versions WHEN NEW.version=5 BEGIN SELECT RAISE(ABORT,'interrupted migration'); END");
-  await harness.update(() => ({ workers: [current] }));
+  const next = join(directory, "next.mjs");
+  await build({
+    stdin: { contents: `import { DurableObject } from 'cloudflare:workers';
+      import { migrateSchema } from './core/cloudflare/migrations';
+      export class WasmStore extends DurableObject {
+        constructor(ctx, env) {
+          super(ctx, env);
+          ctx.storage.transactionSync(() => migrateSchema(ctx.storage.sql, ['CREATE INDEX fixture_upgrade ON tamoss_object_cleanups(updated)']));
+        }
+      }
+      export default { fetch() { return new Response(); } };`, resolveDir: process.cwd() },
+    bundle: true, format: "esm", external: ["cloudflare:workers"], loader: { ".sql": "text" }, outfile: next,
+  });
+  const upgrade = { config: { ...inspect.config, main: next } };
+  await sql.exec("CREATE TRIGGER interrupt BEFORE INSERT ON wasm_schema_versions WHEN NEW.version=8 BEGIN SELECT RAISE(ABORT,'interrupted migration'); END");
+  await harness.update(() => ({ workers: [upgrade] }));
   sql = await storage();
   await assert.rejects(sql.exec("SELECT 1"), /interrupted migration/);
   await harness.update(() => ({ workers: [inspect] }));
   sql = await storage();
-  assert.deepEqual(await versions(), [2, 3, 4]);
-  const index = () => sql.exec("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tamoss_unfinished_cleanup'");
+  assert.deepEqual(await versions(), [7]);
+  assert.deepEqual(await (await unversionedSql()).exec("SELECT id FROM service_metadata"), [{ id: "preserved" }]);
+  const index = () => sql.exec("SELECT name FROM sqlite_master WHERE name='fixture_upgrade'");
   assert.deepEqual(await index(), []);
   await sql.exec("DROP TRIGGER interrupt");
-  await harness.update(() => ({ workers: [current] }));
+  await harness.update(() => ({ workers: [upgrade] }));
   sql = await storage();
-  assert.deepEqual(await versions(), [2, 3, 4, 5, 6]);
-  const env = await worker.getEnv();
-  const result = JSON.parse(await env.STORE.getByName(prototype.name).request(JSON.stringify({ method: "GET", url: origin + "/service", headers: {}, body: null, actor: { subject: username, scopes: ["tams-api/admin"] } })));
-  assert.equal(JSON.parse(result.body).name, "Preserved prototype");
+  assert.deepEqual(await versions(), [7, 8]);
   assert.equal((await index()).length, 1);
   await worker.evictDurableObject("STORE", { name: "upgrade" });
   assert.deepEqual(await snapshot(), before);
   await sql.exec("UPDATE tamoss_storage_backends SET label='Future label' WHERE id=?", backend);
-  await sql.exec("INSERT INTO wasm_schema_versions VALUES (99)");
-  await worker.evictDurableObject("STORE", { name: "upgrade" });
-  await assert.rejects(sql.exec("SELECT 1"), /Unsupported TASM database version/);
+  await harness.update(() => ({ workers: [current] }));
+  sql = await storage();
+  await assert.rejects((await storage()).exec("SELECT 1"), /Unsupported TASM database version/);
   await harness.update(() => ({ workers: [inspect] }));
   sql = await storage();
-  assert.deepEqual(await versions(), [2, 3, 4, 5, 6, 99]);
+  assert.deepEqual(await versions(), [7, 8]);
+  await sql.exec("DELETE FROM wasm_schema_versions");
+  await sql.exec("INSERT INTO wasm_schema_versions VALUES (2),(3),(4),(5),(6)");
+  await harness.update(() => ({ workers: [current] }));
+  await assert.rejects((await storage()).exec("SELECT 1"), /Unsupported TASM database version/);
+  await harness.update(() => ({ workers: [inspect] }));
+  sql = await storage();
+  assert.deepEqual(await versions(), [2, 3, 4, 5, 6]);
   assert.deepEqual(await sql.exec("SELECT label FROM tamoss_storage_backends WHERE id=?", backend), [{ label: "Future label" }]);
   assert.deepEqual(await snapshot(), before);
 });

@@ -9,7 +9,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
 import init, { Tasm } from '../pkg/browser/tasm.js';
-import schema from '../core/browser/migrations/001.sql';
 import { migrateSchema } from '../core/browser/migrations';
 import { Runtime } from '../core/browser/runtime';
 import { SqlHost, pgliteParsers } from '../core/browser/sql-host';
@@ -137,11 +136,10 @@ test('the SQL bridge flushes at transaction boundaries and drains a dropped roll
   assert.deepEqual((await db.query('SELECT id FROM edits ORDER BY id')).rows, [{ id: 1 }, { id: 2 }, { id: 4 }]);
 });
 
-test('a populated browser v1 store upgrades atomically and rejects newer versions', async t => {
+test('a populated browser store upgrades atomically and refuses unsupported revisions', async t => {
   const original = new PGlite();
-  await original.exec(schema);
-  await original.query(`INSERT INTO tamoss_storage_backends(id,label,provider,region,store_product,default_storage,record)
-    VALUES ($1,'Original backend','browser','local','tasm-opfs',true,'{}')`, [backend]);
+  await migrateSchema(original, [{ id: backend, label: 'Original backend' }]);
+  assert.deepEqual((await original.query('SELECT version FROM tasm_schema')).rows, [{ version: 3 }]);
   const flow = crypto.randomUUID(), job = crypto.randomUUID();
   await original.query("INSERT INTO tamoss_flows(id,record,metadata_updated,created) VALUES($1,'{}',NOW(),NOW())", [flow]);
   await original.query("INSERT INTO tamoss_segments(flow_id,object_id,timerange,timerange_start,timerange_end,record,created) VALUES($1,'clip','[0:0_1:0)',0,1000000000,'{}',NOW())", [flow]);
@@ -153,26 +151,28 @@ test('a populated browser v1 store upgrades atomically and rejects newer version
 
   const db = new PGlite({ loadDataDir: snapshot });
   t.after(() => db.close());
-  const open = () => migrateSchema(db, [{ id: backend, label: 'Changed default' }]);
+  const open = () => migrateSchema(db, [{ id: backend, label: 'Changed default' }], ['CREATE INDEX fixture_upgrade ON tamoss_object_cleanups(updated)']);
   // Fail the version write after the DDL so both must roll back together.
   await db.exec(`CREATE FUNCTION fail_version() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'interrupted migration'; END $$ LANGUAGE plpgsql;
     CREATE TRIGGER interrupt BEFORE UPDATE ON tasm_schema FOR EACH ROW EXECUTE FUNCTION fail_version()`);
   await assert.rejects(open(), /interrupted migration/);
-  const state = () => db.query("SELECT version,to_regclass('idx_tamoss_unfinished_cleanup') IS NOT NULL AS indexed FROM tasm_schema").then(r => r.rows);
-  assert.deepEqual(await state(), [{ version: 1, indexed: false }]);
+  const state = () => db.query("SELECT version,to_regclass('fixture_upgrade') IS NOT NULL AS indexed FROM tasm_schema").then(r => r.rows);
+  assert.deepEqual(await state(), [{ version: 3, indexed: false }]);
   await db.exec("DROP TRIGGER interrupt ON tasm_schema");
   await open();
   await open();
-  assert.deepEqual(await state(), [{ version: 2, indexed: true }]);
+  assert.deepEqual(await state(), [{ version: 4, indexed: true }]);
   const saved = await db.query(`SELECT s.flow_id, s.object_id, s.timerange, f.name, b.label, q.id, q.status
     FROM tamoss_segments s JOIN tamoss_media_objects m ON m.id=s.object_id AND m.first_referenced_by_flow=s.flow_id
     JOIN tasm_files f ON f.object_id=m.id JOIN tamoss_storage_backends b ON b.id=f.backend
     JOIN tamoss_object_cleanups q ON q.object_id=m.id`);
   assert.deepEqual(saved.rows, [{ flow_id: flow, object_id: 'clip', timerange: '[0:0_1:0)', name: 'clip.bin', label: 'Original backend', id: job, status: 'pending' }]);
 
-  await db.exec("UPDATE tasm_schema SET version=99");
-  await assert.rejects(open(), /Unsupported TASM database version/);
-  assert.deepEqual(await state(), [{ version: 99, indexed: true }]);
+  for (const version of [1, 2, 99]) {
+    await db.query('UPDATE tasm_schema SET version=$1', [version]);
+    await assert.rejects(open(), /Unsupported TASM database version/);
+    assert.deepEqual(await state(), [{ version, indexed: true }]);
+  }
   await db.exec('DROP TABLE tasm_schema');
   await assert.rejects(open(), /existing tables have no revision/);
 });

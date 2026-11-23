@@ -1,17 +1,17 @@
 import type { PGlite } from '@electric-sql/pglite';
 import type { StorageBackend } from './public.d.ts';
-import initialSchema from './migrations/001.sql';
-import unfinishedCleanup from './migrations/002.sql';
+import initialSchema from './migrations/003.sql';
 
-const revisions = [initialSchema, unfinishedCleanup];
+const baseline = 3;
+const migrations: readonly string[] = [];
 
-export async function migrateSchema(db: PGlite, backends: StorageBackend[]): Promise<void> {
+export async function migrateSchema(db: PGlite, backends: StorageBackend[], updates = migrations): Promise<void> {
   await db.transaction(async tx => {
     const { rows: [schema] } = await tx.query<{ present: boolean }>("SELECT to_regclass('tasm_schema') IS NOT NULL AS present");
     let version: number;
     if (schema.present) {
       const { rows } = await tx.query<{ version: number }>('SELECT version FROM tasm_schema');
-      if (rows.length !== 1 || !Number.isInteger(rows[0].version) || rows[0].version < 1 || rows[0].version > revisions.length) {
+      if (rows.length !== 1 || !Number.isInteger(rows[0].version) || rows[0].version < baseline || rows[0].version > baseline + updates.length) {
         throw new Error(`Unsupported TASM database version: ${JSON.stringify(rows.map(row => row.version))}.`);
       }
       version = rows[0].version;
@@ -26,10 +26,11 @@ export async function migrateSchema(db: PGlite, backends: StorageBackend[]): Pro
           VALUES ($1,$2,'browser','local','tasm-opfs','http_object_store',$3,$4,'{}')`,
           [backend.id, backend.label, i === 0, JSON.stringify(backend.tags ?? {})]);
       }
-      version = 1;
+      version = baseline;
+      await tx.query('INSERT INTO tasm_schema VALUES ($1)', [version]);
     }
-    for (let next = version + 1; next <= revisions.length; next++) {
-      await tx.exec(revisions[next - 1]);
+    for (let next = version + 1; next <= baseline + updates.length; next++) {
+      await tx.exec(updates[next - baseline - 1]);
       await tx.query('UPDATE tasm_schema SET version=$1', [next]);
     }
   });
