@@ -14,13 +14,17 @@ export const verifier = { binding: 'AUTH', service: 'cf-tams-auth', entrypoint: 
 
 type Harness = ReturnType<typeof createTestHarness>;
 type Api = Pick<ReturnType<Harness['getWorker']>, 'fetch'> & { getEnv(): Promise<Bindings> };
+export function readVideoFlow() {
+  return JSON.parse(readFileSync(resolve(import.meta.dirname, 'video-flow.test.json'), 'utf8'));
+}
+
 export async function checkMedia(api: Api, authorization: string) {
   const id = crypto.randomUUID(), object = `checks/${id}/literal%2F.ts`;
   const path = `/flows/${id}`;
   const request = (route: string, method = 'GET', data?: unknown) => api.fetch('https://store.example' + route, {
     method, headers: { authorization, 'content-type': 'application/json' }, body: JSON.stringify(data),
   });
-  const fixture = JSON.parse(readFileSync(new URL('./video-flow.test.json', import.meta.url), 'utf8'));
+  const fixture = readVideoFlow();
   assert.equal((await request(path, 'PUT', { ...fixture, id, source_id: crypto.randomUUID() })).status, 201);
   const allocation = await (await request(path + '/storage', 'POST', { object_ids: [object] })).json() as { media_objects: { put_url: { url: string } }[] };
   const key = new URL(allocation.media_objects[0].put_url.url).pathname.split('/').slice(2).join('/');

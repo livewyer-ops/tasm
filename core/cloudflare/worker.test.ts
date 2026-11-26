@@ -1,8 +1,7 @@
 import { build } from "esbuild";
-import { apiConfig, apiConfigPath } from "./test-installation.ts";
+import { apiConfig, apiConfigPath, readVideoFlow } from "./test-installation.ts";
 import assert from "node:assert/strict";
 import { checkUuidFilters } from "../../tests/contract/uuid-filters.ts";
-import { readFileSync } from "node:fs";
 import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -73,7 +72,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
   });
 
   await t.test("UUID filters follow the TAMS wire format", async () => {
-    const videoFlow = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const videoFlow = readVideoFlow();
     await checkUuidFilters(async (method, path, body) => {
       const response = await request(path, { method, body: JSON.stringify(body) });
       return { status: response.status, body: await response.text() };
@@ -103,7 +102,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
       return { status: result.status as number, value: result.body ? JSON.parse(result.body) : null };
     };
     const ids = (value: { id: string }[]) => value.map(item => item.id);
-    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const video = readVideoFlow();
     const [a, b, c, parent] = [0, 1, 2, 3].map(() => ({ id: crypto.randomUUID(), source: crypto.randomUUID() }));
     for (const flow of [a, b, c]) assert.equal((await call("PUT", `/flows/${flow.id}`, { ...video, id: flow.id, source_id: flow.source })).status, 201);
     assert.equal((await call("PUT", `/flows/${parent.id}`, { ...video, id: parent.id, source_id: parent.source, flow_collection: [{ id: a.id, role: "a" }, { id: b.id, role: "b" }] })).status, 201);
@@ -179,7 +178,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     assert.equal((await call("GET", "/service", "tams-api/delete")).status, 200);
     assert.equal((await call("GET", "/flow-delete-requests", "tams-api/delete")).status, 403);
     const id = crypto.randomUUID();
-    const flow = { ...JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8")), id, source_id: crypto.randomUUID(), read_only: true };
+    const flow = { ...readVideoFlow(), id, source_id: crypto.randomUUID(), read_only: true };
     assert.equal((await call("PUT", `/flows/${id}`, "tams-api/write", flow)).status, 403);
     assert.equal((await call("PUT", `/flows/${id}`, "tams-api/admin", flow)).status, 201);
     assert.equal((await call("PUT", `/flows/${id}/read_only`, "tams-api/write", false)).status, 403);
@@ -209,7 +208,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
   await t.test("Flow writes commit, invalid writes roll back, and queries remain usable", async () => {
     const id = crypto.randomUUID();
     const source_id = crypto.randomUUID();
-    const flow = { ...JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8")), id, source_id, tags: { project: ["wasm"] } };
+    const flow = { ...readVideoFlow(), id, source_id, tags: { project: ["wasm"] } };
     const created = await request(`/flows/${id}`, { method: "PUT", body: JSON.stringify(flow) });
     assert.equal(created.status, 201, await created.text());
     const stored = await (await request(`/flows/${id}`)).json() as Record<string, unknown>;
@@ -240,7 +239,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
 
   await t.test("R2 allocation, precise segments, copy and asynchronous deletion", { timeout: 30_000 }, async () => {
     const id = crypto.randomUUID();
-    const flow = { ...JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8")), id, source_id: crypto.randomUUID() };
+    const flow = { ...readVideoFlow(), id, source_id: crypto.randomUUID() };
     assert.equal((await request(`/flows/${id}`, { method: "PUT", body: JSON.stringify(flow) })).status, 201);
     const objectId = `checks/${id}/literal%2F.ts`;
     const path = `/objects/${encodeURIComponent(objectId)}`;
@@ -330,7 +329,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
 
   await t.test("Flow timeranges cover own segments and collection members", async () => {
     const env = await api.getEnv();
-    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const video = readVideoFlow();
     const put = async (extra: Record<string, unknown> = {}) => {
       const id = crypto.randomUUID();
       assert.equal((await request(`/flows/${id}`, { method: "PUT", body: JSON.stringify({ ...video, id, source_id: crypto.randomUUID(), ...extra }) })).status, 201);
@@ -370,7 +369,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
 
   await t.test("A reused object only accepts segments within its own timerange", async () => {
     const env = await api.getEnv();
-    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const video = readVideoFlow();
     const put = async () => {
       const id = crypto.randomUUID();
       assert.equal((await request(`/flows/${id}`, { method: "PUT", body: JSON.stringify({ ...video, id, source_id: crypto.randomUUID() }) })).status, 201);
@@ -401,7 +400,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
 
   await t.test("Deleting a reference keeps a reused object on its own timeline", { timeout: 30_000 }, async () => {
     const env = await api.getEnv();
-    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const video = readVideoFlow();
     const json = async (path: string) => (await request(path)).json() as Promise<any>;
     const post = (path: string, body: unknown) => request(path, { method: "POST", body: JSON.stringify(body) });
     const put = async () => {
@@ -446,7 +445,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
       const result = JSON.parse(await env.STORE.getByName(name).request(JSON.stringify({ method, url: origin + path, headers: { "content-type": "application/json" }, body: body === undefined ? null : JSON.stringify(body), actor: { subject: username, scopes: ["tams-api/admin"] } })));
       return { status: result.status as number, headers: Object.fromEntries(Object.entries(result.headers as Record<string, string>).map(([k, v]) => [k.toLowerCase(), v])), value: result.body ? JSON.parse(result.body) : null };
     };
-    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const video = readVideoFlow();
     const put = async (extra: Record<string, unknown> = {}) => {
       const id = crypto.randomUUID();
       assert.equal((await call("PUT", `/flows/${id}`, { ...video, id, source_id: crypto.randomUUID(), ...extra })).status, 201);
@@ -502,7 +501,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
       const result = JSON.parse(await env.STORE.getByName(name).request(JSON.stringify({ method, url: origin + path, headers: { "content-type": "application/json" }, body: body === undefined ? null : JSON.stringify(body), actor: { subject: username, scopes: ["tams-api/admin"] } })));
       return { status: result.status as number, value: result.body ? JSON.parse(result.body) : null };
     };
-    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const video = readVideoFlow();
     const flow = crypto.randomUUID();
     assert.equal((await call("PUT", `/flows/${flow}`, { ...video, id: flow, source_id: crypto.randomUUID() })).status, 201);
     const timeranges = ["[0:0_1:0)", "[1:0_2:0)", "[2:0_3:0)", "[3:0_4:0)", "[50:0]"];
@@ -537,7 +536,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
       const result = JSON.parse(await env.STORE.getByName(name).request(JSON.stringify({ method, url: origin + path, headers: { "content-type": "application/json" }, body: body === undefined ? null : JSON.stringify(body), actor: { subject: username, scopes: ["tams-api/admin"] } })));
       return { status: result.status as number, headers: Object.fromEntries(Object.entries(result.headers as Record<string, string>).map(([k, v]) => [k.toLowerCase(), v])), value: result.body ? JSON.parse(result.body) : null };
     };
-    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const video = readVideoFlow();
     const put = async (tags?: Record<string, unknown>) => {
       const id = crypto.randomUUID();
       assert.equal((await call("PUT", `/flows/${id}`, { ...video, id, source_id: crypto.randomUUID(), ...(tags ? { tags } : {}) })).status, 201);
@@ -577,7 +576,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
   });
 
   await t.test("Profiles page in id order, filter, reject duplicates and lock for flows", async () => {
-    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const video = readVideoFlow();
     const metadata = { format: video.format, codec: video.codec, container: video.container, essence_parameters: video.essence_parameters };
     const ids = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
     const codec = `video/x-profile-${crypto.randomUUID().slice(0, 8)}`;
@@ -637,7 +636,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     assert.deepEqual(await urls("?tag.role=review"), ["https://hooks.example.com/b"]);
     assert.deepEqual(await urls("?tag_exists.role=false"), ["https://hooks.example.com/c"]);
     assert.deepEqual(await urls("?limit=2&reverse_order=true"), ["https://hooks.example.com/c", "https://hooks.example.com/b"]);
-    const video = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const video = readVideoFlow();
     const flowId = crypto.randomUUID();
     assert.equal((await call("PUT", `/flows/${flowId}`, { ...video, id: flowId, source_id: crypto.randomUUID() })).status, 201);
     const queued = await sql.exec<{ webhook: string }>("SELECT webhook_id AS webhook FROM tamoss_webhook_deliveries WHERE json_extract(record,'$.event_type')='flows/created'");
@@ -666,7 +665,7 @@ test("Authenticated Rust service with native SQLite and R2", async t => {
     // Keep deliveries queued so this test can inspect their snapshots without contacting a receiver.
     await sql.exec("CREATE TRIGGER test_hold_webhooks AFTER INSERT ON tamoss_webhook_deliveries BEGIN UPDATE tamoss_webhook_deliveries SET next_attempt_at='2099-01-01T00:00:00.000000000Z' WHERE id=NEW.id; END");
     const id = crypto.randomUUID();
-    const fixture = JSON.parse(readFileSync("core/cloudflare/video-flow.test.json", "utf8"));
+    const fixture = readVideoFlow();
     const flow = { ...fixture, id, source_id: crypto.randomUUID(), essence_parameters: { ...fixture.essence_parameters, init_segments: true } };
     assert.equal((await request(`/flows/${id}`, { method: "PUT", body: JSON.stringify(flow) })).status, 201);
     const backend = (await (await request("/service/storage-backends")).json() as { id: string; label: string; default_storage: boolean }[]).find(value => value.default_storage)!;
@@ -910,7 +909,7 @@ test("previous Cloudflare distribution preserves media and queued work after an 
   const worker = harness.getWorker<Bindings>(apiConfig.name);
   const call = (method: string, path: string, body?: unknown) => worker.fetch(origin + path,
     { method, headers: { authorization, "content-type": "application/json" }, body: JSON.stringify(body) });
-  const flow = { ...JSON.parse(readFileSync(new URL("./video-flow.test.json", import.meta.url), "utf8")), id: crypto.randomUUID(), source_id: crypto.randomUUID() };
+  const flow = { ...readVideoFlow(), id: crypto.randomUUID(), source_id: crypto.randomUUID() };
   assert.equal((await call("PUT", `/flows/${flow.id}`, flow)).status, 201);
   const env = await worker.getEnv();
   const sql = await worker.getDurableObjectStorage("STORE", { name: env.STORE_ID });

@@ -44,7 +44,7 @@ async function issue(client: { client_id: string; client_secret?: string }, fiel
   const body = new URLSearchParams({ grant_type: "client_credentials", ...fields });
   if (method === "client_secret_basic") headers.set("Authorization", "Basic " + btoa(`${client.client_id}:${client.client_secret}`));
   else { body.set("client_id", client.client_id); body.set("client_secret", client.client_secret!); }
-  return issuer.fetch(`${env.AUTH_ISSUER}/api/auth/oauth2/token`, { method: "POST", headers: Object.fromEntries(headers), body });
+  return issuer.fetch(`${env.AUTH_ISSUER}/api/auth/oauth2/token`, { method: "POST", headers: Object.fromEntries(headers), body: body.toString() });
 }
 
 test("OAuth issuance, permissions, rotation and failure handling", async (t) => {
