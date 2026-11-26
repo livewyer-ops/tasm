@@ -230,7 +230,7 @@ export class Preview extends EventTarget {
       await firstValueFrom(this.omakase.loadMainMedia(`${this.media.base}master.m3u8`, { mainMediaType: MainMediaType.HLS, fileFormatType: FileFormatType.HLS, frameRate: rate ? rate.numerator / rate.denominator : 25, duration: end, forceSkipMetadataResolution: true }).pipe(timeout(45000)));
     } catch (error) { if (generation !== this.generation) return; throw error; }
     if (generation !== this.generation) return;
-    this.omakase.player.getPlaybackEngine(MainMediaType.HLS).hls?.on(Hls.Events.ERROR, (_event, data) => {
+    this.omakase.player.getPlaybackEngine(MainMediaType.HLS)?.hls?.on(Hls.Events.ERROR, (_event, data) => {
       if (data.fatal && generation === this.generation) {
         this.pause(); this.loaded = false;
         this.dispatchEvent(new CustomEvent('error', { detail: data.error?.message ?? data.details }));

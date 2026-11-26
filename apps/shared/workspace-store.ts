@@ -37,7 +37,7 @@ export class RequestError extends Error {
 }
 interface RequestOptions extends RequestContext { signal?: AbortSignal; binary?: boolean; headers?: Record<string, string>; rawBody?: string }
 export interface IngestObject { segment: Segment; sample?: Sample; bytes: number; state: 'prepared' | 'allocated' | 'uploaded' | 'registered'; reused: boolean }
-export const PROFILE = 'mediabunny-1.58.0/mpegts/hls-2s/v1';
+export const PROFILE = 'mediabunny-1.66.0/mpegts/hls-2s/v1';
 const BLOCK_TAG = 'tasm.playpen.blocks.v1';
 export const NS = 1000000000n;
 export const seconds = (n: bigint) => Number(n) / 1e9;

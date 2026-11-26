@@ -66,8 +66,8 @@ Omakase Player (Apache-2.0), RxJS (Apache-2.0), hls.js (Apache-2.0),
 and Mediabunny (MPL-2.0).
 Omakase Player: Copyright 2026 ByOmakase, LLC (https://byomakase.org).
 Omakase and Mediabunny are used without source modifications.
-Mediabunny: Copyright Vanilagy and contributors. Source for version 1.58.0:
-https://github.com/Vanilagy/mediabunny/tree/v1.58.0
+Mediabunny: Copyright Vanilagy and contributors. Source for version 1.66.0:
+https://github.com/Vanilagy/mediabunny/tree/v1.66.0
 Its Mozilla Public License 2.0 is distributed as mediabunny-LICENSE.
 Generated browser bundles retain third-party legal comments. Rust and npm
 dependency versions are pinned in Cargo.lock and package-lock.json.

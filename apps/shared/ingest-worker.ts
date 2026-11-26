@@ -16,14 +16,17 @@ export async function segmentMedia(bytes: ArrayBuffer, kind: string): Promise<Pr
     if (!track) throw new Error(`Missing ${kind} track`);
     const decoderConfig = await track.getDecoderConfig();
     if (!decoderConfig) throw new Error('Missing decoder configuration');
+    const packets = new EncodedPacketSink(track);
+    const first = await packets.getFirstPacket();
+    if (!first) throw new Error('No media packets were found.');
     const chunks: { index: number; bytes: ArrayBuffer }[] = [];
-    const output = new Output({ format: new HlsOutputFormat({ segmentFormat: new MpegTsOutputFormat(), targetDuration: 2,
+    const output = new Output({ format: new HlsOutputFormat({ segmentFormat: new MpegTsOutputFormat(), targetDuration: 2, mediaTimestampBase: first.timestamp,
       onSegment: (target, info) => { chunks.push({ index: info.n, bytes: (target as BufferTarget).buffer! }); } }),
       target: new PathedTarget('master.m3u8', () => new BufferTarget()) });
     const source = kind === 'video' ? new EncodedVideoPacketSource('avc') : new EncodedAudioPacketSource('aac');
     if (source instanceof EncodedVideoPacketSource) output.addVideoTrack(source); else output.addAudioTrack(source);
     await output.start();
-    for await (const packet of new EncodedPacketSink(track).packets()) await source.add(packet, { decoderConfig } as never);
+    for await (const packet of packets.packets(first)) await source.add(packet, { decoderConfig } as never);
     source.close(); await output.finalize();
     const objects: PreparedObject[] = [];
     for (const { bytes } of chunks.sort((a, b) => a.index - b.index)) {

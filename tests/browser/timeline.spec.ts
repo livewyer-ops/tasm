@@ -83,7 +83,7 @@ test('source clock preserves offsets, empty intervals, tails and independent pre
           await request(`flows/${id}/segments`, 'POST', { ...segment, ...(start === starts[0] ? { object_timerange: `[${timestamp(BigInt(object.start))}_${timestamp(BigInt(object.end))})` } : {}) });
           refs.push({ object_id: segment.object_id, timerange: segment.timerange });
         }
-        groups.push(JSON.stringify({ id: crypto.randomUUID(), sample: sample.id, checksum: sample.sha256, profile: segmented ? 'mediabunny-1.58.0/mpegts/hls-2s/v1' : 'whole-object', segments: refs }));
+        groups.push(JSON.stringify({ id: crypto.randomUUID(), sample: sample.id, checksum: sample.sha256, profile: segmented ? 'mediabunny-1.66.0/mpegts/hls-2s/v1' : 'whole-object', segments: refs }));
       }
       await request(`flows/${id}/tags/tasm.playpen.blocks.v1`, 'PUT', groups);
       root.flow_collection.push({ id, role: sample.kind });
