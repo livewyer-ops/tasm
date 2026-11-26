@@ -35,7 +35,7 @@
     "check:cloudflare": "node scripts/deploy.mjs demo --dry-run && node scripts/deploy.mjs playpen --dry-run",
     "test:cloudflare": "node tests/cloudflare.mjs",
     "build:cloudflare": "node scripts/build.mjs cloudflare",
-    "package:cloudflare": "npm run build:cloudflare && node scripts/package-cloudflare.mjs",
+    "package:cloudflare": "npm run build:cloudflare && sh scripts/package-cloudflare.sh pack",
     "test:worker": "node --experimental-strip-types --test --test-concurrency=1 core/cloudflare/worker.test.ts core/cloudflare/signing.test.ts core/cloudflare/contract.test.ts core/cloudflare/oauth.test.ts core/cloudflare/auth/auth.test.ts"
   },
   "dependencies": {

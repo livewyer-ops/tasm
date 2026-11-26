@@ -20,12 +20,12 @@ COPY licenses/ licenses/
 COPY tests/browser/ tests/browser/
 COPY tests/contract/ tests/contract/
 COPY tests/app-logic.test.ts tests/pglite-core.test.ts tests/
-COPY scripts/build.mjs scripts/cloudflare.mjs scripts/package-cloudflare.mjs scripts/bundle-options.mjs scripts/apps.mjs scripts/deploy.mjs scripts/notices.mjs scripts/
+COPY scripts/build.mjs scripts/cloudflare.mjs scripts/bundle-options.mjs scripts/apps.mjs scripts/deploy.mjs scripts/notices.mjs scripts/
 RUN npm run build && npm run check
 
 FROM build AS checks
 COPY tests/segmentation.mjs tests/artifacts.mjs tests/ui-preview.mjs tests/cloudflare.mjs tests/
-COPY scripts/serve.mjs scripts/check-cloudflare-package.sh scripts/
+COPY scripts/serve.mjs scripts/package-cloudflare.sh scripts/
 COPY tests/media/ tests/media/
 RUN cargo fmt --all -- --check \
     && cargo test --locked \
@@ -37,8 +37,8 @@ RUN cargo fmt --all -- --check \
     && npm run test:artifacts \
     && npm run check:cloudflare \
     && npm run test:cloudflare \
-    && node scripts/package-cloudflare.mjs \
-    && sh scripts/check-cloudflare-package.sh
+    && sh scripts/package-cloudflare.sh pack \
+    && sh scripts/package-cloudflare.sh verify
 
 FROM node AS test-deps
 WORKDIR /app

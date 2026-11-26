@@ -14,7 +14,7 @@ On Linux, use the [build toolchain](../README.md#run-locally) and GNU tar.
 
 ```sh
 npm run package:cloudflare
-sh scripts/check-cloudflare-package.sh
+sh scripts/package-cloudflare.sh verify
 ```
 
 The build writes `dist/tasm-cloudflare-<version>.tar.gz` and its `.sha256` file. The package check verifies the checksum, tests the Free and Paid installations from the extracted archive and runs the OAuth operator CLI. Attach those same files to the release tagged `v<version>` from `package.json`. A rebuild can produce a different Wasm binary.
