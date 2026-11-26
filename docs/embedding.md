@@ -8,9 +8,10 @@ import { startTasm } from '/tasm/index.js';
 const client = await startTasm();
 const response = await fetch(`${client.apiUrl}service`);
 const service = await response.json();
+console.log(service.api_version); // 8.2
 ```
 
-Call `startTasm()` once per page. For another mount, pass `{ basePath: '/media/' }` and serve the SDK and page there. Each base path has its own store. API and object URLs work inside the participating browser.
+Run the example in the host page. If the service request returns 404, check the [service worker scope](troubleshooting.md). Call `startTasm()` once per page. For another mount, pass `{ basePath: '/media/' }` and serve the SDK and page there. Each base path has its own store. API and object URLs work inside the participating browser.
 
 To configure storage backends, pass them on first use. The first is the default. Each stores its own object instances in OPFS.
 
