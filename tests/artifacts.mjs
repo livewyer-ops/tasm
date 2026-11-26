@@ -6,7 +6,7 @@ import { resolve, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { build } from 'esbuild';
-import { browserOptions, coreOptions } from '../scripts/bundle-options.mjs';
+import { browserOptions, coreOptions } from '../scripts/apps.mjs';
 
 // Inspect dependencies, including transitive imports, so the core stays UI-free.
 for (const [area, entries] of Object.entries({ core: ['core/browser/index.ts', 'core/browser/worker.ts', 'core/browser/service-worker.ts'],

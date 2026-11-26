@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
-import { appName, appHTML } from './apps.mjs';
+import { appName, appHTML, browserOptions, startupOptions } from './apps.mjs';
 
 const app = appName(process.argv.find(arg => arg.startsWith('--app='))?.slice(6));
 const root = resolve(process.env.TASM_DIST ?? 'dist', app);
@@ -39,14 +39,14 @@ const server = createServer(async (req, res) => {
       else if (url.pathname === '/preview-bootstrap.js') bytes = (await readFile(`apps/${app}/bootstrap.js`, 'utf8')).replace(`./${app}.js`, './preview.js');
       else if (url.pathname === '/startup.js') {
         const { build } = await import('esbuild');
-        bytes = (await build({ entryPoints: ['apps/shared/startup.ts'], bundle: true, format: 'iife', target: 'es2022', write: false })).outputFiles[0].contents;
+        bytes = (await build({ ...startupOptions, write: false })).outputFiles[0].contents;
       } else if (live[1] === 'html') {
         bytes = appHTML(await readFile(`apps/${app}/index.html`, 'utf8'), app)
           .replace('href="./"', 'href="./preview.html"').replaceAll(`./${app}.css`, './preview.css')
           .replaceAll('./onboarding.css', './preview-onboarding.css').replace('./bootstrap.js', './preview-bootstrap.js');
       } else if (live[1] === 'css') bytes = await readFile(`apps/${app}/style.css`);
       else {
-        bundle ??= import('esbuild').then(({ context }) => context({ entryPoints: [`apps/${app}/main.ts`], bundle: true, format: 'esm', target: 'es2022', sourcemap: 'inline', write: false }));
+        bundle ??= import('esbuild').then(({ context }) => context({ ...browserOptions, entryPoints: [`apps/${app}/main.ts`], sourcemap: 'inline', write: false }));
         bytes = (await (await bundle).rebuild()).outputFiles[0].contents;
       }
       res.writeHead(200, { 'content-type': types[extname(url.pathname)], 'cache-control': 'no-store' });

@@ -14,3 +14,12 @@ export function appHTML(html, app) {
   const href = peerURL(app).replaceAll('&', '&amp;').replaceAll('"', '&quot;');
   return html.replaceAll('__PEER_URL__', () => href);
 }
+
+export const browserOptions = { bundle: true, format: 'esm', target: 'es2022', loader: { '.sql': 'text' } };
+export const startupOptions = { ...browserOptions, entryPoints: ['apps/shared/startup.ts'], format: 'iife' };
+
+export const coreOptions = {
+  ...browserOptions,
+  // PGlite disables "module" in browsers but uses the prefixed spelling in its Node-only branch.
+  alias: { 'node:module': 'data:text/javascript,export{}' },
+};

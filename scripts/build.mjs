@@ -8,8 +8,7 @@ import Ajv from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 import standalone from 'ajv/dist/standalone/index.js';
 import { writeAppNotices, writeCoreNotices } from './notices.mjs';
-import { apps, appHTML } from './apps.mjs';
-import { browserOptions, coreOptions } from './bundle-options.mjs';
+import { apps, appHTML, browserOptions, coreOptions, startupOptions } from './apps.mjs';
 
 const target = process.argv[2] ?? 'all';
 if (!['all', 'core', 'cloudflare', ...apps].includes(target)) throw new Error('Build target must be core, demo, playpen, cloudflare or all.');
@@ -105,7 +104,7 @@ for (const app of selectedApps) {
     builder.onResolve({ filter: /^\.\/samples\/manifest\.json$/ }, () => ({ path: `${samplesDir}/manifest.json` }));
   } }], metafile: true, entryPoints: { [app]: `apps/${app}/main.ts`,
     'preview-worker': 'apps/shared/preview-worker.ts', 'ingest-worker': 'apps/shared/ingest-worker.ts' }, outdir: out });
-  await build({ ...browserOptions, entryPoints: ['apps/shared/startup.ts'], format: 'iife', outdir: out });
+  await build({ ...startupOptions, outdir: out });
   await writeFile(`${out}/index.html`, appHTML(await readFile(`apps/${app}/index.html`, 'utf8'), app));
   await cp(`apps/${app}/bootstrap.js`, `${out}/bootstrap.js`);
   await cp(`apps/${app}/style.css`, `${out}/${app}.css`);
