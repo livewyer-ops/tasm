@@ -89,6 +89,7 @@ test('all eight actions work without dismissing explanations and retain their co
     }
     if (step === 8) {
       await expect(page.locator('.flow-row:visible')).toHaveCount(1);
+      await expect(page.locator('.flow-row:visible .playhead-time')).toHaveText('Playback 0 s');
       await expect(page.locator('#storage-objects tr')).toHaveCount(2);
     }
     for (const width of [1280, 1024, 390]) await layout(page, width, step);

@@ -754,7 +754,7 @@ document.querySelectorAll<HTMLButtonElement>('[data-step]').forEach(button => bu
   status('');
 });
 document.addEventListener('pause', event => {
-  if (!busy && step === 4 && event.target instanceof HTMLVideoElement) status('Paused at ' + fmt(event.target.currentTime) + '.');
+  if (!busy && step === 4 && preview?.loaded && event.target instanceof HTMLVideoElement) status('Paused at ' + fmt(preview.currentTime) + '.');
 }, true);
 window.addEventListener('pagehide', () => { preview?.destroy(); client?.close(); });
 window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });

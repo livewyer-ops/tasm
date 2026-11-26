@@ -201,10 +201,11 @@ export class Preview extends EventTarget {
     };
     const check = () => {
       if (this.rangeEnd === undefined) return;
-      if (video.currentTime >= this.rangeEnd - 0.005) finish();
-      else this.rangeTimer = setTimeout(check, Math.min(10, Math.max(1, (this.rangeEnd - video.currentTime) * 1000 / video.playbackRate)));
+      const remaining = this.rangeEnd - this.omakase.player.getCurrentTime();
+      if (remaining <= 0.005) finish();
+      else this.rangeTimer = setTimeout(check, Math.min(10, Math.max(1, remaining * 1000 / video.playbackRate)));
     };
-    const frame = () => { if (this.rangeEnd !== undefined) { if (video.currentTime >= this.rangeEnd - 0.005) check(); else this.rangeFrame = video.requestVideoFrameCallback(frame); } };
+    const frame = () => { if (this.rangeEnd !== undefined) { if (this.omakase.player.getCurrentTime() >= this.rangeEnd - 0.005) check(); else this.rangeFrame = video.requestVideoFrameCallback(frame); } };
     if (video.requestVideoFrameCallback) this.rangeFrame = video.requestVideoFrameCallback(frame);
     check();
     try { await firstValueFrom(this.omakase.player.play().pipe(timeout(10000))); }
@@ -215,7 +216,7 @@ export class Preview extends EventTarget {
     const generation = ++this.generation;
     const video = document.querySelector<HTMLVideoElement>('#omakase-player video');
     const wasPlaying = resume && !!video && !video.paused;
-    const desiredTime = this.sourceId === workspace?.root.source_id ? video?.currentTime ?? this.currentTime : 0;
+    const desiredTime = this.sourceId === workspace?.root.source_id ? this.currentTime : 0;
     const rate = video?.playbackRate ?? 1;
     this.sourceId = workspace?.root.source_id; this.loaded = false;
     this.media?.destroy(); this.media = undefined;
@@ -236,7 +237,7 @@ export class Preview extends EventTarget {
         this.dispatchEvent(new CustomEvent('error', { detail: data.error?.message ?? data.details }));
       }
     });
-    this.loaded = true; this.currentTime = Math.min(desiredTime, end);
+    this.loaded = true; this.currentTime = desiredTime < end ? desiredTime : 0;
     if (this.currentTime > 0) await this.seek(this.currentTime);
     if (generation !== this.generation) return;
     const current = document.querySelector<HTMLVideoElement>('#omakase-player video');

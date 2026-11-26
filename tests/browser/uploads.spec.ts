@@ -53,9 +53,11 @@ test('imported video and audio insert by reference while other flows keep their 
   expect(editedVideo.segments.at(-1).timerange).toBe('[6:0_8:0)');
   await expect(page.locator('#preview-status')).toContainText('Source ready', { timeout: 60000 });
   await page.locator('#seek-time').fill('1.4'); await page.locator('#seek-button').click();
-  await expect.poll(() => page.locator('video').evaluate((v: HTMLVideoElement) => v.currentTime)).toBeCloseTo(1.4, 1);
+  await expect(page.locator('#playhead-time')).toHaveText('00:01.400');
   await page.getByRole('button', { name: 'Select Inserted.mp4 audio sample', exact: true }).click();
   await page.locator('#add-sample').click(); await page.locator('#save-draft').click(); await ready(page);
+  await expect(page.locator('#preview-status')).toContainText('Source ready', { timeout: 60000 });
+  await expect(page.locator('#playhead-time')).toHaveText('00:01.400');
   const afterAudio = await state(page), editedAudio = afterAudio.find((l: any) => l.flow.format.endsWith(':audio'));
   expect(afterAudio.find((l: any) => l.flow.format.endsWith(':video'))).toEqual(editedVideo);
   expect(editedAudio.segments.map((s: any) => s.object_id)).toEqual([audioLane.segments[0].object_id, ...audioLane.segments.map((s: any) => s.object_id), ...audioLane.segments.slice(1).map((s: any) => s.object_id)]);
