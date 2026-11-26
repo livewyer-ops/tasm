@@ -13,30 +13,25 @@ Set `TASM_DIST` to build or serve from a different output directory. Use a new d
 
 ## Checks
 
-```sh
-cargo fmt --all -- --check
-cargo test --locked
-cargo clippy --locked --all-targets -- -D warnings
-npm run build
-npm run check
-npm run test:worker
-npm run test:segments
-npm run test:artifacts
-npm run test:preview
-npm run check:cloudflare
-npm run test:cloudflare
-```
+Build the affected targets before running their checks.
 
-For the browser suite on Linux, install FFmpeg and PulseAudio. The test script sets up a dedicated audio monitor. Run it with both sites built and ports 5173 and 5174 available.
+| Change | Checks |
+| --- | --- |
+| Rust | `cargo fmt --all -- --check`, `cargo test --locked`, `cargo clippy --locked --all-targets -- -D warnings` |
+| Apps and TypeScript | `npm run check`, `npm run test:logic`, `npm run test:preview` |
+| Media timing and segmentation | `npm run test:segments` |
+| Browser storage | `npm run test:pglite` |
+| Worker and Cloudflare configuration | `npm run test:worker`, `npm run check:cloudflare`, `npm run test:cloudflare` |
+| Distribution | `npm run test:artifacts` and the [release package checks](releases.md) |
+
+For browser tests on Linux, install FFmpeg and PulseAudio, build both sites and leave ports 5173 and 5174 available. The test script creates an isolated audio monitor.
 
 ```sh
 npx playwright install --with-deps chromium firefox webkit
-sh scripts/test-browser.sh
+sh scripts/test-browser.sh --smoke --project=chromium
 ```
 
-[Release checks and packaging](releases.md)
-
-Run `npm run check` to type-check the apps and browser tests. After building, use `npm run test:logic` for pure application logic and `npm run test:segments` for media timing. Run `sh scripts/test-browser.sh --smoke --project=chromium` for the pull-request suite. The wrapper creates an isolated PulseAudio sink for each worker. Main runs the full Chromium suite. Nightly and manual validation also cover Firefox and WebKit.
+Run `sh scripts/test-browser.sh` for the full suite. Pull requests run Chromium smoke tests. Main runs the full Chromium suite. Nightly and manual validation also run Firefox and WebKit.
 
 ## Test schema upgrades
 

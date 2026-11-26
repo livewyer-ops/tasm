@@ -11,7 +11,7 @@ Both runtimes compile the same Rust handlers, domain rules and background jobs a
 
 Each runtime creates its store on first use. When it opens an existing store, it applies pending schema updates in one transaction before serving requests. If an update fails, the store keeps its previous schema and data.
 
-Shared Rust code lives in `core/rust/`. The host implementations live in `core/browser/` and `core/cloudflare/`. Demo and Playpen are separate static sites in `apps/` and use the browser SDK.
+Shared Rust code lives in `core/rust/`. The host implementations live in `core/browser/` and `core/cloudflare/`. Demo and Playpen are separate static sites in `apps/` and use the browser SDK. The vendored specification is in `contracts/tams/`, with shared contract checks in `tests/contract/`.
 
 ## Browser access and storage
 
@@ -23,7 +23,16 @@ Webhook destinations must allow browser requests from the app's origin, includin
 
 ## Cloudflare access policy
 
-Cloudflare authenticates API clients with HTTP Basic or OAuth Bearer credentials, according to the deployment configuration. Its OAuth policy reserves changing a Flow's `read_only` flag for administrators, including changes through whole-Flow PUT. Creating or replacing a webhook requires both `tams-api/read` and `tams-api/write`, or `tams-api/admin`. Deleting one requires `tams-api/write` or `tams-api/admin`. Changing the destination cancels queued deliveries. Retries to the same destination use its current credential and retain their `X-Tasm-Delivery-Id`. Reading a webhook requires `tams-api/read` or `tams-api/admin`. Deployments may choose their own policy under [BBC application note 0016](https://github.com/bbc/tams/blob/34fb31b80cb8afb3194f28c8b787301379caacf8/docs/appnotes/0016-authorisation-in-tams-workflows.md).
+Cloudflare authenticates API clients with HTTP Basic or OAuth Bearer credentials, according to the deployment configuration.
+
+| Operation | Required OAuth scope |
+| --- | --- |
+| Change a Flow's `read_only` flag, including through whole-Flow PUT | `tams-api/admin` |
+| Create or replace a webhook | Both `tams-api/read` and `tams-api/write`, or `tams-api/admin` |
+| Delete a webhook | `tams-api/write` or `tams-api/admin` |
+| Read a webhook | `tams-api/read` or `tams-api/admin` |
+
+Changing the destination cancels queued deliveries. Retries to the same destination use its current credential and retain their `X-Tasm-Delivery-Id`. Deployments may choose their own policy under [BBC application note 0016](https://github.com/bbc/tams/blob/34fb31b80cb8afb3194f28c8b787301379caacf8/docs/appnotes/0016-authorisation-in-tams-workflows.md).
 
 ## BBC 8.2 wire conventions
 
